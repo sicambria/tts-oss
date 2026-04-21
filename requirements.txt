@@ -1,0 +1,5 @@
+TTS==0.22.0
+pydub==0.25.1
+imageio-ffmpeg==0.6.0
+numpy==1.26.4
+transformers==4.46.3
