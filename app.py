@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import queue
 import re
@@ -8,6 +9,7 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+from urllib.request import urlopen
 
 import imageio_ffmpeg
 import numpy as np
@@ -18,7 +20,7 @@ warnings.filterwarnings(
     category=RuntimeWarning,
 )
 from pydub import AudioSegment
-from tkinter import END, StringVar, Text, Tk, filedialog, messagebox
+from tkinter import BooleanVar, END, StringVar, Text, Tk, Toplevel, filedialog, messagebox
 from tkinter import ttk
 
 
@@ -28,6 +30,8 @@ ENGINE_AUTO = "Auto"
 ENGINE_PIPER = "Piper"
 ENGINE_XTTS = "XTTS v2"
 PIPER_VOICE_DIR = Path.cwd() / "voices" / "piper"
+APP_SETTINGS_PATH = Path.cwd() / "settings.json"
+PIPER_VOICES_JSON_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/voices.json?download=true"
 PIPER_VOICE_OPTIONS = {
     "Hungarian | Anna | medium": {
         "code": "hu_HU-anna-medium",
@@ -43,6 +47,7 @@ PIPER_VOICE_OPTIONS = {
     },
 }
 DEFAULT_PIPER_VOICE_LABEL = "Hungarian | Anna | medium"
+PREVIEW_OUTPUT_PATH = Path.cwd() / "output" / "read-aloud-preview.mp3"
 PAUSE_MS = 300
 MAX_CHARS_PER_CHUNK = 280
 
@@ -116,6 +121,7 @@ class SynthesisRequest:
     output_file: Path
     engine: str
     piper_voice_label: str
+    piper_voice_code: str
     speaker_name: str
     speaker_wav: str
 
@@ -125,6 +131,69 @@ def get_piper_voice_metadata(label: str) -> dict[str, str]:
     if metadata is None:
         return PIPER_VOICE_OPTIONS[DEFAULT_PIPER_VOICE_LABEL]
     return metadata
+
+
+def label_for_piper_voice(voice_code: str, voice_info: dict | None = None) -> str:
+    if voice_info is not None:
+        language = voice_info.get("language", {})
+        language_name = language.get("name_english", voice_code.split("-")[0])
+        country_name = language.get("country_english", "")
+        region = f" {country_name}" if country_name else ""
+        voice_name = str(voice_info.get("name", "")).replace("_", " ").title()
+        quality = voice_info.get("quality", "")
+        return f"{language_name}{region} | {voice_name} | {quality}"
+
+    parts = voice_code.split("-")
+    lang_code = parts[0]
+    name = parts[1] if len(parts) > 1 else "voice"
+    quality = parts[2] if len(parts) > 2 else "unknown"
+    language_map = {
+        "hu_HU": "Hungarian",
+        "en_US": "English United States",
+        "en_GB": "English Great Britain",
+    }
+    language_name = language_map.get(lang_code, lang_code)
+    return f"{language_name} | {name.replace('_', ' ').title()} | {quality}"
+
+
+def load_app_settings() -> dict:
+    if not APP_SETTINGS_PATH.exists():
+        return {}
+    try:
+        return json.loads(APP_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_app_settings(settings: dict) -> None:
+    APP_SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+
+def discover_local_piper_voices() -> dict[str, dict[str, str]]:
+    options = dict(PIPER_VOICE_OPTIONS)
+    if not PIPER_VOICE_DIR.exists():
+        return options
+
+    for model_path in sorted(PIPER_VOICE_DIR.glob("*.onnx")):
+        config_path = model_path.with_suffix(".onnx.json")
+        if not config_path.exists():
+            continue
+
+        voice_code = model_path.stem
+        if any(metadata["code"] == voice_code for metadata in options.values()):
+            continue
+        label = label_for_piper_voice(voice_code)
+        language_prefix = voice_code.split("-")[0]
+        xtts_language = "hu" if language_prefix == "hu_HU" else "en"
+        options.setdefault(
+            label,
+            {
+                "code": voice_code,
+                "xtts_language": xtts_language,
+            },
+        )
+
+    return dict(sorted(options.items()))
 
 
 def piper_model_path(voice_code: str) -> Path:
@@ -246,8 +315,7 @@ class PiperService:
         return voice
 
     def synthesize(self, request: SynthesisRequest) -> Path:
-        voice_metadata = get_piper_voice_metadata(request.piper_voice_label)
-        voice_code = voice_metadata["code"]
+        voice_code = request.piper_voice_code
         voice = self.ensure_loaded(voice_code)
         AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
         chunks = chunk_text(request.text)
@@ -302,6 +370,226 @@ class SynthesisCoordinator:
         return self._xtts.synthesize(request)
 
 
+class AudioPlayer:
+    def __init__(self, log: Callable[[str], None]) -> None:
+        self._log = log
+        self._ready = False
+
+    def ensure_ready(self) -> None:
+        if self._ready:
+            return
+        try:
+            import pygame
+        except Exception as exc:
+            raise RuntimeError("pygame is not installed. Run .\\setup.ps1 first.") from exc
+
+        if not pygame.mixer.get_init():
+            pygame.mixer.init()
+        self._ready = True
+
+    def play(self, path: Path) -> None:
+        self.ensure_ready()
+        import pygame
+
+        pygame.mixer.music.load(str(path))
+        pygame.mixer.music.play()
+        self._log(f"Playing audio: {path.name}")
+
+    def pause(self) -> None:
+        self.ensure_ready()
+        import pygame
+
+        pygame.mixer.music.pause()
+        self._log("Playback paused.")
+
+    def resume(self) -> None:
+        self.ensure_ready()
+        import pygame
+
+        pygame.mixer.music.unpause()
+        self._log("Playback resumed.")
+
+    def stop(self) -> None:
+        if not self._ready:
+            return
+        import pygame
+
+        pygame.mixer.music.stop()
+        self._log("Playback stopped.")
+
+
+class PiperVoiceWizard:
+    def __init__(self, app: "App") -> None:
+        self.app = app
+        self.window = Toplevel(app.root)
+        self.window.title("Piper Voice Wizard")
+        self.window.geometry("980x620")
+        self.window.minsize(900, 560)
+
+        self.search = StringVar()
+        self.quality = StringVar(value="all")
+        self.installed_only = BooleanVar(value=False)
+        self.status = StringVar(value="Loading Piper voice catalog...")
+
+        self.catalog: dict[str, dict] = {}
+        self.filtered_codes: list[str] = []
+        self.downloading = False
+
+        self._build_ui()
+        self.search.trace_add("write", self.apply_filters)
+        self.quality.trace_add("write", self.apply_filters)
+        self.installed_only.trace_add("write", self.apply_filters)
+        threading.Thread(target=self.load_catalog, daemon=True).start()
+
+    def _build_ui(self) -> None:
+        frame = ttk.Frame(self.window, padding=12)
+        frame.pack(fill="both", expand=True)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
+
+        controls = ttk.Frame(frame)
+        controls.grid(row=0, column=0, sticky="ew")
+        controls.columnconfigure(1, weight=1)
+
+        ttk.Label(controls, text="Search").grid(row=0, column=0, sticky="w")
+        ttk.Entry(controls, textvariable=self.search).grid(row=0, column=1, sticky="ew", padx=(8, 12))
+        ttk.Label(controls, text="Quality").grid(row=0, column=2, sticky="w")
+        ttk.Combobox(
+            controls,
+            textvariable=self.quality,
+            values=["all", "x_low", "low", "medium", "high"],
+            state="readonly",
+            width=10,
+        ).grid(row=0, column=3, sticky="w", padx=(8, 12))
+        ttk.Checkbutton(controls, text="Installed only", variable=self.installed_only).grid(row=0, column=4, sticky="w")
+
+        columns = ("label", "code", "quality", "installed")
+        self.tree = ttk.Treeview(frame, columns=columns, show="headings", height=18)
+        self.tree.heading("label", text="Voice")
+        self.tree.heading("code", text="Code")
+        self.tree.heading("quality", text="Quality")
+        self.tree.heading("installed", text="Installed")
+        self.tree.column("label", width=360)
+        self.tree.column("code", width=220)
+        self.tree.column("quality", width=90, anchor="center")
+        self.tree.column("installed", width=90, anchor="center")
+        self.tree.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
+        scrollbar.grid(row=1, column=1, sticky="ns", pady=(12, 0))
+        self.tree.configure(yscrollcommand=scrollbar.set)
+
+        actions = ttk.Frame(frame)
+        actions.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        ttk.Button(actions, text="Refresh Catalog", command=self.refresh_catalog).pack(side="left")
+        ttk.Button(actions, text="Download Selected", command=self.download_selected).pack(side="right")
+        ttk.Button(actions, text="Set As Default", command=self.set_selected_default).pack(side="right", padx=(0, 8))
+
+        ttk.Label(frame, textvariable=self.status).grid(row=3, column=0, sticky="w", pady=(10, 0))
+
+    def refresh_catalog(self) -> None:
+        if self.downloading:
+            return
+        self.status.set("Refreshing Piper voice catalog...")
+        threading.Thread(target=self.load_catalog, daemon=True).start()
+
+    def load_catalog(self) -> None:
+        try:
+            with urlopen(PIPER_VOICES_JSON_URL) as response:
+                catalog = json.load(response)
+        except Exception as exc:
+            self.window.after(0, lambda: self.status.set(f"Failed to load Piper catalog: {exc}"))
+            return
+
+        self.catalog = catalog
+        self.window.after(0, self.apply_filters)
+
+    def installed_codes(self) -> set[str]:
+        return {
+            model_path.stem
+            for model_path in PIPER_VOICE_DIR.glob("*.onnx")
+            if model_path.with_suffix(".onnx.json").exists()
+        } if PIPER_VOICE_DIR.exists() else set()
+
+    def apply_filters(self, *_args) -> None:
+        installed_codes = self.installed_codes()
+        search_text = self.search.get().strip().lower()
+        quality = self.quality.get().strip()
+
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        self.filtered_codes = []
+        for voice_code in sorted(self.catalog):
+            info = self.catalog[voice_code]
+            label = label_for_piper_voice(voice_code, info)
+            haystack = f"{label} {voice_code}".lower()
+            is_installed = voice_code in installed_codes
+
+            if search_text and search_text not in haystack:
+                continue
+            if quality != "all" and info.get("quality") != quality:
+                continue
+            if self.installed_only.get() and not is_installed:
+                continue
+
+            self.filtered_codes.append(voice_code)
+            self.tree.insert(
+                "",
+                "end",
+                iid=voice_code,
+                values=(label, voice_code, info.get("quality", ""), "Yes" if is_installed else "No"),
+            )
+
+        self.status.set(f"{len(self.filtered_codes)} voice(s) shown.")
+
+    def selected_voice_code(self) -> str | None:
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showinfo("No selection", "Select a Piper voice first.")
+            return None
+        return selection[0]
+
+    def download_selected(self) -> None:
+        voice_code = self.selected_voice_code()
+        if not voice_code or self.downloading:
+            return
+
+        self.downloading = True
+        self.status.set(f"Downloading {voice_code}...")
+        threading.Thread(target=self._download_voice_worker, args=(voice_code,), daemon=True).start()
+
+    def _download_voice_worker(self, voice_code: str) -> None:
+        try:
+            from piper.download_voices import download_voice
+
+            PIPER_VOICE_DIR.mkdir(parents=True, exist_ok=True)
+            download_voice(voice_code, PIPER_VOICE_DIR)
+        except Exception as exc:
+            self.window.after(0, lambda: self.status.set(f"Download failed: {exc}"))
+        else:
+            def on_done() -> None:
+                self.status.set(f"Downloaded {voice_code}.")
+                self.app.reload_piper_voices(preferred_code=voice_code)
+                self.apply_filters()
+            self.window.after(0, on_done)
+        finally:
+            self.downloading = False
+
+    def set_selected_default(self) -> None:
+        voice_code = self.selected_voice_code()
+        if not voice_code:
+            return
+
+        label = self.app.find_piper_label_by_code(voice_code)
+        if label is None:
+            messagebox.showinfo("Voice not available", "Download the voice first, then set it as default.")
+            return
+
+        self.app.set_default_piper_voice(label)
+        self.status.set(f"Default Piper voice set to {voice_code}.")
+
+
 class App:
     def __init__(self, root: Tk) -> None:
         self.root = root
@@ -312,10 +600,18 @@ class App:
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.service = SynthesisCoordinator(self.enqueue_log)
         self.worker: threading.Thread | None = None
+        self.preview_worker: threading.Thread | None = None
+        self.player = AudioPlayer(self.enqueue_log)
+        self.settings = load_app_settings()
+        self.voice_wizard: PiperVoiceWizard | None = None
+        self.piper_voice_options = discover_local_piper_voices()
 
         self.language = StringVar(value="hu")
         self.engine = StringVar(value=ENGINE_AUTO)
-        self.piper_voice_label = StringVar(value=DEFAULT_PIPER_VOICE_LABEL)
+        initial_piper_voice = self.settings.get("default_piper_voice_label", DEFAULT_PIPER_VOICE_LABEL)
+        if initial_piper_voice not in self.piper_voice_options:
+            initial_piper_voice = DEFAULT_PIPER_VOICE_LABEL
+        self.piper_voice_label = StringVar(value=initial_piper_voice)
         self.speaker_name = StringVar(value=DEFAULT_SPEAKER)
         self.speaker_wav = StringVar()
         self.output_file = StringVar(value=str((Path.cwd() / "output" / "speech.mp3").resolve()))
@@ -383,7 +679,7 @@ class App:
         self.piper_voice_box = ttk.Combobox(
             controls,
             textvariable=self.piper_voice_label,
-            values=list(PIPER_VOICE_OPTIONS.keys()),
+            values=list(self.piper_voice_options.keys()),
             state="readonly",
             width=28,
         )
@@ -409,6 +705,11 @@ class App:
         actions = ttk.Frame(main)
         actions.pack(fill="x", pady=(0, 8))
         ttk.Button(actions, text="Load .txt", command=self.load_text_file).pack(side="left")
+        ttk.Button(actions, text="Voice Wizard", command=self.open_voice_wizard).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Read Aloud", command=self.start_read_aloud).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Pause", command=self.pause_playback).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Resume", command=self.resume_playback).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Stop", command=self.stop_playback).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Generate MP3", command=self.start_generation).pack(side="right")
 
         ttk.Label(main, text="Text").pack(anchor="w")
@@ -440,9 +741,32 @@ class App:
             return ENGINE_XTTS if self.speaker_wav.get().strip() else ENGINE_PIPER
         return self.engine.get()
 
+    def reload_piper_voices(self, preferred_code: str | None = None) -> None:
+        self.piper_voice_options = discover_local_piper_voices()
+        labels = list(self.piper_voice_options.keys())
+        self.piper_voice_box.configure(values=labels)
+
+        preferred_label = self.piper_voice_label.get()
+        if preferred_code is not None:
+            preferred_label = self.find_piper_label_by_code(preferred_code) or preferred_label
+        if preferred_label not in self.piper_voice_options:
+            preferred_label = DEFAULT_PIPER_VOICE_LABEL
+        self.piper_voice_label.set(preferred_label)
+
+    def find_piper_label_by_code(self, voice_code: str) -> str | None:
+        for label, metadata in self.piper_voice_options.items():
+            if metadata["code"] == voice_code:
+                return label
+        return None
+
+    def set_default_piper_voice(self, label: str) -> None:
+        self.settings["default_piper_voice_label"] = label
+        save_app_settings(self.settings)
+        self.piper_voice_label.set(label)
+
     def on_voice_settings_changed(self, *_args) -> None:
         selected_label = self.piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL
-        voice_metadata = get_piper_voice_metadata(selected_label)
+        voice_metadata = self.piper_voice_options.get(selected_label) or get_piper_voice_metadata(selected_label)
 
         resolved = self.resolved_engine()
         xtts_enabled = resolved == ENGINE_XTTS
@@ -494,6 +818,13 @@ class App:
         if path:
             self.output_file.set(path)
 
+    def open_voice_wizard(self) -> None:
+        if self.voice_wizard is not None and self.voice_wizard.window.winfo_exists():
+            self.voice_wizard.window.lift()
+            self.voice_wizard.window.focus_force()
+            return
+        self.voice_wizard = PiperVoiceWizard(self)
+
     def load_text_file(self) -> None:
         path = filedialog.askopenfilename(
             title="Open text file",
@@ -528,6 +859,10 @@ class App:
             output_file=Path(output),
             engine=self.engine.get().strip() or ENGINE_AUTO,
             piper_voice_label=self.piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL,
+            piper_voice_code=(self.piper_voice_options.get(
+                self.piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL,
+                get_piper_voice_metadata(DEFAULT_PIPER_VOICE_LABEL),
+            )["code"]),
             speaker_name=self.speaker_name.get().strip() or DEFAULT_SPEAKER,
             speaker_wav=speaker_wav,
         )
@@ -547,6 +882,52 @@ class App:
         self.enqueue_log("Starting synthesis job.")
         self.worker = threading.Thread(target=self.run_generation, args=(request,), daemon=True)
         self.worker.start()
+
+    def start_read_aloud(self) -> None:
+        if self.worker and self.worker.is_alive():
+            messagebox.showinfo("Busy", "MP3 generation is already running.")
+            return
+        if self.preview_worker and self.preview_worker.is_alive():
+            messagebox.showinfo("Busy", "Read aloud preparation is already running.")
+            return
+
+        request = self.collect_request()
+        if request is None:
+            return
+
+        request.output_file = PREVIEW_OUTPUT_PATH.resolve()
+        if self.service.resolve_engine(request) == ENGINE_XTTS and not self.ensure_xtts_license_acceptance():
+            return
+
+        self.enqueue_log("Preparing read aloud preview.")
+        self.preview_worker = threading.Thread(target=self.run_read_aloud, args=(request,), daemon=True)
+        self.preview_worker.start()
+
+    def run_read_aloud(self, request: SynthesisRequest) -> None:
+        try:
+            result = self.service.synthesize(request)
+            self.player.play(result)
+        except Exception as exc:
+            self.enqueue_log(f"Error: {exc}")
+            self.root.after(0, lambda: messagebox.showerror("Read aloud failed", str(exc)))
+
+    def pause_playback(self) -> None:
+        try:
+            self.player.pause()
+        except Exception as exc:
+            self.enqueue_log(f"Error: {exc}")
+
+    def resume_playback(self) -> None:
+        try:
+            self.player.resume()
+        except Exception as exc:
+            self.enqueue_log(f"Error: {exc}")
+
+    def stop_playback(self) -> None:
+        try:
+            self.player.stop()
+        except Exception as exc:
+            self.enqueue_log(f"Error: {exc}")
 
     def ensure_xtts_license_acceptance(self) -> bool:
         if os.environ.get("COQUI_TOS_AGREED") == "1":

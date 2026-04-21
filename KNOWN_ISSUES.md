@@ -10,6 +10,7 @@ This file records issues and learnings discovered during development so they do 
 - `Auto` prefers Piper for standard local synthesis.
 - If a `Reference WAV` is provided, `Auto` resolves to XTTS because Piper does not do voice cloning in this app.
 - The integrated Piper voices are `hu_HU-anna-medium`, `en_US-lessac-medium`, and `en_GB-alan-medium`.
+- Additional Piper voices can be downloaded from the in-app wizard and stored under `voices\piper`.
 
 ## Known issues
 
@@ -45,3 +46,4 @@ This file records issues and learnings discovered during development so they do 
 - Document environment assumptions explicitly in setup scripts and README files. Hidden machine-specific assumptions cost time later.
 - Prefer an `Auto` backend mode when one engine is clearly better for a specific language or workflow. It keeps the default behavior simple while preserving manual override.
 - When a GUI supports multiple engines, keep engine-specific controls visible but make the active/inactive behavior explicit in the UI instead of silently reusing one control for multiple meanings.
+- When supporting downloadable model catalogs, pass the stable model code through runtime requests instead of depending on display labels. Labels are UX; codes are the real identity.

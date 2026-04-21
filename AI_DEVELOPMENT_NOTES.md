@@ -17,6 +17,7 @@ This file is for future AI-assisted development in this repo.
 - The standard launcher is `.\run.ps1`.
 - The integrated Piper voices are `hu_HU-anna-medium`, `en_US-lessac-medium`, and `en_GB-alan-medium`.
 - `Auto` prefers Piper unless the request uses XTTS-only functionality such as reference voice cloning.
+- Additional Piper voices can be added from the in-app wizard and are discovered from `voices\piper` at startup.
 
 ## Search discipline
 
@@ -37,6 +38,7 @@ This file is for future AI-assisted development in this repo.
 - If you discover a recurring pitfall, add it to `KNOWN_ISSUES.md`.
 - If you integrate a new voice model, keep the local cache path and download mechanism explicit.
 - If you add engine-specific GUI controls, ensure their enabled or ignored state is visible to the user.
+- If you add downloadable voices, keep the runtime request keyed by voice code, not by display label.
 
 ## Lightweight systemic rules introduced
 

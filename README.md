@@ -63,6 +63,9 @@ This opens a native Windows window on the same machine.
 
 - `Engine = Auto` prefers Piper for normal local synthesis and switches to XTTS if you provide a `Reference WAV`.
 - The `Piper voice` dropdown lets you choose between Hungarian, U.S. English, and British English Piper voices.
+- `Read Aloud` synthesizes the current textbox content to a temporary audio file and plays it locally.
+- `Pause`, `Resume`, and `Stop` control local playback for the current read-aloud preview.
+- `Voice Wizard` loads the official Piper voice catalog, lets you download additional voice models, and can set a default Piper voice for the app.
 - `XTTS v2` is the option that supports built-in speaker selection and reference voice cloning.
 - Leave `Reference WAV` empty to use the built-in speaker name.
 - If you provide a reference voice file, the app uses that instead of the built-in speaker.
@@ -77,6 +80,7 @@ This opens a native Windows window on the same machine.
 - `setup.ps1` currently expects Python 3.11 at `C:\Python311\python.exe`. If your Python installation lives elsewhere, update the script or install Python there.
 - If fast local output is the goal, prefer `Engine = Auto` or `Engine = Piper`.
 - If Piper fails to start, rerun `.\setup.ps1` to ensure `piper-tts` and the files under `voices\piper` are present.
+- If playback controls do nothing, check that Windows audio output is available and that `pygame` installed successfully during setup.
 - The first successful synthesis can take a long time because XTTS downloads model files and initializes the runtime.
 - The first XTTS download requires license confirmation. The app prompts for this when synthesis starts.
 - Repo-wide text search should exclude `.venv`, `output`, and `__pycache__`. A repo-level `.rgignore` file is included for that purpose.
