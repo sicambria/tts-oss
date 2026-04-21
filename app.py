@@ -552,6 +552,9 @@ class AudioPlayer:
     def is_active(self) -> bool:
         return self._active
 
+    def is_paused(self) -> bool:
+        return self._paused
+
 
 class PiperVoiceWizard:
     def __init__(self, app: "App") -> None:
@@ -741,6 +744,7 @@ class App:
         self.preview_worker: threading.Thread | None = None
         self.preview_stop_event = threading.Event()
         self.preview_job_id = 0
+        self.last_selection_start_offset: int | None = None
         self.player = AudioPlayer(self.enqueue_log)
         self.settings = load_app_settings()
         self.voice_wizard: PiperVoiceWizard | None = None
@@ -756,6 +760,7 @@ class App:
         self.speaker_wav = StringVar()
         self.output_file = StringVar(value=str((Path.cwd() / "output" / "speech.mp3").resolve()))
         self.status = StringVar(value="Ready")
+        self.playback_toggle_label = StringVar(value="⏸ Pause")
 
         self._build_ui()
         self.language.trace_add("write", self.on_voice_settings_changed)
@@ -895,8 +900,12 @@ class App:
         ttk.Button(actions, text="📄 Load Text", command=self.load_text_file).pack(side="left")
         ttk.Button(actions, text="🎙 Voice Wizard", command=self.open_voice_wizard).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="▶ Read Aloud", style="Accent.TButton", command=self.start_read_aloud).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="⏸ Pause", command=self.pause_playback).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="⏵ Resume", command=self.resume_playback).pack(side="left", padx=(8, 0))
+        self.playback_toggle_button = ttk.Button(
+            actions,
+            textvariable=self.playback_toggle_label,
+            command=self.toggle_playback_pause,
+        )
+        self.playback_toggle_button.pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="⏹ Stop", command=self.stop_playback).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="💾 Generate Audio", style="Accent.TButton", command=self.start_generation).pack(side="right")
 
@@ -911,6 +920,7 @@ class App:
             padx=12,
             pady=12,
             undo=True,
+            exportselection=False,
             bg=TEXT_BG,
             fg="#0f172a",
             relief="flat",
@@ -925,6 +935,8 @@ class App:
         self.text.configure(yscrollcommand=text_scroll.set)
         self.text.tag_configure(READ_ALOUD_LINE_TAG, background="#fff3bf")
         self.text.bind("<ButtonRelease-1>", self.on_text_click)
+        self.text.bind("<ButtonRelease-1>", self.update_selection_cache, add="+")
+        self.text.bind("<KeyRelease>", self.update_selection_cache, add="+")
 
         log_frame = ttk.LabelFrame(main, text="Status", padding=10)
         log_frame.pack(fill="both", expand=False, pady=(8, 0))
@@ -1046,6 +1058,7 @@ class App:
         content = Path(path).read_text(encoding="utf-8")
         self.text.delete("1.0", END)
         self.text.insert("1.0", content)
+        self.last_selection_start_offset = None
         self.clear_read_aloud_highlight()
         self.enqueue_log(f"Loaded text from {path}")
 
@@ -1102,6 +1115,9 @@ class App:
         self.worker.start()
 
     def start_read_aloud(self) -> None:
+        self.start_read_aloud_from(None, reason="button")
+
+    def start_read_aloud_from(self, start_offset: int | None, reason: str = "button") -> None:
         if self.worker and self.worker.is_alive():
             messagebox.showinfo("Busy", "Audio generation is already running.")
             return
@@ -1110,8 +1126,10 @@ class App:
         if request is None:
             return
 
-        start_offset = self.get_read_aloud_start_offset()
-        if start_offset is None:
+        resolved_start_offset = start_offset
+        if resolved_start_offset is None:
+            resolved_start_offset = self.get_read_aloud_start_offset()
+        if resolved_start_offset is None:
             messagebox.showinfo("No speech content", "Enter some text first.")
             return
 
@@ -1124,13 +1142,19 @@ class App:
         self.cleanup_preview_files()
         self.preview_stop_event = threading.Event()
         job_id = self.preview_job_id
-        self.enqueue_log("Preparing read aloud preview.")
+        if reason == "click_jump":
+            self.enqueue_log("Jumping read aloud to clicked word.")
+        elif self.text.tag_ranges("sel") or self.last_selection_start_offset is not None:
+            self.enqueue_log("Preparing read aloud preview from selection.")
+        else:
+            self.enqueue_log("Preparing read aloud preview from the beginning.")
         self.preview_worker = threading.Thread(
             target=self.run_read_aloud,
-            args=(request, start_offset, job_id, self.preview_stop_event),
+            args=(request, resolved_start_offset, job_id, self.preview_stop_event),
             daemon=True,
         )
         self.preview_worker.start()
+        self.update_playback_toggle_label()
 
     def run_read_aloud(
         self,
@@ -1150,6 +1174,7 @@ class App:
                 preview_path = preview_dir / f"read-aloud-preview-{job_id}-{index}.wav"
                 preview_paths.append(preview_path)
                 export_audio_segment(segment, preview_path)
+                self.root.after(0, self.update_playback_toggle_label)
                 self.player.play_blocking(preview_path, stop_event)
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
@@ -1160,16 +1185,19 @@ class App:
                 self.root.after(750, lambda paths=tuple(preview_paths): self.cleanup_preview_files(paths))
             if job_id == self.preview_job_id:
                 self.root.after(0, self.clear_read_aloud_highlight)
+            self.root.after(0, self.update_playback_toggle_label)
 
     def pause_playback(self) -> None:
         try:
             self.player.pause()
+            self.update_playback_toggle_label()
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
 
     def resume_playback(self) -> None:
         try:
             self.player.resume()
+            self.update_playback_toggle_label()
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
 
@@ -1178,8 +1206,21 @@ class App:
             self.preview_stop_event.set()
             self.player.stop()
             self.clear_read_aloud_highlight()
+            self.update_playback_toggle_label()
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
+
+    def toggle_playback_pause(self) -> None:
+        if self.player.is_paused():
+            self.resume_playback()
+            return
+        self.pause_playback()
+
+    def update_playback_toggle_label(self) -> None:
+        if self.player.is_paused():
+            self.playback_toggle_label.set("⏵ Resume")
+        else:
+            self.playback_toggle_label.set("⏸ Pause")
 
     def get_text_content(self) -> str:
         return self.text.get("1.0", "end-1c")
@@ -1198,12 +1239,22 @@ class App:
         if widget_index is None:
             if self.text.tag_ranges("sel"):
                 index = self.text.index("sel.first")
+            elif self.last_selection_start_offset is not None:
+                return find_word_start_offset(content, self.last_selection_start_offset)
             else:
                 return find_word_start_offset(content, 0)
         else:
             index = widget_index
         offset = self.text_index_to_offset(index)
         return find_word_start_offset(content, offset)
+
+    def update_selection_cache(self, _event=None) -> None:
+        if self.preview_worker and self.preview_worker.is_alive():
+            return
+        if self.text.tag_ranges("sel"):
+            self.last_selection_start_offset = self.text_index_to_offset("sel.first")
+        else:
+            self.last_selection_start_offset = None
 
     def cleanup_preview_files(self, paths: tuple[Path, ...] | list[Path] | None = None, retries: int = 5) -> None:
         candidates = list(paths) if paths is not None else list(PREVIEW_OUTPUT_PATH.resolve().parent.glob(PREVIEW_FILE_GLOB))
@@ -1233,17 +1284,14 @@ class App:
         self.text.see(target_index)
 
     def on_text_click(self, event) -> None:
-        if not (self.preview_worker and self.preview_worker.is_alive()):
-            return
-
         index = self.text.index(f"@{event.x},{event.y}")
         start_offset = self.get_read_aloud_start_offset(index)
         if start_offset is None:
             return
 
-        self.highlight_read_aloud_line(start_offset)
         if self.preview_worker and self.preview_worker.is_alive():
-            self.root.after(0, self.start_read_aloud)
+            self.highlight_read_aloud_line(start_offset)
+            self.root.after(0, lambda offset=start_offset: self.start_read_aloud_from(offset, reason="click_jump"))
 
     def ensure_xtts_license_acceptance(self) -> bool:
         if os.environ.get("COQUI_TOS_AGREED") == "1":
