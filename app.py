@@ -498,7 +498,8 @@ class PiperVoiceWizard:
             with urlopen(PIPER_VOICES_JSON_URL) as response:
                 catalog = json.load(response)
         except Exception as exc:
-            self.window.after(0, lambda: self.status.set(f"Failed to load Piper catalog: {exc}"))
+            error_message = f"Failed to load Piper catalog: {exc}"
+            self.window.after(0, lambda message=error_message: self.status.set(message))
             return
 
         self.catalog = catalog
@@ -566,7 +567,8 @@ class PiperVoiceWizard:
             PIPER_VOICE_DIR.mkdir(parents=True, exist_ok=True)
             download_voice(voice_code, PIPER_VOICE_DIR)
         except Exception as exc:
-            self.window.after(0, lambda: self.status.set(f"Download failed: {exc}"))
+            error_message = f"Download failed: {exc}"
+            self.window.after(0, lambda message=error_message: self.status.set(message))
         else:
             def on_done() -> None:
                 self.status.set(f"Downloaded {voice_code}.")
@@ -909,7 +911,8 @@ class App:
             self.player.play(result)
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
-            self.root.after(0, lambda: messagebox.showerror("Read aloud failed", str(exc)))
+            error_message = str(exc)
+            self.root.after(0, lambda message=error_message: messagebox.showerror("Read aloud failed", message))
 
     def pause_playback(self) -> None:
         try:
@@ -954,7 +957,8 @@ class App:
             result = self.service.synthesize(request)
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
-            self.root.after(0, lambda: messagebox.showerror("Generation failed", str(exc)))
+            error_message = str(exc)
+            self.root.after(0, lambda message=error_message: messagebox.showerror("Generation failed", message))
             return
 
         self.enqueue_log(f"Saved MP3: {result}")
