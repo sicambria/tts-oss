@@ -5,6 +5,7 @@ import os
 import queue
 import re
 import threading
+import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +51,12 @@ DEFAULT_PIPER_VOICE_LABEL = "Hungarian | Anna | medium"
 PREVIEW_OUTPUT_PATH = Path.cwd() / "output" / "read-aloud-preview.mp3"
 PAUSE_MS = 300
 MAX_CHARS_PER_CHUNK = 280
+READ_ALOUD_LINE_TAG = "read_aloud_line"
+SUPPORTED_OUTPUT_FORMATS = {
+    ".mp3": "MP3",
+    ".ogg": "OGG",
+    ".wav": "WAV",
+}
 
 
 def sentence_split(text: str) -> list[str]:
@@ -112,6 +119,83 @@ def chunk_text(text: str, max_chars: int = MAX_CHARS_PER_CHUNK) -> list[str]:
     if current:
         chunks.append(current)
     return chunks
+
+
+@dataclass
+class TextChunk:
+    text: str
+    start: int
+    end: int
+
+
+def find_word_start_offset(text: str, offset: int) -> int | None:
+    clamped = max(0, min(offset, len(text)))
+    for match in re.finditer(r"\S+", text):
+        if match.start() <= clamped < match.end():
+            return match.start()
+        if match.start() > clamped:
+            return match.start()
+    return None
+
+
+def chunk_text_with_offsets(
+    text: str,
+    max_chars: int = MAX_CHARS_PER_CHUNK,
+    start_offset: int = 0,
+) -> list[TextChunk]:
+    matches = list(re.finditer(r"\S+", text))
+    if not matches:
+        return []
+
+    effective_start = find_word_start_offset(text, start_offset)
+    if effective_start is None:
+        return []
+
+    start_index = 0
+    for index, match in enumerate(matches):
+        if match.start() >= effective_start:
+            start_index = index
+            break
+
+    chunks: list[TextChunk] = []
+    chunk_start = matches[start_index].start()
+    chunk_end = matches[start_index].end()
+
+    for match in matches[start_index + 1:]:
+        candidate = text[chunk_start:match.end()].strip()
+        if candidate and len(candidate) > max_chars:
+            chunk_text_value = text[chunk_start:chunk_end].strip()
+            if chunk_text_value:
+                chunks.append(TextChunk(text=chunk_text_value, start=chunk_start, end=chunk_end))
+            chunk_start = match.start()
+        chunk_end = match.end()
+
+    chunk_text_value = text[chunk_start:chunk_end].strip()
+    if chunk_text_value:
+        chunks.append(TextChunk(text=chunk_text_value, start=chunk_start, end=chunk_end))
+    return chunks
+
+
+def output_format_for_path(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix not in SUPPORTED_OUTPUT_FORMATS:
+        allowed = ", ".join(SUPPORTED_OUTPUT_FORMATS)
+        raise ValueError(f"Unsupported output format '{suffix or '(none)'}'. Choose one of: {allowed}.")
+    return suffix[1:]
+
+
+def export_audio_segment(audio: AudioSegment, output_file: Path) -> None:
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_format = output_format_for_path(output_file)
+    export_kwargs: dict[str, object] = {"format": output_format}
+
+    if output_format in {"mp3", "ogg"}:
+        export_kwargs["bitrate"] = "192k"
+        export_kwargs["parameters"] = ["-ar", "44100"]
+    else:
+        export_kwargs["parameters"] = ["-ar", "44100"]
+
+    audio.export(output_file, **export_kwargs)
 
 
 @dataclass
@@ -240,15 +324,14 @@ class XTTSService:
         patched_load._coqui_xtts_patched = True
         torch_module.load = patched_load
 
-    def synthesize(self, request: SynthesisRequest) -> Path:
+    def iter_segments(self, request: SynthesisRequest, start_offset: int = 0):
         self.ensure_loaded()
         AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
-        chunks = chunk_text(request.text)
+        chunks = chunk_text_with_offsets(request.text, start_offset=start_offset)
         if not chunks:
             raise ValueError("Text is empty after cleanup.")
 
         self._log(f"Prepared {len(chunks)} chunk(s) for synthesis.")
-        combined = AudioSegment.silent(duration=0)
 
         kwargs = {"language": request.language}
         if request.speaker_wav:
@@ -260,7 +343,7 @@ class XTTSService:
 
         for index, chunk in enumerate(chunks, start=1):
             self._log(f"Synthesizing chunk {index}/{len(chunks)}")
-            wav = self._tts.tts(text=chunk, split_sentences=True, **kwargs)
+            wav = self._tts.tts(text=chunk.text, split_sentences=True, **kwargs)
             array = np.asarray(wav, dtype=np.float32)
             pcm = np.int16(np.clip(array, -1.0, 1.0) * 32767).tobytes()
             segment = AudioSegment(
@@ -269,18 +352,18 @@ class XTTSService:
                 frame_rate=self._sample_rate,
                 channels=1,
             )
+            yield chunk, segment
+
+    def synthesize(self, request: SynthesisRequest) -> Path:
+        chunks = list(self.iter_segments(request))
+        combined = AudioSegment.silent(duration=0)
+        for index, (_chunk, segment) in enumerate(chunks, start=1):
             combined += segment
             if index < len(chunks):
                 combined += AudioSegment.silent(duration=PAUSE_MS)
 
-        request.output_file.parent.mkdir(parents=True, exist_ok=True)
-        self._log(f"Exporting MP3 to {request.output_file}")
-        combined.export(
-            request.output_file,
-            format="mp3",
-            bitrate="192k",
-            parameters=["-ar", "44100"],
-        )
+        self._log(f"Exporting audio to {request.output_file}")
+        export_audio_segment(combined, request.output_file)
         self._log("Finished.")
         return request.output_file
 
@@ -314,40 +397,39 @@ class PiperService:
         self._log("Piper voice is ready.")
         return voice
 
-    def synthesize(self, request: SynthesisRequest) -> Path:
+    def iter_segments(self, request: SynthesisRequest, start_offset: int = 0):
         voice_code = request.piper_voice_code
         voice = self.ensure_loaded(voice_code)
         AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
-        chunks = chunk_text(request.text)
+        chunks = chunk_text_with_offsets(request.text, start_offset=start_offset)
         if not chunks:
             raise ValueError("Text is empty after cleanup.")
 
         self._log(f"Prepared {len(chunks)} chunk(s) for synthesis.")
         self._log(f"Voice source: Piper '{voice_code}'")
-        combined = AudioSegment.silent(duration=0)
 
         for index, chunk in enumerate(chunks, start=1):
             self._log(f"Synthesizing chunk {index}/{len(chunks)}")
-            for audio_chunk in voice.synthesize(chunk):
-                segment = AudioSegment(
+            segment = AudioSegment.silent(duration=0)
+            for audio_chunk in voice.synthesize(chunk.text):
+                segment += AudioSegment(
                     data=audio_chunk.audio_int16_bytes,
                     sample_width=audio_chunk.sample_width,
                     frame_rate=audio_chunk.sample_rate,
                     channels=audio_chunk.sample_channels,
                 )
-                combined += segment
+            yield chunk, segment
 
+    def synthesize(self, request: SynthesisRequest) -> Path:
+        chunks = list(self.iter_segments(request))
+        combined = AudioSegment.silent(duration=0)
+        for index, (_chunk, segment) in enumerate(chunks, start=1):
+            combined += segment
             if index < len(chunks):
                 combined += AudioSegment.silent(duration=PAUSE_MS)
 
-        request.output_file.parent.mkdir(parents=True, exist_ok=True)
-        self._log(f"Exporting MP3 to {request.output_file}")
-        combined.export(
-            request.output_file,
-            format="mp3",
-            bitrate="192k",
-            parameters=["-ar", "44100"],
-        )
+        self._log(f"Exporting audio to {request.output_file}")
+        export_audio_segment(combined, request.output_file)
         self._log("Finished.")
         return request.output_file
 
@@ -369,11 +451,20 @@ class SynthesisCoordinator:
             return self._piper.synthesize(request)
         return self._xtts.synthesize(request)
 
+    def iter_segments(self, request: SynthesisRequest, start_offset: int = 0):
+        resolved_engine = self.resolve_engine(request)
+        if resolved_engine == ENGINE_PIPER:
+            yield from self._piper.iter_segments(request, start_offset=start_offset)
+            return
+        yield from self._xtts.iter_segments(request, start_offset=start_offset)
+
 
 class AudioPlayer:
     def __init__(self, log: Callable[[str], None]) -> None:
         self._log = log
         self._ready = False
+        self._paused = False
+        self._active = False
 
     def ensure_ready(self) -> None:
         if self._ready:
@@ -393,15 +484,37 @@ class AudioPlayer:
         self.ensure_ready()
         import pygame
 
+        self._paused = False
+        self._active = True
         pygame.mixer.music.load(str(path))
         pygame.mixer.music.play()
         self._log(f"Playing audio: {path.name}")
+
+    def play_blocking(self, path: Path, stop_event: threading.Event) -> None:
+        self.play(path)
+        import pygame
+
+        try:
+            while True:
+                if stop_event.is_set():
+                    pygame.mixer.music.stop()
+                    return
+                if self._paused:
+                    time.sleep(0.05)
+                    continue
+                if not pygame.mixer.music.get_busy():
+                    return
+                time.sleep(0.05)
+        finally:
+            self._paused = False
+            self._active = False
 
     def pause(self) -> None:
         self.ensure_ready()
         import pygame
 
         pygame.mixer.music.pause()
+        self._paused = True
         self._log("Playback paused.")
 
     def resume(self) -> None:
@@ -409,6 +522,7 @@ class AudioPlayer:
         import pygame
 
         pygame.mixer.music.unpause()
+        self._paused = False
         self._log("Playback resumed.")
 
     def stop(self) -> None:
@@ -417,7 +531,12 @@ class AudioPlayer:
         import pygame
 
         pygame.mixer.music.stop()
+        self._paused = False
+        self._active = False
         self._log("Playback stopped.")
+
+    def is_active(self) -> bool:
+        return self._active
 
 
 class PiperVoiceWizard:
@@ -597,7 +716,7 @@ class PiperVoiceWizard:
 class App:
     def __init__(self, root: Tk) -> None:
         self.root = root
-        self.root.title("Local TTS MP3 Generator")
+        self.root.title("Local TTS Audio Generator")
         self.root.geometry("980x760")
         self.root.minsize(900, 650)
 
@@ -605,6 +724,8 @@ class App:
         self.service = SynthesisCoordinator(self.enqueue_log)
         self.worker: threading.Thread | None = None
         self.preview_worker: threading.Thread | None = None
+        self.preview_stop_event = threading.Event()
+        self.preview_job_id = 0
         self.player = AudioPlayer(self.enqueue_log)
         self.settings = load_app_settings()
         self.voice_wizard: PiperVoiceWizard | None = None
@@ -639,10 +760,10 @@ class App:
 
         header = ttk.Frame(main)
         header.pack(fill="x")
-        ttk.Label(header, text="Local TTS MP3 Generator", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(header, text="Local TTS Audio Generator", style="Header.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text="Hungarian and English text to MP3 with Piper and XTTS",
+            text="Hungarian and English text to MP3, OGG, or WAV with Piper and XTTS",
             style="Subtle.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
@@ -697,7 +818,7 @@ class App:
         self.speaker_wav_button = ttk.Button(controls, text="Browse", command=self.pick_reference_wav)
         self.speaker_wav_button.grid(row=2, column=4, sticky="e", pady=6)
 
-        ttk.Label(controls, text="Output MP3").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
+        ttk.Label(controls, text="Output file").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
         ttk.Entry(controls, textvariable=self.output_file).grid(row=3, column=1, columnspan=3, sticky="ew", pady=6)
         ttk.Button(controls, text="Save As", command=self.pick_output_file).grid(row=3, column=4, sticky="e", pady=6)
 
@@ -714,7 +835,7 @@ class App:
         ttk.Button(actions, text="Pause", command=self.pause_playback).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Resume", command=self.resume_playback).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Stop", command=self.stop_playback).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Generate MP3", command=self.start_generation).pack(side="right")
+        ttk.Button(actions, text="Generate Audio", command=self.start_generation).pack(side="right")
 
         ttk.Label(main, text="Text").pack(anchor="w")
         self.textbox = ttk.Frame(main)
@@ -732,6 +853,8 @@ class App:
         text_scroll = ttk.Scrollbar(self.textbox, orient="vertical", command=self.text.yview)
         text_scroll.pack(side="right", fill="y")
         self.text.configure(yscrollcommand=text_scroll.set)
+        self.text.tag_configure(READ_ALOUD_LINE_TAG, background="#fff3bf")
+        self.text.bind("<ButtonRelease-1>", self.on_text_click)
 
         log_frame = ttk.LabelFrame(main, text="Status", padding=10)
         log_frame.pack(fill="both", expand=False, pady=(8, 0))
@@ -814,9 +937,14 @@ class App:
 
     def pick_output_file(self) -> None:
         path = filedialog.asksaveasfilename(
-            title="Save output MP3",
+            title="Save output audio",
             defaultextension=".mp3",
-            filetypes=[("MP3 files", "*.mp3")],
+            filetypes=[
+                ("Audio files", "*.mp3 *.ogg *.wav"),
+                ("MP3 files", "*.mp3"),
+                ("OGG files", "*.ogg"),
+                ("WAV files", "*.wav"),
+            ],
             initialfile="speech.mp3",
         )
         if path:
@@ -839,18 +967,25 @@ class App:
         content = Path(path).read_text(encoding="utf-8")
         self.text.delete("1.0", END)
         self.text.insert("1.0", content)
+        self.clear_read_aloud_highlight()
         self.enqueue_log(f"Loaded text from {path}")
 
-    def collect_request(self) -> SynthesisRequest | None:
-        text = self.text.get("1.0", END).strip()
-        if not text:
+    def collect_request(self, require_output: bool = True) -> SynthesisRequest | None:
+        text = self.get_text_content()
+        if not text.strip():
             messagebox.showerror("Missing text", "Paste or load some text first.")
             return None
 
         output = self.output_file.get().strip()
-        if not output:
-            messagebox.showerror("Missing output", "Choose an output MP3 file.")
-            return None
+        if require_output:
+            if not output:
+                messagebox.showerror("Missing output", "Choose an output audio file.")
+                return None
+            try:
+                output_format_for_path(Path(output))
+            except ValueError as exc:
+                messagebox.showerror("Invalid output format", str(exc))
+                return None
 
         speaker_wav = self.speaker_wav.get().strip()
         if speaker_wav and not Path(speaker_wav).exists():
@@ -860,7 +995,7 @@ class App:
         return SynthesisRequest(
             text=text,
             language=self.language.get().strip() or "hu",
-            output_file=Path(output),
+            output_file=Path(output or PREVIEW_OUTPUT_PATH),
             engine=self.engine.get().strip() or ENGINE_AUTO,
             piper_voice_label=self.piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL,
             piper_voice_code=(self.piper_voice_options.get(
@@ -876,7 +1011,7 @@ class App:
             messagebox.showinfo("Busy", "Generation is already running.")
             return
 
-        request = self.collect_request()
+        request = self.collect_request(require_output=True)
         if request is None:
             return
 
@@ -889,32 +1024,62 @@ class App:
 
     def start_read_aloud(self) -> None:
         if self.worker and self.worker.is_alive():
-            messagebox.showinfo("Busy", "MP3 generation is already running.")
-            return
-        if self.preview_worker and self.preview_worker.is_alive():
-            messagebox.showinfo("Busy", "Read aloud preparation is already running.")
+            messagebox.showinfo("Busy", "Audio generation is already running.")
             return
 
-        request = self.collect_request()
+        request = self.collect_request(require_output=False)
         if request is None:
             return
 
-        request.output_file = PREVIEW_OUTPUT_PATH.resolve()
+        start_offset = self.get_read_aloud_start_offset()
+        if start_offset is None:
+            messagebox.showinfo("No speech content", "Click a word with actual text or enter some text first.")
+            return
+
         if self.service.resolve_engine(request) == ENGINE_XTTS and not self.ensure_xtts_license_acceptance():
             return
 
+        self.preview_job_id += 1
+        self.preview_stop_event.set()
+        self.player.stop()
+        self.preview_stop_event = threading.Event()
+        job_id = self.preview_job_id
         self.enqueue_log("Preparing read aloud preview.")
-        self.preview_worker = threading.Thread(target=self.run_read_aloud, args=(request,), daemon=True)
+        self.preview_worker = threading.Thread(
+            target=self.run_read_aloud,
+            args=(request, start_offset, job_id, self.preview_stop_event),
+            daemon=True,
+        )
         self.preview_worker.start()
 
-    def run_read_aloud(self, request: SynthesisRequest) -> None:
+    def run_read_aloud(
+        self,
+        request: SynthesisRequest,
+        start_offset: int,
+        job_id: int,
+        stop_event: threading.Event,
+    ) -> None:
         try:
-            result = self.service.synthesize(request)
-            self.player.play(result)
+            preview_dir = PREVIEW_OUTPUT_PATH.resolve().parent
+            for index, (chunk, segment) in enumerate(self.service.iter_segments(request, start_offset=start_offset), start=1):
+                if stop_event.is_set() or job_id != self.preview_job_id:
+                    break
+
+                self.root.after(0, lambda offset=chunk.start: self.highlight_read_aloud_line(offset))
+                preview_path = preview_dir / f"read-aloud-preview-{job_id}-{index}.wav"
+                export_audio_segment(segment, preview_path)
+                try:
+                    self.player.play_blocking(preview_path, stop_event)
+                finally:
+                    if preview_path.exists():
+                        preview_path.unlink(missing_ok=True)
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
             error_message = str(exc)
             self.root.after(0, lambda message=error_message: messagebox.showerror("Read aloud failed", message))
+        finally:
+            if job_id == self.preview_job_id:
+                self.root.after(0, self.clear_read_aloud_highlight)
 
     def pause_playback(self) -> None:
         try:
@@ -930,9 +1095,51 @@ class App:
 
     def stop_playback(self) -> None:
         try:
+            self.preview_stop_event.set()
             self.player.stop()
+            self.clear_read_aloud_highlight()
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
+
+    def get_text_content(self) -> str:
+        return self.text.get("1.0", "end-1c")
+
+    def text_index_to_offset(self, index: str) -> int:
+        return int(self.text.count("1.0", index, "chars")[0])
+
+    def offset_to_text_index(self, offset: int) -> str:
+        return f"1.0 + {offset} chars"
+
+    def get_read_aloud_start_offset(self, widget_index: str | None = None) -> int | None:
+        content = self.get_text_content()
+        if not content.strip():
+            return None
+
+        index = widget_index or self.text.index("insert")
+        offset = self.text_index_to_offset(index)
+        return find_word_start_offset(content, offset)
+
+    def clear_read_aloud_highlight(self) -> None:
+        self.text.tag_remove(READ_ALOUD_LINE_TAG, "1.0", END)
+
+    def highlight_read_aloud_line(self, offset: int) -> None:
+        target_index = self.offset_to_text_index(offset)
+        line_start = self.text.index(f"{target_index} linestart")
+        line_end = self.text.index(f"{target_index} lineend +1c")
+        self.clear_read_aloud_highlight()
+        self.text.tag_add(READ_ALOUD_LINE_TAG, line_start, line_end)
+        self.text.mark_set("insert", target_index)
+        self.text.see(target_index)
+
+    def on_text_click(self, event) -> None:
+        index = self.text.index(f"@{event.x},{event.y}")
+        start_offset = self.get_read_aloud_start_offset(index)
+        if start_offset is None:
+            return
+
+        self.highlight_read_aloud_line(start_offset)
+        if self.preview_worker and self.preview_worker.is_alive():
+            self.root.after(0, self.start_read_aloud)
 
     def ensure_xtts_license_acceptance(self) -> bool:
         if os.environ.get("COQUI_TOS_AGREED") == "1":
@@ -963,10 +1170,10 @@ class App:
             self.root.after(0, lambda message=error_message: messagebox.showerror("Generation failed", message))
             return
 
-        self.enqueue_log(f"Saved MP3: {result}")
+        self.enqueue_log(f"Saved audio: {result}")
         self.root.after(
             0,
-            lambda: messagebox.showinfo("Done", f"MP3 created:\n{result}"),
+            lambda: messagebox.showinfo("Done", f"Audio created:\n{result}"),
         )
 
 

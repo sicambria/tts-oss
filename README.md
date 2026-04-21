@@ -1,6 +1,6 @@
 # Local TTS MP3 GUI
 
-Small cross-platform desktop app for generating MP3 files from long Hungarian and English texts with local TTS engines.
+Small cross-platform desktop app for generating MP3, OGG, or WAV files from long Hungarian and English texts with local TTS engines.
 
 This is a local desktop GUI built with `tkinter`. It does not expose a browser UI or `localhost` web server.
 
@@ -12,7 +12,7 @@ This is a local desktop GUI built with `tkinter`. It does not expose a browser U
 - Uses `tts_models/multilingual/multi-dataset/xtts_v2` for XTTS
 - Supports `hu` and `en`
 - Accepts long text and splits it into smaller chunks before synthesis
-- Exports a single MP3 file
+- Exports a single MP3, OGG, or WAV file
 - Lets you use either:
   - a built-in XTTS speaker name such as `Ana Florence`
   - a reference voice file for cloning
@@ -90,7 +90,9 @@ This opens a native desktop window on the same machine.
 
 - `Engine = Auto` prefers Piper for normal local synthesis and switches to XTTS if you provide a `Reference WAV`.
 - The `Piper voice` dropdown lets you choose between Hungarian, U.S. English, and British English Piper voices.
-- `Read Aloud` synthesizes the current textbox content to a temporary audio file and plays it locally.
+- `Read Aloud` starts from the currently selected word or cursor position and plays through to the end.
+- The current read-aloud line is highlighted in the editor while playback advances.
+- Clicking a word during read aloud restarts playback from that word to the end.
 - `Pause`, `Resume`, and `Stop` control local playback for the current read-aloud preview.
 - `Voice Wizard` loads the official Piper voice catalog, lets you download additional voice models, and can set a default Piper voice for the app.
 - `XTTS v2` is the option that supports built-in speaker selection and reference voice cloning.
@@ -99,7 +101,7 @@ This opens a native desktop window on the same machine.
 - The first synthesis run is slow because XTTS downloads and loads the model.
 - The first XTTS download requires license confirmation for Coqui's CPML or a commercial license.
 - Long text is chunked conservatively to reduce failures on very large inputs.
-- Output is written as `192k` MP3.
+- MP3 and OGG exports are written at `192k`. WAV export is uncompressed.
 
 ## Troubleshooting
 
