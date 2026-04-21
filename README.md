@@ -27,7 +27,7 @@ This is a local desktop GUI built with `tkinter`. It does not expose a browser U
 
 Platform notes:
 
-- Windows: use `setup.ps1` and `run.ps1`
+- Windows: use `install.bat` for one-step setup, or `setup.ps1` and `run.ps1` directly
 - Linux or macOS: use `setup.sh` and `run.sh`
 - Linux may require system packages such as `python3-tk` and audio libraries supported by SDL
 
@@ -39,6 +39,12 @@ Coqui TTS currently documents Python `>=3.9, <3.12` for installation:
 ## Setup
 
 CPU setup on Windows:
+
+```bat
+install.bat
+```
+
+or:
 
 ```powershell
 .\setup.ps1
