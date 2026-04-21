@@ -215,7 +215,7 @@ class XTTSService:
             from TTS.api import TTS
         except Exception as exc:  # pragma: no cover - import path varies by machine
             raise RuntimeError(
-                "Coqui TTS is not installed in this environment. Run .\\setup.ps1 first."
+                "Coqui TTS is not installed in this environment. Run the setup script first (`.\\setup.ps1` on Windows or `./setup.sh` on Linux/macOS)."
             ) from exc
 
         self._patch_torch_load(torch)
@@ -298,7 +298,7 @@ class PiperService:
         model_path = piper_model_path(voice_code)
         if not model_path.exists():
             raise RuntimeError(
-                f"Piper voice '{voice_code}' is missing. Run .\\setup.ps1 to download it."
+                f"Piper voice '{voice_code}' is missing. Run the setup script to download it (`.\\setup.ps1` on Windows or `./setup.sh` on Linux/macOS)."
             )
 
         self._log(f"Loading Piper voice '{voice_code}'.")
@@ -306,7 +306,7 @@ class PiperService:
             from piper.voice import PiperVoice
         except Exception as exc:
             raise RuntimeError(
-                "Piper is not installed in this environment. Run .\\setup.ps1 first."
+                "Piper is not installed in this environment. Run the setup script first (`.\\setup.ps1` on Windows or `./setup.sh` on Linux/macOS)."
             ) from exc
 
         voice = PiperVoice.load(model_path, download_dir=PIPER_VOICE_DIR)
@@ -381,7 +381,9 @@ class AudioPlayer:
         try:
             import pygame
         except Exception as exc:
-            raise RuntimeError("pygame is not installed. Run .\\setup.ps1 first.") from exc
+            raise RuntimeError(
+                "pygame is not installed. Run the setup script first (`.\\setup.ps1` on Windows or `./setup.sh` on Linux/macOS)."
+            ) from exc
 
         if not pygame.mixer.get_init():
             pygame.mixer.init()

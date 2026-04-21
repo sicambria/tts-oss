@@ -4,19 +4,19 @@ This file records issues and learnings discovered during development so they do 
 
 ## Confirmed behavior
 
-- The GUI is a native Windows desktop app built with `tkinter`.
+- The GUI is a native desktop app built with `tkinter`.
 - There is no HTTP server, `localhost` endpoint, or browser-based UI in this repo.
-- `.\run.ps1` launches the GUI window directly by running `app.py`.
+- `run.ps1` on Windows and `run.sh` on Linux/macOS launch the GUI directly by running `app.py`.
 - `Auto` prefers Piper for standard local synthesis.
 - If a `Reference WAV` is provided, `Auto` resolves to XTTS because Piper does not do voice cloning in this app.
 - The integrated Piper voices are `hu_HU-anna-medium`, `en_US-lessac-medium`, and `en_GB-alan-medium`.
-- Additional Piper voices can be downloaded from the in-app wizard and stored under `voices\piper`.
+- Additional Piper voices can be downloaded from the in-app wizard and stored under `voices/piper`.
 
 ## Known issues
 
-- `setup.ps1` hardcodes Python to `C:\Python311\python.exe`.
-- Impact: setup fails on machines where Python 3.11 is installed in a different location.
-- Workaround: edit `setup.ps1` or install Python 3.11 at that path.
+- Linux support depends on system packages outside Python.
+- Impact: setup may succeed but the GUI or audio playback can still fail if `tkinter` or SDL-related audio libraries are missing.
+- Workaround: install platform packages such as `python3-tk` and the audio stack required by `pygame`.
 
 - First-run XTTS startup is slow.
 - Impact: the application may appear idle while model files are downloaded and the model is loaded.
@@ -41,7 +41,7 @@ This file records issues and learnings discovered during development so they do 
 ## Learnings
 
 - Confirm GUI type from code before assuming a web address. In this repo, `Tk()` in `app.py` is definitive.
-- Prefer reading the launcher script before answering how to run the app. `run.ps1` shows the real entrypoint.
+- Prefer reading the launcher script before answering how to run the app. `run.ps1` and `run.sh` show the real entrypoint.
 - Search the repo source, not the virtual environment. Installed package results are usually irrelevant here.
 - Document environment assumptions explicitly in setup scripts and README files. Hidden machine-specific assumptions cost time later.
 - Prefer an `Auto` backend mode when one engine is clearly better for a specific language or workflow. It keeps the default behavior simple while preserving manual override.

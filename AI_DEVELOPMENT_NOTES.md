@@ -5,19 +5,19 @@ This file is for future AI-assisted development in this repo.
 ## Fast repo orientation
 
 1. Read `README.md`.
-2. Read `run.ps1` and `setup.ps1`.
+2. Read the launcher scripts: `run.ps1`, `run.sh`, `setup.ps1`, and `setup.sh`.
 3. Read `app.py`.
 4. Check `KNOWN_ISSUES.md` before changing setup or runtime behavior.
 
 ## Repo-specific assumptions
 
-- This is a Windows-only desktop application.
+- This is a desktop application intended to run on Windows, Linux, and macOS.
 - The GUI is `tkinter`, not a web framework.
 - The main app entrypoint is `app.py`.
-- The standard launcher is `.\run.ps1`.
+- The standard launchers are `.\run.ps1` on Windows and `./run.sh` on Linux/macOS.
 - The integrated Piper voices are `hu_HU-anna-medium`, `en_US-lessac-medium`, and `en_GB-alan-medium`.
 - `Auto` prefers Piper unless the request uses XTTS-only functionality such as reference voice cloning.
-- Additional Piper voices can be added from the in-app wizard and are discovered from `voices\piper` at startup.
+- Additional Piper voices can be added from the in-app wizard and are discovered from `voices/piper` at startup.
 
 ## Search discipline
 

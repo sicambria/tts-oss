@@ -1,6 +1,6 @@
 # Local TTS MP3 GUI
 
-Small Windows desktop app for generating MP3 files from long Hungarian and English texts with local TTS engines.
+Small cross-platform desktop app for generating MP3 files from long Hungarian and English texts with local TTS engines.
 
 This is a local desktop GUI built with `tkinter`. It does not expose a browser UI or `localhost` web server.
 
@@ -19,10 +19,17 @@ This is a local desktop GUI built with `tkinter`. It does not expose a browser U
 
 ## Requirements
 
-- Windows
 - Python 3.11
 - Enough disk space for the XTTS model download
 - CPU works, but GPU is much faster if you have a compatible PyTorch install
+- `tkinter` support in your Python install
+- A working local audio output device for `pygame` playback
+
+Platform notes:
+
+- Windows: use `setup.ps1` and `run.ps1`
+- Linux or macOS: use `setup.sh` and `run.sh`
+- Linux may require system packages such as `python3-tk` and audio libraries supported by SDL
 
 Coqui TTS currently documents Python `>=3.9, <3.12` for installation:
 
@@ -31,10 +38,16 @@ Coqui TTS currently documents Python `>=3.9, <3.12` for installation:
 
 ## Setup
 
-CPU setup:
+CPU setup on Windows:
 
 ```powershell
 .\setup.ps1
+```
+
+CPU setup on Linux or macOS:
+
+```bash
+./setup.sh
 ```
 
 This installs Python dependencies and downloads the Piper voice files for:
@@ -43,21 +56,35 @@ This installs Python dependencies and downloads the Piper voice files for:
 - `en_US-lessac-medium`
 - `en_GB-alan-medium`
 
-All Piper voice files are stored in `voices\piper`.
+All Piper voice files are stored in `voices/piper`.
 
-CUDA 12.1 setup:
+CUDA 12.1 setup on Windows:
 
 ```powershell
 .\setup.ps1 -TorchChannel cu121
 ```
 
+CUDA 12.1 setup on Linux or macOS:
+
+```bash
+./setup.sh cu121
+```
+
 ## Run
+
+Windows:
 
 ```powershell
 .\run.ps1
 ```
 
-This opens a native Windows window on the same machine.
+Linux or macOS:
+
+```bash
+./run.sh
+```
+
+This opens a native desktop window on the same machine.
 
 ## Usage notes
 
@@ -77,10 +104,10 @@ This opens a native Windows window on the same machine.
 ## Troubleshooting
 
 - If you are looking for a web address, there is none. The GUI is a desktop window, not a browser app.
-- `setup.ps1` currently expects Python 3.11 at `C:\Python311\python.exe`. If your Python installation lives elsewhere, update the script or install Python there.
+- If Python 3.11 is not available on your `PATH`, setup will fail until you install it or expose it through your shell.
 - If fast local output is the goal, prefer `Engine = Auto` or `Engine = Piper`.
-- If Piper fails to start, rerun `.\setup.ps1` to ensure `piper-tts` and the files under `voices\piper` are present.
-- If playback controls do nothing, check that Windows audio output is available and that `pygame` installed successfully during setup.
+- If Piper fails to start, rerun the setup script for your platform to ensure `piper-tts` and the files under `voices/piper` are present.
+- If playback controls do nothing, check that local audio output is available and that `pygame` installed successfully during setup.
 - The first successful synthesis can take a long time because XTTS downloads model files and initializes the runtime.
 - The first XTTS download requires license confirmation. The app prompts for this when synthesis starts.
 - Repo-wide text search should exclude `.venv`, `output`, and `__pycache__`. A repo-level `.rgignore` file is included for that purpose.

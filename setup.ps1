@@ -6,16 +6,24 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Python = "C:\Python311\python.exe"
+$PythonCommand = Get-Command python -ErrorAction SilentlyContinue
+if (-not $PythonCommand) {
+    $PythonCommand = Get-Command py -ErrorAction SilentlyContinue
+}
 
-if (-not (Test-Path $Python)) {
-    throw "Python 3.11 was not found at $Python. Install Python 3.11 and rerun this script."
+if (-not $PythonCommand) {
+    throw "Python 3.11 was not found on PATH. Install Python 3.11 and rerun this script."
 }
 
 Push-Location $Root
 try {
     if (-not (Test-Path ".venv")) {
-        & $Python -m venv .venv
+        if ($PythonCommand.Name -eq "py.exe" -or $PythonCommand.Name -eq "py") {
+            & $PythonCommand.Source -3.11 -m venv .venv
+        }
+        else {
+            & $PythonCommand.Source -m venv .venv
+        }
     }
 
     $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
