@@ -1,6 +1,6 @@
 # Local TTS MP3 GUI
 
-Small cross-platform desktop app for generating MP3, OGG, or WAV files from long Hungarian and English texts with local TTS engines.
+Small cross-platform desktop app for generating MP3, OGG, or WAV files from text using local Piper and XTTS voices across many languages.
 
 This is a local desktop GUI built with `tkinter`. It does not expose a browser UI or `localhost` web server.
 
@@ -96,7 +96,7 @@ This opens a native desktop window on the same machine.
 
 - `Engine = Auto` prefers Piper for normal local synthesis and switches to XTTS if you provide a `Reference WAV`.
 - The `Piper voice` dropdown lets you choose between Hungarian, U.S. English, and British English Piper voices.
-- `Read Aloud` starts from the currently selected word or cursor position and plays through to the end.
+- `Read Aloud` starts from the selected text if there is a selection; otherwise it starts from the beginning.
 - The current read-aloud line is highlighted in the editor while playback advances.
 - Clicking a word during read aloud restarts playback from that word to the end.
 - `Pause`, `Resume`, and `Stop` control local playback for the current read-aloud preview.

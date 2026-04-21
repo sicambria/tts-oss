@@ -57,6 +57,7 @@ SUPPORTED_OUTPUT_FORMATS = {
     ".ogg": "OGG",
     ".wav": "WAV",
 }
+PREVIEW_FILE_GLOB = "read-aloud-preview-*.wav"
 SURFACE_BG = "#f4f6fb"
 CARD_BG = "#ffffff"
 ACCENT = "#2563eb"
@@ -517,6 +518,8 @@ class AudioPlayer:
             self._active = False
 
     def pause(self) -> None:
+        if not self._active:
+            return
         self.ensure_ready()
         import pygame
 
@@ -525,6 +528,8 @@ class AudioPlayer:
         self._log("Playback paused.")
 
     def resume(self) -> None:
+        if not self._active:
+            return
         self.ensure_ready()
         import pygame
 
@@ -532,15 +537,17 @@ class AudioPlayer:
         self._paused = False
         self._log("Playback resumed.")
 
-    def stop(self) -> None:
+    def stop(self, quiet: bool = False) -> None:
         if not self._ready:
             return
         import pygame
 
+        was_active = self._active
         pygame.mixer.music.stop()
         self._paused = False
         self._active = False
-        self._log("Playback stopped.")
+        if was_active and not quiet:
+            self._log("Playback stopped.")
 
     def is_active(self) -> bool:
         return self._active
@@ -819,7 +826,7 @@ class App:
         ttk.Label(header_text, text="Local TTS Audio Generator", style="Header.TLabel").pack(anchor="w")
         ttk.Label(
             header_text,
-            text="Hungarian and English text to MP3, OGG, or WAV with fast local voice controls.",
+            text="Local Piper and XTTS voices for many languages, with MP3, OGG, and WAV export.",
             style="Subtle.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
@@ -1105,7 +1112,7 @@ class App:
 
         start_offset = self.get_read_aloud_start_offset()
         if start_offset is None:
-            messagebox.showinfo("No speech content", "Click a word with actual text or enter some text first.")
+            messagebox.showinfo("No speech content", "Enter some text first.")
             return
 
         if self.service.resolve_engine(request) == ENGINE_XTTS and not self.ensure_xtts_license_acceptance():
@@ -1113,7 +1120,8 @@ class App:
 
         self.preview_job_id += 1
         self.preview_stop_event.set()
-        self.player.stop()
+        self.player.stop(quiet=True)
+        self.cleanup_preview_files()
         self.preview_stop_event = threading.Event()
         job_id = self.preview_job_id
         self.enqueue_log("Preparing read aloud preview.")
@@ -1131,6 +1139,7 @@ class App:
         job_id: int,
         stop_event: threading.Event,
     ) -> None:
+        preview_paths: list[Path] = []
         try:
             preview_dir = PREVIEW_OUTPUT_PATH.resolve().parent
             for index, (chunk, segment) in enumerate(self.service.iter_segments(request, start_offset=start_offset), start=1):
@@ -1139,17 +1148,16 @@ class App:
 
                 self.root.after(0, lambda offset=chunk.start: self.highlight_read_aloud_line(offset))
                 preview_path = preview_dir / f"read-aloud-preview-{job_id}-{index}.wav"
+                preview_paths.append(preview_path)
                 export_audio_segment(segment, preview_path)
-                try:
-                    self.player.play_blocking(preview_path, stop_event)
-                finally:
-                    if preview_path.exists():
-                        preview_path.unlink(missing_ok=True)
+                self.player.play_blocking(preview_path, stop_event)
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
             error_message = str(exc)
             self.root.after(0, lambda message=error_message: messagebox.showerror("Read aloud failed", message))
         finally:
+            if preview_paths:
+                self.root.after(750, lambda paths=tuple(preview_paths): self.cleanup_preview_files(paths))
             if job_id == self.preview_job_id:
                 self.root.after(0, self.clear_read_aloud_highlight)
 
@@ -1187,9 +1195,30 @@ class App:
         if not content.strip():
             return None
 
-        index = widget_index or self.text.index("insert")
+        if widget_index is None:
+            if self.text.tag_ranges("sel"):
+                index = self.text.index("sel.first")
+            else:
+                return find_word_start_offset(content, 0)
+        else:
+            index = widget_index
         offset = self.text_index_to_offset(index)
         return find_word_start_offset(content, offset)
+
+    def cleanup_preview_files(self, paths: tuple[Path, ...] | list[Path] | None = None, retries: int = 5) -> None:
+        candidates = list(paths) if paths is not None else list(PREVIEW_OUTPUT_PATH.resolve().parent.glob(PREVIEW_FILE_GLOB))
+        if not candidates:
+            return
+
+        locked: list[Path] = []
+        for path in candidates:
+            try:
+                path.unlink(missing_ok=True)
+            except PermissionError:
+                locked.append(path)
+
+        if locked and retries > 0:
+            self.root.after(400, lambda pending=tuple(locked), remaining=retries - 1: self.cleanup_preview_files(pending, remaining))
 
     def clear_read_aloud_highlight(self) -> None:
         self.text.tag_remove(READ_ALOUD_LINE_TAG, "1.0", END)
@@ -1204,6 +1233,9 @@ class App:
         self.text.see(target_index)
 
     def on_text_click(self, event) -> None:
+        if not (self.preview_worker and self.preview_worker.is_alive()):
+            return
+
         index = self.text.index(f"@{event.x},{event.y}")
         start_offset = self.get_read_aloud_start_offset(index)
         if start_offset is None:
