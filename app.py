@@ -24,6 +24,25 @@ from tkinter import ttk
 
 MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
 DEFAULT_SPEAKER = "Ana Florence"
+ENGINE_AUTO = "Auto"
+ENGINE_PIPER = "Piper"
+ENGINE_XTTS = "XTTS v2"
+PIPER_VOICE_DIR = Path.cwd() / "voices" / "piper"
+PIPER_VOICE_OPTIONS = {
+    "Hungarian | Anna | medium": {
+        "code": "hu_HU-anna-medium",
+        "xtts_language": "hu",
+    },
+    "English US | Lessac | medium": {
+        "code": "en_US-lessac-medium",
+        "xtts_language": "en",
+    },
+    "English GB | Alan | medium": {
+        "code": "en_GB-alan-medium",
+        "xtts_language": "en",
+    },
+}
+DEFAULT_PIPER_VOICE_LABEL = "Hungarian | Anna | medium"
 PAUSE_MS = 300
 MAX_CHARS_PER_CHUNK = 280
 
@@ -95,8 +114,21 @@ class SynthesisRequest:
     text: str
     language: str
     output_file: Path
+    engine: str
+    piper_voice_label: str
     speaker_name: str
     speaker_wav: str
+
+
+def get_piper_voice_metadata(label: str) -> dict[str, str]:
+    metadata = PIPER_VOICE_OPTIONS.get(label)
+    if metadata is None:
+        return PIPER_VOICE_OPTIONS[DEFAULT_PIPER_VOICE_LABEL]
+    return metadata
+
+
+def piper_model_path(voice_code: str) -> Path:
+    return PIPER_VOICE_DIR / f"{voice_code}.onnx"
 
 
 class XTTSService:
@@ -184,24 +216,116 @@ class XTTSService:
         return request.output_file
 
 
+class PiperService:
+    def __init__(self, log: Callable[[str], None]) -> None:
+        self._log = log
+        self._voices: dict[str, object] = {}
+
+    def ensure_loaded(self, voice_code: str):
+        voice = self._voices.get(voice_code)
+        if voice is not None:
+            return voice
+
+        model_path = piper_model_path(voice_code)
+        if not model_path.exists():
+            raise RuntimeError(
+                f"Piper voice '{voice_code}' is missing. Run .\\setup.ps1 to download it."
+            )
+
+        self._log(f"Loading Piper voice '{voice_code}'.")
+        try:
+            from piper.voice import PiperVoice
+        except Exception as exc:
+            raise RuntimeError(
+                "Piper is not installed in this environment. Run .\\setup.ps1 first."
+            ) from exc
+
+        voice = PiperVoice.load(model_path, download_dir=PIPER_VOICE_DIR)
+        self._voices[voice_code] = voice
+        self._log("Piper voice is ready.")
+        return voice
+
+    def synthesize(self, request: SynthesisRequest) -> Path:
+        voice_metadata = get_piper_voice_metadata(request.piper_voice_label)
+        voice_code = voice_metadata["code"]
+        voice = self.ensure_loaded(voice_code)
+        AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
+        chunks = chunk_text(request.text)
+        if not chunks:
+            raise ValueError("Text is empty after cleanup.")
+
+        self._log(f"Prepared {len(chunks)} chunk(s) for synthesis.")
+        self._log(f"Voice source: Piper '{voice_code}'")
+        combined = AudioSegment.silent(duration=0)
+
+        for index, chunk in enumerate(chunks, start=1):
+            self._log(f"Synthesizing chunk {index}/{len(chunks)}")
+            for audio_chunk in voice.synthesize(chunk):
+                segment = AudioSegment(
+                    data=audio_chunk.audio_int16_bytes,
+                    sample_width=audio_chunk.sample_width,
+                    frame_rate=audio_chunk.sample_rate,
+                    channels=audio_chunk.sample_channels,
+                )
+                combined += segment
+
+            if index < len(chunks):
+                combined += AudioSegment.silent(duration=PAUSE_MS)
+
+        request.output_file.parent.mkdir(parents=True, exist_ok=True)
+        self._log(f"Exporting MP3 to {request.output_file}")
+        combined.export(
+            request.output_file,
+            format="mp3",
+            bitrate="192k",
+            parameters=["-ar", "44100"],
+        )
+        self._log("Finished.")
+        return request.output_file
+
+
+class SynthesisCoordinator:
+    def __init__(self, log: Callable[[str], None]) -> None:
+        self._xtts = XTTSService(log)
+        self._piper = PiperService(log)
+
+    @staticmethod
+    def resolve_engine(request: SynthesisRequest) -> str:
+        if request.engine == ENGINE_AUTO:
+            return ENGINE_XTTS if request.speaker_wav else ENGINE_PIPER
+        return request.engine
+
+    def synthesize(self, request: SynthesisRequest) -> Path:
+        resolved_engine = self.resolve_engine(request)
+        if resolved_engine == ENGINE_PIPER:
+            return self._piper.synthesize(request)
+        return self._xtts.synthesize(request)
+
+
 class App:
     def __init__(self, root: Tk) -> None:
         self.root = root
-        self.root.title("Coqui XTTS MP3 Generator")
+        self.root.title("Local TTS MP3 Generator")
         self.root.geometry("980x760")
         self.root.minsize(900, 650)
 
         self.log_queue: queue.Queue[str] = queue.Queue()
-        self.service = XTTSService(self.enqueue_log)
+        self.service = SynthesisCoordinator(self.enqueue_log)
         self.worker: threading.Thread | None = None
 
         self.language = StringVar(value="hu")
+        self.engine = StringVar(value=ENGINE_AUTO)
+        self.piper_voice_label = StringVar(value=DEFAULT_PIPER_VOICE_LABEL)
         self.speaker_name = StringVar(value=DEFAULT_SPEAKER)
         self.speaker_wav = StringVar()
         self.output_file = StringVar(value=str((Path.cwd() / "output" / "speech.mp3").resolve()))
         self.status = StringVar(value="Ready")
 
         self._build_ui()
+        self.language.trace_add("write", self.on_voice_settings_changed)
+        self.engine.trace_add("write", self.on_voice_settings_changed)
+        self.piper_voice_label.trace_add("write", self.on_voice_settings_changed)
+        self.on_voice_settings_changed()
         self.root.after(150, self.flush_logs)
 
     def _build_ui(self) -> None:
@@ -215,10 +339,10 @@ class App:
 
         header = ttk.Frame(main)
         header.pack(fill="x")
-        ttk.Label(header, text="Coqui XTTS MP3 Generator", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(header, text="Local TTS MP3 Generator", style="Header.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text="Long English and Hungarian text to MP3 with XTTS v2",
+            text="Hungarian and English text to MP3 with Piper and XTTS",
             style="Subtle.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
@@ -228,29 +352,59 @@ class App:
         controls.columnconfigure(3, weight=1)
 
         ttk.Label(controls, text="Language").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=6)
-        lang_box = ttk.Combobox(
+        self.lang_box = ttk.Combobox(
             controls,
             textvariable=self.language,
             values=["hu", "en"],
             state="readonly",
             width=12,
         )
-        lang_box.grid(row=0, column=1, sticky="w", pady=6)
+        self.lang_box.grid(row=0, column=1, sticky="w", pady=6)
+
+        ttk.Label(controls, text="Engine").grid(row=0, column=2, sticky="w", padx=(18, 10), pady=6)
+        self.engine_box = ttk.Combobox(
+            controls,
+            textvariable=self.engine,
+            values=[ENGINE_AUTO, ENGINE_PIPER, ENGINE_XTTS],
+            state="readonly",
+            width=18,
+        )
+        self.engine_box.grid(row=0, column=3, sticky="w", pady=6)
 
         ttk.Label(controls, text="Built-in speaker").grid(
-            row=0, column=2, sticky="w", padx=(18, 10), pady=6
-        )
-        ttk.Entry(controls, textvariable=self.speaker_name).grid(row=0, column=3, sticky="ew", pady=6)
-
-        ttk.Label(controls, text="Reference WAV").grid(
             row=1, column=0, sticky="w", padx=(0, 10), pady=6
         )
-        ttk.Entry(controls, textvariable=self.speaker_wav).grid(row=1, column=1, columnspan=2, sticky="ew", pady=6)
-        ttk.Button(controls, text="Browse", command=self.pick_reference_wav).grid(row=1, column=3, sticky="e", pady=6)
+        self.speaker_name_entry = ttk.Entry(controls, textvariable=self.speaker_name)
+        self.speaker_name_entry.grid(row=1, column=1, sticky="ew", pady=6)
 
-        ttk.Label(controls, text="Output MP3").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=6)
-        ttk.Entry(controls, textvariable=self.output_file).grid(row=2, column=1, columnspan=2, sticky="ew", pady=6)
-        ttk.Button(controls, text="Save As", command=self.pick_output_file).grid(row=2, column=3, sticky="e", pady=6)
+        ttk.Label(controls, text="Piper voice").grid(
+            row=1, column=2, sticky="w", padx=(18, 10), pady=6
+        )
+        self.piper_voice_box = ttk.Combobox(
+            controls,
+            textvariable=self.piper_voice_label,
+            values=list(PIPER_VOICE_OPTIONS.keys()),
+            state="readonly",
+            width=28,
+        )
+        self.piper_voice_box.grid(row=1, column=3, columnspan=2, sticky="ew", pady=6)
+
+        ttk.Label(controls, text="Reference WAV").grid(
+            row=2, column=0, sticky="w", padx=(0, 10), pady=6
+        )
+        self.speaker_wav_entry = ttk.Entry(controls, textvariable=self.speaker_wav)
+        self.speaker_wav_entry.grid(row=2, column=1, columnspan=3, sticky="ew", pady=6)
+        self.speaker_wav_button = ttk.Button(controls, text="Browse", command=self.pick_reference_wav)
+        self.speaker_wav_button.grid(row=2, column=4, sticky="e", pady=6)
+
+        ttk.Label(controls, text="Output MP3").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
+        ttk.Entry(controls, textvariable=self.output_file).grid(row=3, column=1, columnspan=3, sticky="ew", pady=6)
+        ttk.Button(controls, text="Save As", command=self.pick_output_file).grid(row=3, column=4, sticky="e", pady=6)
+
+        self.engine_hint = StringVar(value="")
+        ttk.Label(controls, textvariable=self.engine_hint, style="Subtle.TLabel").grid(
+            row=4, column=0, columnspan=5, sticky="w", pady=(4, 0)
+        )
 
         actions = ttk.Frame(main)
         actions.pack(fill="x", pady=(0, 8))
@@ -280,6 +434,34 @@ class App:
         self.log = Text(log_frame, height=10, wrap="word", font=("Consolas", 10))
         self.log.pack(fill="both", expand=True, pady=(8, 0))
         self.log.configure(state="disabled")
+
+    def resolved_engine(self) -> str:
+        if self.engine.get() == ENGINE_AUTO:
+            return ENGINE_XTTS if self.speaker_wav.get().strip() else ENGINE_PIPER
+        return self.engine.get()
+
+    def on_voice_settings_changed(self, *_args) -> None:
+        selected_label = self.piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL
+        voice_metadata = get_piper_voice_metadata(selected_label)
+
+        resolved = self.resolved_engine()
+        xtts_enabled = resolved == ENGINE_XTTS
+        piper_enabled = resolved == ENGINE_PIPER
+
+        state = "normal" if xtts_enabled else "disabled"
+        self.speaker_name_entry.configure(state=state)
+        self.speaker_wav_entry.configure(state=state)
+        self.speaker_wav_button.configure(state=state)
+        self.piper_voice_box.configure(state="readonly" if piper_enabled or self.engine.get() == ENGINE_AUTO else "disabled")
+
+        if resolved == ENGINE_PIPER:
+            self.engine_hint.set(
+                f"Piper uses the local '{voice_metadata['code']}' voice. Adding a reference WAV switches Auto to XTTS."
+            )
+        else:
+            self.engine_hint.set(
+                "XTTS uses the Language field plus built-in speakers or reference voice cloning. Piper voice selection is ignored."
+            )
 
     def enqueue_log(self, message: str) -> None:
         self.log_queue.put(message)
@@ -344,6 +526,8 @@ class App:
             text=text,
             language=self.language.get().strip() or "hu",
             output_file=Path(output),
+            engine=self.engine.get().strip() or ENGINE_AUTO,
+            piper_voice_label=self.piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL,
             speaker_name=self.speaker_name.get().strip() or DEFAULT_SPEAKER,
             speaker_wav=speaker_wav,
         )
@@ -357,7 +541,7 @@ class App:
         if request is None:
             return
 
-        if not self.ensure_xtts_license_acceptance():
+        if self.service.resolve_engine(request) == ENGINE_XTTS and not self.ensure_xtts_license_acceptance():
             return
 
         self.enqueue_log("Starting synthesis job.")

@@ -19,6 +19,7 @@ try {
     }
 
     $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
+    $PiperVoiceDir = Join-Path $Root "voices\piper"
 
     & $VenvPython -m pip install --upgrade pip setuptools wheel
 
@@ -30,9 +31,12 @@ try {
     }
 
     & $VenvPython -m pip install -r requirements.txt
+    New-Item -ItemType Directory -Force -Path $PiperVoiceDir | Out-Null
+    & $VenvPython -m piper.download_voices hu_HU-anna-medium en_US-lessac-medium en_GB-alan-medium --download-dir $PiperVoiceDir
 
     Write-Host ""
     Write-Host "Setup complete."
+    Write-Host "Installed Piper voices: hu_HU-anna-medium, en_US-lessac-medium, en_GB-alan-medium"
     Write-Host "Run the app with: .\run.ps1"
 }
 finally {
