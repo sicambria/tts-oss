@@ -4,6 +4,8 @@ import json
 import os
 import queue
 import re
+import subprocess
+import sys
 import threading
 import time
 import warnings
@@ -761,6 +763,13 @@ class App:
         self.output_file = StringVar(value=str((Path.cwd() / "output" / "speech.mp3").resolve()))
         self.status = StringVar(value="Ready")
         self.playback_toggle_label = StringVar(value="⏸ Pause")
+        self.generation_modal: Toplevel | None = None
+        self.generation_progress = None
+        self.generation_status = StringVar(value="")
+        self.generation_result_path: Path | None = None
+        self.generation_close_button = None
+        self.generation_open_file_button = None
+        self.generation_open_folder_button = None
 
         self._build_ui()
         self.language.trace_add("write", self.on_voice_settings_changed)
@@ -1048,6 +1057,114 @@ class App:
             return
         self.voice_wizard = PiperVoiceWizard(self)
 
+    def open_path_in_system(self, path: Path) -> None:
+        if sys.platform.startswith("win"):
+            os.startfile(str(path))
+            return
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+            return
+        subprocess.Popen(["xdg-open", str(path)])
+
+    def show_generation_modal(self, output_path: Path) -> None:
+        if self.generation_modal is not None and self.generation_modal.winfo_exists():
+            self.generation_modal.destroy()
+
+        self.generation_result_path = output_path
+        self.generation_modal = Toplevel(self.root)
+        self.generation_modal.title("Generating Audio")
+        self.generation_modal.transient(self.root)
+        self.generation_modal.geometry("520x220")
+        self.generation_modal.resizable(False, False)
+        self.generation_modal.grab_set()
+        self.generation_modal.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        frame = ttk.Frame(self.generation_modal, padding=16)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="Creating audio file", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=f"Output: {output_path}",
+            style="Hint.TLabel",
+            wraplength=480,
+        ).pack(anchor="w", pady=(6, 10))
+
+        self.generation_status.set("Preparing synthesis...")
+        ttk.Label(frame, textvariable=self.generation_status).pack(anchor="w")
+
+        self.generation_progress = ttk.Progressbar(frame, orient="horizontal", mode="determinate", maximum=100)
+        self.generation_progress.pack(fill="x", pady=(10, 12))
+        self.generation_progress["value"] = 0
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", side="bottom", pady=(8, 0))
+        self.generation_close_button = ttk.Button(buttons, text="Close", command=self.close_generation_modal, state="disabled")
+        self.generation_close_button.pack(side="right")
+        self.generation_open_folder_button = ttk.Button(
+            buttons,
+            text="Open Folder",
+            command=self.open_generated_folder,
+            state="disabled",
+        )
+        self.generation_open_folder_button.pack(side="right", padx=(0, 8))
+        self.generation_open_file_button = ttk.Button(
+            buttons,
+            text="Open File",
+            command=self.open_generated_file,
+            state="disabled",
+        )
+        self.generation_open_file_button.pack(side="right", padx=(0, 8))
+
+        self.generation_modal.update_idletasks()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - self.generation_modal.winfo_width()) // 2)
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - self.generation_modal.winfo_height()) // 2)
+        self.generation_modal.geometry(f"+{x}+{y}")
+
+    def close_generation_modal(self) -> None:
+        if self.generation_modal is not None and self.generation_modal.winfo_exists():
+            self.generation_modal.grab_release()
+            self.generation_modal.destroy()
+        self.generation_modal = None
+
+    def update_generation_progress(self, current: int, total: int, message: str) -> None:
+        if self.generation_modal is None or not self.generation_modal.winfo_exists() or self.generation_progress is None:
+            return
+
+        progress = 10 if total <= 0 else min(95, max(10, round((current / total) * 90)))
+        self.generation_progress["value"] = progress
+        self.generation_status.set(message)
+
+    def finish_generation_modal(self, result: Path | None, error: str | None = None) -> None:
+        if self.generation_modal is None or not self.generation_modal.winfo_exists() or self.generation_progress is None:
+            return
+
+        if error is None and result is not None:
+            self.generation_progress["value"] = 100
+            self.generation_status.set(f"Audio created: {result}")
+            self.generation_result_path = result
+            self.generation_modal.protocol("WM_DELETE_WINDOW", self.close_generation_modal)
+            self.generation_close_button.configure(state="normal")
+            self.generation_open_file_button.configure(state="normal")
+            self.generation_open_folder_button.configure(state="normal")
+        else:
+            self.generation_progress["value"] = 0
+            self.generation_status.set(f"Generation failed: {error}")
+            self.generation_result_path = None
+            self.generation_modal.protocol("WM_DELETE_WINDOW", self.close_generation_modal)
+            self.generation_close_button.configure(state="normal")
+            self.generation_open_file_button.configure(state="disabled")
+            self.generation_open_folder_button.configure(state="disabled")
+
+    def open_generated_file(self) -> None:
+        if self.generation_result_path is None:
+            return
+        self.open_path_in_system(self.generation_result_path)
+
+    def open_generated_folder(self) -> None:
+        target = self.generation_result_path.parent if self.generation_result_path is not None else Path.cwd()
+        self.open_path_in_system(target)
+
     def load_text_file(self) -> None:
         path = filedialog.askopenfilename(
             title="Open text file",
@@ -1111,6 +1228,7 @@ class App:
             return
 
         self.enqueue_log("Starting synthesis job.")
+        self.show_generation_modal(request.output_file)
         self.worker = threading.Thread(target=self.run_generation, args=(request,), daemon=True)
         self.worker.start()
 
@@ -1315,18 +1433,38 @@ class App:
 
     def run_generation(self, request: SynthesisRequest) -> None:
         try:
-            result = self.service.synthesize(request)
+            chunks = chunk_text_with_offsets(request.text)
+            total_chunks = len(chunks)
+            if total_chunks == 0:
+                raise ValueError("Text is empty after cleanup.")
+
+            combined = AudioSegment.silent(duration=0)
+            for index, (_chunk, segment) in enumerate(self.service.iter_segments(request), start=1):
+                combined += segment
+                if index < total_chunks:
+                    combined += AudioSegment.silent(duration=PAUSE_MS)
+                self.root.after(
+                    0,
+                    lambda current=index, total=total_chunks: self.update_generation_progress(
+                        current,
+                        total,
+                        f"Synthesizing chunk {current}/{total}...",
+                    ),
+                )
+
+            self.root.after(0, lambda: self.generation_status.set("Saving audio file..."))
+            self.enqueue_log(f"Exporting audio to {request.output_file}")
+            export_audio_segment(combined, request.output_file)
+            self.enqueue_log("Finished.")
+            result = request.output_file
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
             error_message = str(exc)
-            self.root.after(0, lambda message=error_message: messagebox.showerror("Generation failed", message))
+            self.root.after(0, lambda message=error_message: self.finish_generation_modal(None, error=message))
             return
 
         self.enqueue_log(f"Saved audio: {result}")
-        self.root.after(
-            0,
-            lambda: messagebox.showinfo("Done", f"Audio created:\n{result}"),
-        )
+        self.root.after(0, lambda path=result: self.finish_generation_modal(path))
 
 
 def main() -> None:
