@@ -57,6 +57,13 @@ SUPPORTED_OUTPUT_FORMATS = {
     ".ogg": "OGG",
     ".wav": "WAV",
 }
+SURFACE_BG = "#f4f6fb"
+CARD_BG = "#ffffff"
+ACCENT = "#2563eb"
+ACCENT_ACTIVE = "#1d4ed8"
+MUTED_TEXT = "#52607a"
+TEXT_BG = "#fbfcfe"
+TEXT_BORDER = "#d7deea"
 
 
 def sentence_split(text: str) -> list[str]:
@@ -602,9 +609,9 @@ class PiperVoiceWizard:
 
         actions = ttk.Frame(frame)
         actions.grid(row=2, column=0, sticky="ew", pady=(12, 0))
-        ttk.Button(actions, text="Refresh Catalog", command=self.refresh_catalog).pack(side="left")
-        ttk.Button(actions, text="Download Selected", command=self.download_selected).pack(side="right")
-        ttk.Button(actions, text="Set As Default", command=self.set_selected_default).pack(side="right", padx=(0, 8))
+        ttk.Button(actions, text="↻ Refresh Catalog", command=self.refresh_catalog).pack(side="left")
+        ttk.Button(actions, text="⬇ Download Selected", style="Accent.TButton", command=self.download_selected).pack(side="right")
+        ttk.Button(actions, text="★ Set As Default", command=self.set_selected_default).pack(side="right", padx=(0, 8))
 
         ttk.Label(frame, textvariable=self.status).grid(row=3, column=0, sticky="w", pady=(10, 0))
 
@@ -719,6 +726,7 @@ class App:
         self.root.title("Local TTS Audio Generator")
         self.root.geometry("980x760")
         self.root.minsize(900, 650)
+        self.root.configure(bg=SURFACE_BG)
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.service = SynthesisCoordinator(self.enqueue_log)
@@ -749,21 +757,69 @@ class App:
         self.on_voice_settings_changed()
         self.root.after(150, self.flush_logs)
 
-    def _build_ui(self) -> None:
+    def _configure_styles(self) -> None:
         style = ttk.Style()
-        style.configure("TFrame", padding=10)
-        style.configure("Header.TLabel", font=("Segoe UI Semibold", 18))
-        style.configure("Subtle.TLabel", foreground="#4b5563")
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+
+        style.configure("TFrame", background=SURFACE_BG)
+        style.configure("HeaderPanel.TFrame", background=CARD_BG)
+        style.configure("Toolbar.TFrame", background=SURFACE_BG)
+        style.configure("TLabel", background=SURFACE_BG)
+        style.configure("Header.TLabel", background=CARD_BG, foreground="#101828", font=("Segoe UI Semibold", 20))
+        style.configure("HeroIcon.TLabel", background=CARD_BG, foreground=ACCENT, font=("Segoe UI Symbol", 22))
+        style.configure("Subtle.TLabel", background=CARD_BG, foreground=MUTED_TEXT, font=("Segoe UI", 10))
+        style.configure("Hint.TLabel", background=SURFACE_BG, foreground=MUTED_TEXT, font=("Segoe UI", 9))
+        style.configure(
+            "TLabelframe",
+            background=CARD_BG,
+            bordercolor=TEXT_BORDER,
+            relief="solid",
+            borderwidth=1,
+        )
+        style.configure("TLabelframe.Label", background=CARD_BG, foreground="#0f172a", font=("Segoe UI Semibold", 10))
+        style.configure(
+            "TButton",
+            padding=(12, 8),
+            font=("Segoe UI Semibold", 9),
+            background=CARD_BG,
+            foreground="#0f172a",
+            bordercolor=TEXT_BORDER,
+            focusthickness=0,
+        )
+        style.map("TButton", background=[("active", "#eef2ff")], bordercolor=[("active", ACCENT)])
+        style.configure(
+            "Accent.TButton",
+            background=ACCENT,
+            foreground="#ffffff",
+            bordercolor=ACCENT,
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("active", ACCENT_ACTIVE)],
+            bordercolor=[("active", ACCENT_ACTIVE)],
+            foreground=[("active", "#ffffff")],
+        )
+        style.configure("TEntry", fieldbackground=CARD_BG, bordercolor=TEXT_BORDER, padding=6)
+        style.configure("TCombobox", fieldbackground=CARD_BG, bordercolor=TEXT_BORDER, padding=6)
+
+    def _build_ui(self) -> None:
+        self._configure_styles()
 
         main = ttk.Frame(self.root)
         main.pack(fill="both", expand=True)
 
-        header = ttk.Frame(main)
-        header.pack(fill="x")
-        ttk.Label(header, text="Local TTS Audio Generator", style="Header.TLabel").pack(anchor="w")
+        header = ttk.Frame(main, style="HeaderPanel.TFrame", padding=16)
+        header.pack(fill="x", pady=(0, 12))
+        brand = ttk.Frame(header, style="HeaderPanel.TFrame")
+        brand.pack(fill="x")
+        ttk.Label(brand, text="♪", style="HeroIcon.TLabel").pack(side="left", padx=(0, 10))
+        header_text = ttk.Frame(brand, style="HeaderPanel.TFrame")
+        header_text.pack(side="left", fill="x", expand=True)
+        ttk.Label(header_text, text="Local TTS Audio Generator", style="Header.TLabel").pack(anchor="w")
         ttk.Label(
-            header,
-            text="Hungarian and English text to MP3, OGG, or WAV with Piper and XTTS",
+            header_text,
+            text="Hungarian and English text to MP3, OGG, or WAV with fast local voice controls.",
             style="Subtle.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
@@ -815,27 +871,27 @@ class App:
         )
         self.speaker_wav_entry = ttk.Entry(controls, textvariable=self.speaker_wav)
         self.speaker_wav_entry.grid(row=2, column=1, columnspan=3, sticky="ew", pady=6)
-        self.speaker_wav_button = ttk.Button(controls, text="Browse", command=self.pick_reference_wav)
+        self.speaker_wav_button = ttk.Button(controls, text="📁 Browse", command=self.pick_reference_wav)
         self.speaker_wav_button.grid(row=2, column=4, sticky="e", pady=6)
 
         ttk.Label(controls, text="Output file").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
         ttk.Entry(controls, textvariable=self.output_file).grid(row=3, column=1, columnspan=3, sticky="ew", pady=6)
-        ttk.Button(controls, text="Save As", command=self.pick_output_file).grid(row=3, column=4, sticky="e", pady=6)
+        ttk.Button(controls, text="🗂 Save As", command=self.pick_output_file).grid(row=3, column=4, sticky="e", pady=6)
 
         self.engine_hint = StringVar(value="")
-        ttk.Label(controls, textvariable=self.engine_hint, style="Subtle.TLabel").grid(
+        ttk.Label(controls, textvariable=self.engine_hint, style="Hint.TLabel").grid(
             row=4, column=0, columnspan=5, sticky="w", pady=(4, 0)
         )
 
-        actions = ttk.Frame(main)
+        actions = ttk.Frame(main, style="Toolbar.TFrame")
         actions.pack(fill="x", pady=(0, 8))
-        ttk.Button(actions, text="Load .txt", command=self.load_text_file).pack(side="left")
-        ttk.Button(actions, text="Voice Wizard", command=self.open_voice_wizard).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Read Aloud", command=self.start_read_aloud).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Pause", command=self.pause_playback).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Resume", command=self.resume_playback).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Stop", command=self.stop_playback).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Generate Audio", command=self.start_generation).pack(side="right")
+        ttk.Button(actions, text="📄 Load Text", command=self.load_text_file).pack(side="left")
+        ttk.Button(actions, text="🎙 Voice Wizard", command=self.open_voice_wizard).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="▶ Read Aloud", style="Accent.TButton", command=self.start_read_aloud).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="⏸ Pause", command=self.pause_playback).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="⏵ Resume", command=self.resume_playback).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="⏹ Stop", command=self.stop_playback).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="💾 Generate Audio", style="Accent.TButton", command=self.start_generation).pack(side="right")
 
         ttk.Label(main, text="Text").pack(anchor="w")
         self.textbox = ttk.Frame(main)
@@ -848,6 +904,13 @@ class App:
             padx=12,
             pady=12,
             undo=True,
+            bg=TEXT_BG,
+            fg="#0f172a",
+            relief="flat",
+            insertbackground=ACCENT,
+            highlightthickness=1,
+            highlightbackground=TEXT_BORDER,
+            highlightcolor=ACCENT,
         )
         self.text.pack(side="left", fill="both", expand=True)
         text_scroll = ttk.Scrollbar(self.textbox, orient="vertical", command=self.text.yview)
@@ -859,7 +922,16 @@ class App:
         log_frame = ttk.LabelFrame(main, text="Status", padding=10)
         log_frame.pack(fill="both", expand=False, pady=(8, 0))
         ttk.Label(log_frame, textvariable=self.status).pack(anchor="w")
-        self.log = Text(log_frame, height=10, wrap="word", font=("Consolas", 10))
+        self.log = Text(
+            log_frame,
+            height=10,
+            wrap="word",
+            font=("Consolas", 10),
+            bg="#0f172a",
+            fg="#dbe4ff",
+            relief="flat",
+            insertbackground="#dbe4ff",
+        )
         self.log.pack(fill="both", expand=True, pady=(8, 0))
         self.log.configure(state="disabled")
 
