@@ -18,27 +18,39 @@ case "$TORCH_CHANNEL" in
     ;;
 esac
 
-if command -v python3 >/dev/null 2>&1; then
-  PYTHON="python3"
-elif command -v python >/dev/null 2>&1; then
-  PYTHON="python"
-else
-  echo "Python 3.11 was not found on PATH. Install Python 3.11 and rerun this script." >&2
-  exit 1
-fi
-
 cd "$ROOT"
-
-if [ ! -d ".venv" ]; then
-  "$PYTHON" -m venv .venv
-fi
 
 VENV_PYTHON="$ROOT/.venv/bin/python"
 PIPER_VOICE_DIR="$ROOT/voices/piper"
 
-"$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel
-"$VENV_PYTHON" -m pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url "$TORCH_INDEX_URL"
-"$VENV_PYTHON" -m pip install -r requirements.txt
+# Coqui TTS 0.22.0 and torch 2.5.1 only ship wheels for Python >=3.9,<3.12.
+# Prefer uv, which can provision a matching interpreter even when the system
+# Python is newer (e.g. 3.12+); otherwise fall back to a compatible system Python.
+if command -v uv >/dev/null 2>&1; then
+  if [ ! -x "$VENV_PYTHON" ] || ! "$VENV_PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] < (3, 12) else 1)'; then
+    rm -rf "$ROOT/.venv"
+    uv venv --python 3.11 "$ROOT/.venv"
+  fi
+  PIP_INSTALL=(uv pip install --python "$VENV_PYTHON")
+else
+  if command -v python3.11 >/dev/null 2>&1; then
+    PYTHON="python3.11"
+  elif command -v python3 >/dev/null 2>&1 && python3 -c 'import sys; raise SystemExit(0 if sys.version_info[:2] < (3, 12) else 1)'; then
+    PYTHON="python3"
+  else
+    echo "A compatible Python (>=3.9,<3.12) was not found." >&2
+    echo "Install Python 3.11 (or 'uv') and rerun this script." >&2
+    exit 1
+  fi
+  if [ ! -x "$VENV_PYTHON" ]; then
+    "$PYTHON" -m venv "$ROOT/.venv"
+  fi
+  "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel
+  PIP_INSTALL=("$VENV_PYTHON" -m pip install)
+fi
+
+"${PIP_INSTALL[@]}" torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url "$TORCH_INDEX_URL"
+"${PIP_INSTALL[@]}" -r requirements.txt
 mkdir -p "$PIPER_VOICE_DIR"
 "$VENV_PYTHON" -m piper.download_voices hu_HU-anna-medium en_US-lessac-medium en_GB-alan-medium --download-dir "$PIPER_VOICE_DIR"
 
