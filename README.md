@@ -4,6 +4,8 @@ Small cross-platform desktop app for generating MP3, OGG, or WAV files from text
 
 This is a local desktop GUI built with `tkinter`. It does not expose a browser UI or `localhost` web server.
 
+![App screenshot](assets/images/Local-TTS-generator-screenshot.png)
+
 ## What it does
 
 - Uses Piper for fast Hungarian output with `hu_HU-anna-medium`
