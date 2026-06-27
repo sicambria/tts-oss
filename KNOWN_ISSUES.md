@@ -34,10 +34,6 @@ This file records issues and learnings discovered during development so they do 
 - Impact: with a uv-provisioned interpreter (`uv venv --python 3.11`), `tkinter` only sees the ~58 X11 core *bitmap* fonts — every font name (e.g. `DejaVu Sans`) silently falls back to `fixed`, which has no emoji/symbol glyphs and no Latin Extended-A (so `ő`, `ű` show as boxes). This is a property of the interpreter's bundled Tk (both Tk 8.6 and 9.0 standalone builds), not of `app.py`; changing font names cannot fix it. A working Tk reports hundreds of font families; check with `python -c "import tkinter,tkinter.font as f; r=tkinter.Tk(); print(len(f.families()))"`.
 - Workaround: use a Python 3.11 whose Tk links the distro's Xft-enabled Tk. Easiest is `pyenv install 3.11` with `tk-dev`/`tcl-dev` installed first; `setup.sh` now auto-prefers a pyenv/system 3.11 over uv's interpreter (uv is still used as the fast package *installer*). Override explicitly with `TTS_PYTHON=/path/to/python3.11 ./setup.sh`. Verify after setup: family count should be in the hundreds, not ~58.
 
-- Typing accented characters (á é ő ű) directly into the text box can fail on Wayland.
-- Impact: this is a desktop input-method issue (Wayland + IBus/XIM + the active keyboard layout), separate from font rendering — and it is NOT something `app.py` can fully fix. Note that even with input working, characters render as boxes until the Tk/Xft interpreter issue above is resolved, so fix the interpreter first.
-- Workaround: ensure `ibus-daemon` is running with XIM enabled (`run.sh` exports `XMODIFIERS=@im=ibus`), enable a Hungarian keyboard layout or a Compose key, or paste text in. The font fix is a prerequisite for the typed characters to display.
-
 - Naive recursive search can become noisy or slow if it includes `.venv`.
 - Impact: code exploration can return thousands of irrelevant results from installed packages.
 - Workaround: use `rg` with the repo-level `.rgignore`.

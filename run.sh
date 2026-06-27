@@ -10,6 +10,4 @@ if [ ! -x "$PYTHON" ]; then
 fi
 
 cd "$ROOT"
-# On Wayland, set XMODIFIERS so the XIM bridge is available to this X11 app.
-export XMODIFIERS="${XMODIFIERS:-@im=ibus}"
 "$PYTHON" app.py
