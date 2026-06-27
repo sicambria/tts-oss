@@ -58,3 +58,20 @@ echo
 echo "Setup complete."
 echo "Installed Piper voices: hu_HU-anna-medium, en_US-lessac-medium, en_GB-alan-medium"
 echo "Run the app with: ./run.sh"
+
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+  DESKTOP_DIR="$HOME/.local/share/applications"
+  mkdir -p "$DESKTOP_DIR"
+  cat > "$DESKTOP_DIR/local-tts-generator.desktop" <<EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Local TTS Generator
+Comment=Generate MP3/OGG/WAV from text using local Piper and XTTS voices
+Exec=$ROOT/run.sh
+Icon=audio-x-generic
+Terminal=false
+Categories=AudioVideo;Audio;
+EOF
+  echo "Desktop entry created: $DESKTOP_DIR/local-tts-generator.desktop"
+fi

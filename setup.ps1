@@ -46,6 +46,22 @@ try {
     Write-Host "Setup complete."
     Write-Host "Installed Piper voices: hu_HU-anna-medium, en_US-lessac-medium, en_GB-alan-medium"
     Write-Host "Run the app with: .\run.ps1"
+
+    try {
+        $StartMenuDir = [Environment]::GetFolderPath("Programs")
+        $ShortcutPath = Join-Path $StartMenuDir "Local TTS Generator.lnk"
+        $WshShell = New-Object -ComObject WScript.Shell
+        $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
+        $Shortcut.TargetPath = "powershell.exe"
+        $Shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Root\run.ps1`""
+        $Shortcut.WorkingDirectory = $Root
+        $Shortcut.Description = "Local TTS MP3 GUI — generate MP3/OGG/WAV from text"
+        $Shortcut.Save()
+        Write-Host "Start Menu shortcut created: $ShortcutPath"
+    }
+    catch {
+        Write-Warning "Could not create Start Menu shortcut: $_"
+    }
 }
 finally {
     Pop-Location
