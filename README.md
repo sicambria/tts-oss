@@ -32,6 +32,7 @@ Platform notes:
 - Windows: use `install.bat` for one-step setup, or `setup.ps1` and `run.ps1` directly
 - Linux or macOS: use `setup.sh` and `run.sh`
 - Linux may require system packages such as `python3-tk` and audio libraries supported by SDL
+- Linux GUI rendering needs a Python 3.11 whose Tk is built with Xft. uv's standalone interpreter is **not** suitable — its bundled Tk has no Xft, so icons and accented characters render as empty boxes. `setup.sh` auto-prefers a pyenv/system Python 3.11 (install one with `pyenv install 3.11` after `apt install tk-dev`, or point at one with `TTS_PYTHON=/path/to/python3.11`). See [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 Coqui TTS currently documents Python `>=3.9, <3.12` for installation:
 
