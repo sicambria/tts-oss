@@ -60,6 +60,9 @@ SUPPORTED_OUTPUT_FORMATS = {
     ".wav": "WAV",
 }
 PREVIEW_FILE_GLOB = "read-aloud-preview-*.wav"
+FONT_BODY = "Segoe UI" if sys.platform == "win32" else "DejaVu Sans"
+FONT_MONO = "Consolas" if sys.platform == "win32" else "Liberation Mono"
+
 SURFACE_BG = "#f4f6fb"
 CARD_BG = "#ffffff"
 ACCENT = "#2563eb"
@@ -622,7 +625,7 @@ class PiperVoiceWizard:
         actions = ttk.Frame(frame)
         actions.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         ttk.Button(actions, text="↻ Refresh Catalog", command=self.refresh_catalog).pack(side="left")
-        ttk.Button(actions, text="⬇ Download Selected", style="Accent.TButton", command=self.download_selected).pack(side="right")
+        ttk.Button(actions, text="↓ Download Selected", style="Accent.TButton", command=self.download_selected).pack(side="right")
         ttk.Button(actions, text="★ Set As Default", command=self.set_selected_default).pack(side="right", padx=(0, 8))
 
         ttk.Label(frame, textvariable=self.status).grid(row=3, column=0, sticky="w", pady=(10, 0))
@@ -635,7 +638,7 @@ class PiperVoiceWizard:
 
     def load_catalog(self) -> None:
         try:
-            with urlopen(PIPER_VOICES_JSON_URL) as response:
+            with urlopen(PIPER_VOICES_JSON_URL, timeout=15) as response:
                 catalog = json.load(response)
         except Exception as exc:
             error_message = f"Failed to load Piper catalog: {exc}"
@@ -762,7 +765,7 @@ class App:
         self.speaker_wav = StringVar()
         self.output_file = StringVar(value=str((Path.cwd() / "output" / "speech.mp3").resolve()))
         self.status = StringVar(value="Ready")
-        self.playback_toggle_label = StringVar(value="⏸ Pause")
+        self.playback_toggle_label = StringVar(value="Pause")
         self.generation_modal: Toplevel | None = None
         self.generation_progress = None
         self.generation_status = StringVar(value="")
@@ -787,10 +790,10 @@ class App:
         style.configure("HeaderPanel.TFrame", background=CARD_BG)
         style.configure("Toolbar.TFrame", background=SURFACE_BG)
         style.configure("TLabel", background=SURFACE_BG)
-        style.configure("Header.TLabel", background=CARD_BG, foreground="#101828", font=("Segoe UI Semibold", 20))
-        style.configure("HeroIcon.TLabel", background=CARD_BG, foreground=ACCENT, font=("Segoe UI Symbol", 22))
-        style.configure("Subtle.TLabel", background=CARD_BG, foreground=MUTED_TEXT, font=("Segoe UI", 10))
-        style.configure("Hint.TLabel", background=SURFACE_BG, foreground=MUTED_TEXT, font=("Segoe UI", 9))
+        style.configure("Header.TLabel", background=CARD_BG, foreground="#101828", font=(FONT_BODY, 20, "bold"))
+        style.configure("HeroIcon.TLabel", background=CARD_BG, foreground=ACCENT, font=(FONT_BODY, 22))
+        style.configure("Subtle.TLabel", background=CARD_BG, foreground=MUTED_TEXT, font=(FONT_BODY, 10))
+        style.configure("Hint.TLabel", background=SURFACE_BG, foreground=MUTED_TEXT, font=(FONT_BODY, 9))
         style.configure(
             "TLabelframe",
             background=CARD_BG,
@@ -798,11 +801,11 @@ class App:
             relief="solid",
             borderwidth=1,
         )
-        style.configure("TLabelframe.Label", background=CARD_BG, foreground="#0f172a", font=("Segoe UI Semibold", 10))
+        style.configure("TLabelframe.Label", background=CARD_BG, foreground="#0f172a", font=(FONT_BODY, 10, "bold"))
         style.configure(
             "TButton",
             padding=(12, 8),
-            font=("Segoe UI Semibold", 9),
+            font=(FONT_BODY, 9, "bold"),
             background=CARD_BG,
             foreground="#0f172a",
             bordercolor=TEXT_BORDER,
@@ -892,12 +895,12 @@ class App:
         )
         self.speaker_wav_entry = ttk.Entry(controls, textvariable=self.speaker_wav)
         self.speaker_wav_entry.grid(row=2, column=1, columnspan=3, sticky="ew", pady=6)
-        self.speaker_wav_button = ttk.Button(controls, text="📁 Browse", command=self.pick_reference_wav)
+        self.speaker_wav_button = ttk.Button(controls, text="Browse", command=self.pick_reference_wav)
         self.speaker_wav_button.grid(row=2, column=4, sticky="e", pady=6)
 
         ttk.Label(controls, text="Output file").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
         ttk.Entry(controls, textvariable=self.output_file).grid(row=3, column=1, columnspan=3, sticky="ew", pady=6)
-        ttk.Button(controls, text="🗂 Save As", command=self.pick_output_file).grid(row=3, column=4, sticky="e", pady=6)
+        ttk.Button(controls, text="Save As", command=self.pick_output_file).grid(row=3, column=4, sticky="e", pady=6)
 
         self.engine_hint = StringVar(value="")
         ttk.Label(controls, textvariable=self.engine_hint, style="Hint.TLabel").grid(
@@ -906,8 +909,8 @@ class App:
 
         actions = ttk.Frame(main, style="Toolbar.TFrame")
         actions.pack(fill="x", pady=(0, 8))
-        ttk.Button(actions, text="📄 Load Text", command=self.load_text_file).pack(side="left")
-        ttk.Button(actions, text="🎙 Voice Wizard", command=self.open_voice_wizard).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Load Text", command=self.load_text_file).pack(side="left")
+        ttk.Button(actions, text="Voice Wizard", command=self.open_voice_wizard).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="▶ Read Aloud", style="Accent.TButton", command=self.start_read_aloud).pack(side="left", padx=(8, 0))
         self.playback_toggle_button = ttk.Button(
             actions,
@@ -915,8 +918,8 @@ class App:
             command=self.toggle_playback_pause,
         )
         self.playback_toggle_button.pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="⏹ Stop", command=self.stop_playback).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="💾 Generate Audio", style="Accent.TButton", command=self.start_generation).pack(side="right")
+        ttk.Button(actions, text="■ Stop", command=self.stop_playback).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Generate Audio", style="Accent.TButton", command=self.start_generation).pack(side="right")
 
         ttk.Label(main, text="Text").pack(anchor="w")
         self.textbox = ttk.Frame(main)
@@ -925,7 +928,7 @@ class App:
         self.text = Text(
             self.textbox,
             wrap="word",
-            font=("Segoe UI", 11),
+            font=(FONT_BODY, 11),
             padx=12,
             pady=12,
             undo=True,
@@ -954,7 +957,7 @@ class App:
             log_frame,
             height=10,
             wrap="word",
-            font=("Consolas", 10),
+            font=(FONT_MONO, 10),
             bg="#0f172a",
             fg="#dbe4ff",
             relief="flat",
@@ -1336,9 +1339,9 @@ class App:
 
     def update_playback_toggle_label(self) -> None:
         if self.player.is_paused():
-            self.playback_toggle_label.set("⏵ Resume")
+            self.playback_toggle_label.set("Resume")
         else:
-            self.playback_toggle_label.set("⏸ Pause")
+            self.playback_toggle_label.set("Pause")
 
     def get_text_content(self) -> str:
         return self.text.get("1.0", "end-1c")
