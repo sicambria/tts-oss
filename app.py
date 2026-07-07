@@ -26,6 +26,7 @@ warnings.filterwarnings(
 )
 from tkinter import END
 from tkinter import BooleanVar
+from tkinter import DoubleVar
 from tkinter import StringVar
 from tkinter import Text
 from tkinter import Tk

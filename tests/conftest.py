@@ -180,7 +180,8 @@ def docx_no_headings_path(temp_dir: Path) -> Path:
 @pytest.fixture
 def odt_chapters_path(temp_dir: Path) -> Path:
     from odf.opendocument import OpenDocumentText
-    from odf.text import H, P
+    from odf.text import H
+    from odf.text import P
 
     path = temp_dir / "chapters.odt"
     doc = OpenDocumentText()

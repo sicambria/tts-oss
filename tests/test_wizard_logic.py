@@ -40,6 +40,20 @@ class _MockBoolVar:
         self._value = value
 
 
+class _MockDoubleVar:
+    def __init__(self, value: float = 1.0) -> None:
+        self._value = value
+
+    def get(self) -> float:
+        return self._value
+
+    def set(self, value: float) -> None:
+        self._value = value
+
+    def trace_add(self, *_args: object) -> None:
+        pass
+
+
 class MockApp:
     def __init__(self) -> None:
         self.language = _MockVar("hu")
@@ -55,6 +69,7 @@ class MockApp:
                 "xtts_language": "en",
             },
         }
+        self.speed = _MockDoubleVar(1.0)
         self.speaker_name = _MockVar(DEFAULT_SPEAKER)
         self.speaker_wav = _MockVar("")
         self.service = MagicMock()
@@ -67,15 +82,16 @@ def _make_wizard(app: MockApp) -> DocumentToAudioWizard:
     with patch("app.Toplevel", return_value=mock_toplevel):
         with patch("app.StringVar", new=_MockVar):
             with patch("app.BooleanVar", new=_MockBoolVar):
-                with patch.object(DocumentToAudioWizard, "_build_ui", return_value=None):
-                    wizard = DocumentToAudioWizard(app)
-                    wizard.window = mock_toplevel
-                    wizard.tree = MagicMock()
-                    wizard.overall_bar = MagicMock()
-                    wizard.file_bar = MagicMock()
-                    wizard.start_button = MagicMock()
-                    wizard.quality_box = MagicMock()
-                    return wizard
+                with patch("app.DoubleVar", new=_MockDoubleVar):
+                    with patch.object(DocumentToAudioWizard, "_build_ui", return_value=None):
+                        wizard = DocumentToAudioWizard(app)
+                        wizard.window = mock_toplevel
+                        wizard.tree = MagicMock()
+                        wizard.overall_bar = MagicMock()
+                        wizard.file_bar = MagicMock()
+                        wizard.start_button = MagicMock()
+                        wizard.quality_box = MagicMock()
+                        return wizard
 
 
 class TestBuildRequest:

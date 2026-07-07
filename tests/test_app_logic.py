@@ -85,6 +85,8 @@ def _make_app():
         app.speaker_name = _MockVar(DEFAULT_SPEAKER)
         app.speaker_wav = _MockVar("")
         app.output_file = _MockVar("/tmp/out/speech.mp3")
+        app.speed = MagicMock()
+        app.speed.get.return_value = 1.0
         app.status = MagicMock()
         app.playback_toggle_label = MagicMock()
         app.generation_modal = None
