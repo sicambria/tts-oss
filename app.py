@@ -753,6 +753,7 @@ class PiperVoiceWizard:
         self.app = app
         self.app = app
         self.window = Toplevel(app.root)
+        self.window.transient(app.root)
         self.window.title("Piper Voice Wizard")
         self.window.geometry("980x620")
         self.window.minsize(900, 560)
@@ -945,6 +946,7 @@ class DocumentToAudioWizard:
     def __init__(self, app: "App") -> None:
         self.app = app
         self.window = Toplevel(app.root)
+        self.window.transient(app.root)
         self.window.title("Document to Audio Converter")
         self.window.geometry("1000x760")
         self.window.minsize(920, 680)
@@ -1161,6 +1163,7 @@ class DocumentToAudioWizard:
     def _add_documents(self) -> None:
         formats = " ".join(f"*{ext}" for ext in DocumentExtractor.SUPPORTED)
         paths = filedialog.askopenfilenames(
+            parent=self.window,
             title="Select documents",
             filetypes=[
                 ("All supported documents", formats),
@@ -1195,6 +1198,7 @@ class DocumentToAudioWizard:
 
     def _pick_output_folder(self) -> None:
         folder = filedialog.askdirectory(
+            parent=self.window,
             title="Choose output folder",
             initialdir=self.output_folder.get(),
         )
@@ -1203,6 +1207,7 @@ class DocumentToAudioWizard:
 
     def _pick_wizard_reference_wav(self) -> None:
         path = filedialog.askopenfilename(
+            parent=self.window,
             title="Choose reference voice WAV",
             filetypes=[("Audio files", "*.wav *.mp3 *.m4a *.flac"), ("All files", "*.*")],
         )
@@ -1840,6 +1845,7 @@ class App:
 
     def pick_reference_wav(self) -> None:
         path = filedialog.askopenfilename(
+            parent=self.root,
             title="Choose reference voice WAV",
             filetypes=[("Audio files", "*.wav *.mp3 *.m4a *.flac"), ("All files", "*.*")],
         )
@@ -1848,6 +1854,7 @@ class App:
 
     def pick_output_file(self) -> None:
         path = filedialog.asksaveasfilename(
+            parent=self.root,
             title="Save output audio",
             defaultextension=".mp3",
             filetypes=[
@@ -1985,6 +1992,7 @@ class App:
 
     def load_text_file(self) -> None:
         path = filedialog.askopenfilename(
+            parent=self.root,
             title="Open text file",
             filetypes=[("Text files", "*.txt *.md"), ("All files", "*.*")],
         )
