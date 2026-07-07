@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -146,6 +146,39 @@ class TestMissingLibraryMessage:
         with patch("app.DocumentExtractor._extract_mobi", side_effect=RuntimeError("mobi not installed. Run: pip install mobi")):
             with pytest.raises(RuntimeError, match="mobi not installed"):
                 DocumentExtractor._extract_mobi(path)
+
+
+class TestMobiExtraction:
+    def test_extract_mobi_epub_wrapper(self, temp_dir):
+        mobi_path = temp_dir / "test.mobi"
+        with patch("app.DocumentExtractor._extract_mobi") as mock_extract:
+            mock_extract.return_value = "Mobi content extracted as epub."
+            DocumentExtractor.extract_text(mobi_path)
+        mock_extract.assert_called_once_with(mobi_path)
+
+    def test_extract_mobi_with_mocked_library(self, temp_dir):
+        mobi_path = temp_dir / "test.mobi"
+        mobi_path.write_text("fake mobi")
+        mock_extract = MagicMock()
+        mock_extract.return_value = (str(temp_dir), str(temp_dir / "extracted.epub"))
+
+        with patch("mobi.extract", mock_extract):
+            with patch("app.DocumentExtractor._extract_epub", return_value="EPUB from MOBI"):
+                result = DocumentExtractor._extract_mobi(mobi_path)
+        assert result == "EPUB from MOBI"
+
+    def test_extract_mobi_html_fallback(self, temp_dir):
+        mobi_path = temp_dir / "test.mobi"
+        mobi_path.write_text("fake mobi")
+        mock_extract = MagicMock()
+        mock_extract.return_value = (str(temp_dir), str(temp_dir / "extracted.html"))
+
+        html_content = "<html><body><p>Hello from HTML</p></body></html>"
+        (temp_dir / "extracted.html").write_text(html_content)
+
+        with patch("mobi.extract", mock_extract):
+            result = DocumentExtractor._extract_mobi(mobi_path)
+        assert "Hello from HTML" in result
 
 
 class TestSUPPORTED:

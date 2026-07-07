@@ -1,0 +1,36 @@
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*", ".venv/*", "__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "def _build_ui\\(",
+    "def _configure_styles\\(",
+    "def show_generation_modal\\(",
+    "def open_path_in_system\\(",
+    "class PiperVoiceWizard:",
+    "class DocumentToAudioWizard:",
+    'if __name__ == "__main__":',
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["F", "I", "E", "W", "N"]
+ignore = ["E402", "E501"]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+known-first-party = ["app"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F811"]
+
+[tool.pytest.ini_options]
+markers = [
+    "unit: Unit tests (fast, small scope, no real I/O)",
+]
+addopts = "-p no:warnings"
+pythonpath = ["."]

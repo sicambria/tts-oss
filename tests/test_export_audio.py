@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
 import pytest
 
-from app import export_audio_segment, output_format_for_path
+from app import export_audio_segment
+from app import output_format_for_path
 
 
 class TestExportAudioSegment:

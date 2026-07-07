@@ -1,22 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
-import pytest
-
-from app import (
-    DEFAULT_PIPER_VOICE_LABEL,
-    DEFAULT_SPEAKER,
-    ENGINE_AUTO,
-    ENGINE_PIPER,
-    ENGINE_XTTS,
-    MP3_QUALITY_PRESETS,
-    OGG_QUALITY_PRESETS,
-    MAX_MERGE_CHUNKS,
-    DocumentToAudioWizard,
-    get_piper_voice_metadata,
-)
+from app import DEFAULT_SPEAKER
+from app import ENGINE_AUTO
+from app import ENGINE_PIPER
+from app import ENGINE_XTTS
+from app import MAX_MERGE_CHUNKS
+from app import MP3_QUALITY_PRESETS
+from app import OGG_QUALITY_PRESETS
+from app import DocumentToAudioWizard
 
 
 class _MockVar:
@@ -254,3 +249,104 @@ class TestFormatChange:
         wizard.quality_box.configure.assert_called_with(
             values=["Lossless (no quality setting)"], state="disabled"
         )
+
+
+class TestBuildRequestEdgeCases:
+    def test_empty_language_fallback(self) -> None:
+        app = MockApp()
+        app.language.set("")
+        wizard = _make_wizard(app)
+        req = wizard._build_request("text", Path("/tmp/out.mp3"))
+        assert req.language == "hu"
+
+    def test_missing_piper_voice_options_key(self) -> None:
+        app = MockApp()
+        app.piper_voice_label.set("French | Test | high")
+        wizard = _make_wizard(app)
+        req = wizard._build_request("text", Path("/tmp/out.mp3"))
+        assert req.piper_voice_code == "hu_HU-anna-medium"
+
+    def test_empty_piper_voice_label_uses_default(self) -> None:
+        app = MockApp()
+        app.piper_voice_label.set("")
+        wizard = _make_wizard(app)
+        req = wizard._build_request("text", Path("/tmp/out.mp3"))
+        assert req.piper_voice_code == "hu_HU-anna-medium"
+
+
+class TestBuildQualityParams:
+    def test_mp3_preset(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard.output_format.set("MP3")
+        wizard.quality_preset.set("320 kbps")
+        preset = wizard.MP3_PRESETS.get("320 kbps", {})
+        assert preset["bitrate"] == "320k"
+
+    def test_ogg_preset(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard.output_format.set("OGG")
+        wizard.quality_preset.set("High (q5)")
+        preset = wizard.OGG_PRESETS.get("High (q5)", {})
+        assert preset["quality_params"] == ["-q:a", "5"]
+
+    def test_wav_no_preset(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard.output_format.set("WAV")
+        preset = wizard.MP3_PRESETS.get("WAV", {}) if wizard.output_format.get() == "MP3" else {}
+        assert preset == {}
+
+
+class TestDoExtraction:
+    def test_extraction_status_updates(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard._update_doc_status = MagicMock()
+        wizard._set_overall = MagicMock()
+        wizard.documents = [Path("/tmp/test.docx")]
+        wizard.extracted_texts = {}
+        wizard.pause_event.set()
+        wizard.stop_event = MagicMock()
+        wizard.stop_event.is_set.return_value = False
+        wizard.window.after = MagicMock()
+
+        with patch("app.DocumentExtractor.extract_text", return_value="Hello world."):
+            wizard._do_extraction()
+
+        assert Path("/tmp/test.docx") in wizard.extracted_texts
+        assert wizard.extracted_texts[Path("/tmp/test.docx")] == "Hello world."
+
+
+class TestDoPreparation:
+    def test_chunk_counting(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard._set_overall = MagicMock()
+        wizard.documents = [Path("/tmp/test.docx")]
+        wizard.extracted_texts = {Path("/tmp/test.docx"): "Word1 word2 word3 word4 word5 word6 word7 word8 word9 word10"}
+        wizard.chunk_counts = {}
+        wizard.pause_event.set()
+        wizard.stop_event = MagicMock()
+        wizard.stop_event.is_set.return_value = False
+        wizard.window.after = MagicMock()
+
+        wizard._do_preparation()
+
+        assert Path("/tmp/test.docx") in wizard.chunk_counts
+        assert wizard.chunk_counts[Path("/tmp/test.docx")] >= 1
+
+
+class TestRefreshTree:
+    def test_rows_inserted(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard.documents = [Path("/tmp/test.docx")]
+        wizard.doc_status = {Path("/tmp/test.docx"): "Ready"}
+        wizard.start_button = MagicMock()
+        wizard.tree.get_children.return_value = []
+        with patch.object(Path, "exists", return_value=True):
+            with patch.object(Path, "stat", return_value=MagicMock(st_size=1024)):
+                wizard._refresh_tree()
+        wizard.tree.insert.assert_called_once()

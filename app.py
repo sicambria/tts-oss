@@ -17,16 +17,24 @@ from urllib.request import urlopen
 
 import imageio_ffmpeg
 import numpy as np
+
 os.environ.setdefault("FFMPEG_BINARY", imageio_ffmpeg.get_ffmpeg_exe())
 warnings.filterwarnings(
     "ignore",
     message="Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work",
     category=RuntimeWarning,
 )
-from pydub import AudioSegment
-from tkinter import BooleanVar, END, StringVar, Text, Tk, Toplevel, filedialog, messagebox
+from tkinter import END
+from tkinter import BooleanVar
+from tkinter import StringVar
+from tkinter import Text
+from tkinter import Tk
+from tkinter import Toplevel
+from tkinter import filedialog
+from tkinter import messagebox
 from tkinter import ttk
 
+from pydub import AudioSegment
 
 MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
 DEFAULT_SPEAKER = "Ana Florence"
@@ -274,9 +282,9 @@ class DocumentExtractor:
     @staticmethod
     def _extract_odt(filepath: Path) -> str:
         try:
-            from odf.opendocument import load
-            from odf import text as odf_text
             from odf import teletype
+            from odf import text as odf_text
+            from odf.opendocument import load
         except ImportError:
             raise RuntimeError("odfpy not installed. Run: pip install odfpy")
         doc = load(str(filepath))
@@ -307,8 +315,8 @@ class DocumentExtractor:
     def _extract_epub(filepath: Path) -> str:
         try:
             import ebooklib
-            from ebooklib import epub
             from bs4 import BeautifulSoup
+            from ebooklib import epub
         except ImportError:
             raise RuntimeError("ebooklib and/or beautifulsoup4 not installed. Run: pip install ebooklib beautifulsoup4")
         book = epub.read_epub(str(filepath))
@@ -327,7 +335,6 @@ class DocumentExtractor:
             from mobi import extract
         except ImportError:
             raise RuntimeError("mobi not installed. Run: pip install mobi")
-        import tempfile as _tempfile_mod
         import shutil as _shutil_mod
 
         temp_dir = None
@@ -720,6 +727,7 @@ class AudioPlayer:
 class PiperVoiceWizard:
     def __init__(self, app: "App") -> None:
         self.app = app
+        self.app = app
         self.window = Toplevel(app.root)
         self.window.title("Piper Voice Wizard")
         self.window.geometry("980x620")
@@ -740,7 +748,7 @@ class PiperVoiceWizard:
         self.installed_only.trace_add("write", self.apply_filters)
         threading.Thread(target=self.load_catalog, daemon=True).start()
 
-    def _build_ui(self) -> None:
+    def _build_ui(self) -> None:  # pragma: no cover
         frame = ttk.Frame(self.window, padding=12)
         frame.pack(fill="both", expand=True)
         frame.columnconfigure(0, weight=1)
@@ -943,7 +951,7 @@ class DocumentToAudioWizard:
         self.output_format.trace_add("write", self._on_format_changed)
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    def _build_ui(self) -> None:
+    def _build_ui(self) -> None:  # pragma: no cover
         frame = ttk.Frame(self.window, padding=12)
         frame.pack(fill="both", expand=True)
 
@@ -1485,7 +1493,7 @@ class App:
         self.on_voice_settings_changed()
         self.root.after(150, self.flush_logs)
 
-    def _configure_styles(self) -> None:
+    def _configure_styles(self) -> None:  # pragma: no cover
         style = ttk.Style()
         if "clam" in style.theme_names():
             style.theme_use("clam")
@@ -1531,9 +1539,8 @@ class App:
         style.configure("TEntry", fieldbackground=CARD_BG, bordercolor=TEXT_BORDER, padding=6)
         style.configure("TCombobox", fieldbackground=CARD_BG, bordercolor=TEXT_BORDER, padding=6)
 
-    def _build_ui(self) -> None:
+    def _build_ui(self) -> None:  # pragma: no cover
         self._configure_styles()
-
         main = ttk.Frame(self.root)
         main.pack(fill="both", expand=True)
 
@@ -1772,7 +1779,7 @@ class App:
             return
         self.doc_wizard = DocumentToAudioWizard(self)
 
-    def open_path_in_system(self, path: Path) -> None:
+    def open_path_in_system(self, path: Path) -> None:  # pragma: no cover
         if sys.platform.startswith("win"):
             os.startfile(str(path))
             return
@@ -1781,7 +1788,7 @@ class App:
             return
         subprocess.Popen(["xdg-open", str(path)])
 
-    def show_generation_modal(self, output_path: Path) -> None:
+    def show_generation_modal(self, output_path: Path) -> None:  # pragma: no cover
         if self.generation_modal is not None and self.generation_modal.winfo_exists():
             self.generation_modal.destroy()
 
@@ -2188,5 +2195,5 @@ def main() -> None:
     root.mainloop()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

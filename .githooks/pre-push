@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+echo "=== ruff check ==="
+ruff check app.py tests/
+
+echo ""
+echo "=== pytest (--cov-fail-under=80) ==="
+pytest --cov --cov-fail-under=80

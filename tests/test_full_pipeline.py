@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from app import (
-    MAX_CHARS_PER_CHUNK,
-    DocumentExtractor,
-    chunk_text_with_offsets,
-)
+from app import MAX_CHARS_PER_CHUNK
+from app import DocumentExtractor
+from app import chunk_text_with_offsets
 
 
 class TestFullPipeline:
@@ -37,3 +35,13 @@ class TestFullPipeline:
     def test_empty_input_returns_zero_chunks(self) -> None:
         chunks = chunk_text_with_offsets("", MAX_CHARS_PER_CHUNK)
         assert chunks == []
+
+    def test_chunk_offsets_monotonic(self) -> None:
+        text = " ".join(["word"] * 100)
+        chunks = chunk_text_with_offsets(text, MAX_CHARS_PER_CHUNK)
+        for i in range(1, len(chunks)):
+            assert chunks[i].start >= chunks[i - 1].end
+
+    def test_mobi_in_format_list(self) -> None:
+        assert ".mobi" in DocumentExtractor.SUPPORTED
+        assert DocumentExtractor.SUPPORTED[".mobi"] == "MOBI"
