@@ -60,6 +60,21 @@ SUPPORTED_OUTPUT_FORMATS = {
     ".ogg": "OGG",
     ".wav": "WAV",
 }
+MP3_QUALITY_PRESETS = {
+    "64 kbps": {"bitrate": "64k"},
+    "128 kbps": {"bitrate": "128k"},
+    "192 kbps (recommended)": {"bitrate": "192k"},
+    "256 kbps": {"bitrate": "256k"},
+    "320 kbps": {"bitrate": "320k"},
+}
+OGG_QUALITY_PRESETS = {
+    "Low (q1)": {"quality_params": ["-q:a", "1"]},
+    "Medium (q3)": {"quality_params": ["-q:a", "3"]},
+    "High (q5)": {"quality_params": ["-q:a", "5"]},
+    "Very High (q8)": {"quality_params": ["-q:a", "8"]},
+    "Maximum (q10)": {"quality_params": ["-q:a", "10"]},
+}
+MAX_MERGE_CHUNKS = 500
 PREVIEW_FILE_GLOB = "read-aloud-preview-*.wav"
 FONT_BODY = "Segoe UI" if sys.platform == "win32" else "DejaVu Sans"
 FONT_MONO = "Consolas" if sys.platform == "win32" else "Liberation Mono"
@@ -198,18 +213,158 @@ def output_format_for_path(path: Path) -> str:
     return suffix[1:]
 
 
-def export_audio_segment(audio: AudioSegment, output_file: Path) -> None:
+def export_audio_segment(
+    audio: AudioSegment,
+    output_file: Path,
+    bitrate: str | None = None,
+    quality_params: list[str] | None = None,
+) -> None:
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_format = output_format_for_path(output_file)
     export_kwargs: dict[str, object] = {"format": output_format}
 
-    if output_format in {"mp3", "ogg"}:
+    if quality_params is not None:
+        export_kwargs["parameters"] = ["-ar", "44100"] + quality_params
+    elif bitrate is not None:
+        export_kwargs["bitrate"] = bitrate
+        export_kwargs["parameters"] = ["-ar", "44100"]
+    elif output_format in {"mp3", "ogg"}:
         export_kwargs["bitrate"] = "192k"
         export_kwargs["parameters"] = ["-ar", "44100"]
     else:
         export_kwargs["parameters"] = ["-ar", "44100"]
 
     audio.export(output_file, **export_kwargs)
+
+
+class DocumentExtractor:
+    SUPPORTED = {
+        ".docx": "DOCX",
+        ".odt": "ODT",
+        ".pdf": "PDF",
+        ".epub": "EPUB",
+        ".mobi": "MOBI",
+    }
+
+    @staticmethod
+    def extract_text(filepath: Path) -> str:
+        suffix = filepath.suffix.lower()
+        if suffix == ".docx":
+            return DocumentExtractor._extract_docx(filepath)
+        if suffix == ".odt":
+            return DocumentExtractor._extract_odt(filepath)
+        if suffix == ".pdf":
+            return DocumentExtractor._extract_pdf(filepath)
+        if suffix == ".epub":
+            return DocumentExtractor._extract_epub(filepath)
+        if suffix == ".mobi":
+            return DocumentExtractor._extract_mobi(filepath)
+        raise ValueError(f"Unsupported document format: {suffix}")
+
+    @staticmethod
+    def _extract_docx(filepath: Path) -> str:
+        try:
+            import docx
+        except ImportError:
+            raise RuntimeError("python-docx not installed. Run: pip install python-docx")
+        doc = docx.Document(str(filepath))
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        return "\n\n".join(paragraphs)
+
+    @staticmethod
+    def _extract_odt(filepath: Path) -> str:
+        try:
+            from odf.opendocument import load
+            from odf import text as odf_text
+            from odf import teletype
+        except ImportError:
+            raise RuntimeError("odfpy not installed. Run: pip install odfpy")
+        doc = load(str(filepath))
+        paragraphs = []
+        for elem in doc.getElementsByType(odf_text.P):
+            content = teletype.extractText(elem).strip()
+            if content:
+                paragraphs.append(content)
+        return "\n\n".join(paragraphs)
+
+    @staticmethod
+    def _extract_pdf(filepath: Path) -> str:
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            raise RuntimeError("pypdf not installed. Run: pip install pypdf")
+        reader = PdfReader(str(filepath))
+        pages = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                text = re.sub(r"\n{3,}", "\n\n", text)
+                text = re.sub(r" {2,}", " ", text)
+                pages.append(text.strip())
+        return "\n\n".join(pages)
+
+    @staticmethod
+    def _extract_epub(filepath: Path) -> str:
+        try:
+            import ebooklib
+            from ebooklib import epub
+            from bs4 import BeautifulSoup
+        except ImportError:
+            raise RuntimeError("ebooklib and/or beautifulsoup4 not installed. Run: pip install ebooklib beautifulsoup4")
+        book = epub.read_epub(str(filepath))
+        chapters = []
+        for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+            soup = BeautifulSoup(item.get_content(), "html.parser")
+            text = soup.get_text(separator="\n")
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            if text.strip():
+                chapters.append(text.strip())
+        return "\n\n".join(chapters)
+
+    @staticmethod
+    def _extract_mobi(filepath: Path) -> str:
+        try:
+            from mobi import extract
+        except ImportError:
+            raise RuntimeError("mobi not installed. Run: pip install mobi")
+        import tempfile as _tempfile_mod
+        import shutil as _shutil_mod
+
+        temp_dir = None
+        try:
+            temp_dir, extracted_path = extract(str(filepath))
+            temp_dir = Path(temp_dir)
+            extracted = Path(extracted_path)
+
+            if extracted.suffix.lower() == ".epub":
+                text = DocumentExtractor._extract_epub(extracted)
+            elif extracted.suffix.lower() == ".html":
+                try:
+                    from bs4 import BeautifulSoup
+                except ImportError:
+                    raise RuntimeError(
+                        "beautifulsoup4 not installed for MOBI HTML extraction. "
+                        "Run: pip install beautifulsoup4"
+                    )
+                soup = BeautifulSoup(extracted.read_text(encoding="utf-8", errors="replace"), "html.parser")
+                text = soup.get_text(separator="\n")
+                text = re.sub(r"\n{3,}", "\n\n", text)
+            else:
+                text = extracted.read_text(encoding="utf-8", errors="replace")
+
+            if not text.strip():
+                raise RuntimeError("No text extracted from MOBI file.")
+            return text
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"MOBI extraction failed: {exc}") from exc
+        finally:
+            if temp_dir is not None:
+                try:
+                    _shutil_mod.rmtree(str(temp_dir), ignore_errors=True)
+                except Exception:
+                    pass
 
 
 @dataclass
@@ -750,6 +905,539 @@ class PiperVoiceWizard:
         self.status.set(f"Default Piper voice set to {voice_code}.")
 
 
+class DocumentToAudioWizard:
+    MP3_PRESETS = MP3_QUALITY_PRESETS
+    OGG_PRESETS = OGG_QUALITY_PRESETS
+    MAX_MERGE_CHUNKS = MAX_MERGE_CHUNKS
+
+    def __init__(self, app: "App") -> None:
+        self.app = app
+        self.window = Toplevel(app.root)
+        self.window.title("Document to Audio Converter")
+        self.window.geometry("980x640")
+        self.window.minsize(900, 580)
+
+        self.documents: list[Path] = []
+        self.doc_status: dict[Path, str] = {}
+        self.extracted_texts: dict[Path, str] = {}
+        self.chunk_counts: dict[Path, int] = {}
+        self._total_chunks: int = 0
+
+        self.worker: threading.Thread | None = None
+        self.pause_event = threading.Event()
+        self.pause_event.set()
+        self.stop_event = threading.Event()
+
+        self.output_format = StringVar(value="MP3")
+        default_quality = list(self.MP3_PRESETS.keys())[2]
+        self.quality_preset = StringVar(value=default_quality)
+        self.merge_files = BooleanVar(value=False)
+        self.output_folder = StringVar(value=str((Path.cwd() / "output").resolve()))
+
+        self.phase_text = StringVar(value="")
+        self.overall_text = StringVar(value="Idle")
+        self.file_text = StringVar(value="")
+        self.pause_button_text = StringVar(value="Pause")
+
+        self._build_ui()
+        self.output_format.trace_add("write", self._on_format_changed)
+        self.window.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _build_ui(self) -> None:
+        frame = ttk.Frame(self.window, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        docs_frame = ttk.LabelFrame(frame, text="Documents", padding=10)
+        docs_frame.pack(fill="both", expand=True)
+        docs_frame.columnconfigure(0, weight=1)
+
+        columns = ("filename", "format", "size", "status")
+        self.tree = ttk.Treeview(docs_frame, columns=columns, show="headings", height=8)
+        self.tree.heading("filename", text="Filename")
+        self.tree.heading("format", text="Format")
+        self.tree.heading("size", text="Size")
+        self.tree.heading("status", text="Status")
+        self.tree.column("filename", width=360)
+        self.tree.column("format", width=70, anchor="center")
+        self.tree.column("size", width=80, anchor="center")
+        self.tree.column("status", width=280)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(docs_frame, orient="vertical", command=self.tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=scrollbar.set)
+
+        doc_actions = ttk.Frame(docs_frame)
+        doc_actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(doc_actions, text="Add Documents", command=self._add_documents).pack(side="left")
+        ttk.Button(doc_actions, text="Remove Selected", command=self._remove_selected).pack(side="left", padx=(8, 0))
+        ttk.Button(doc_actions, text="Clear All", command=self._clear_all).pack(side="right")
+
+        settings_frame = ttk.LabelFrame(frame, text="Output Settings", padding=10)
+        settings_frame.pack(fill="x", pady=(10, 0))
+        settings_frame.columnconfigure(1, weight=1)
+        settings_frame.columnconfigure(3, weight=1)
+
+        ttk.Label(settings_frame, text="Format").grid(row=0, column=0, sticky="w", pady=4)
+        self.format_box = ttk.Combobox(
+            settings_frame,
+            textvariable=self.output_format,
+            values=list(SUPPORTED_OUTPUT_FORMATS.values()),
+            state="readonly",
+            width=10,
+        )
+        self.format_box.grid(row=0, column=1, sticky="w", pady=4, padx=(0, 18))
+        self.format_box.set("MP3")
+
+        ttk.Label(settings_frame, text="Quality").grid(row=0, column=2, sticky="w", pady=4)
+        self.quality_box = ttk.Combobox(
+            settings_frame,
+            textvariable=self.quality_preset,
+            values=list(self.MP3_PRESETS.keys()),
+            state="readonly",
+            width=22,
+        )
+        self.quality_box.grid(row=0, column=3, sticky="w", pady=4)
+
+        ttk.Checkbutton(
+            settings_frame,
+            text="Merge all documents into one audio file",
+            variable=self.merge_files,
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 4))
+
+        ttk.Label(settings_frame, text="Output Folder").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Entry(settings_frame, textvariable=self.output_folder).grid(
+            row=2, column=1, columnspan=3, sticky="ew", pady=4
+        )
+        ttk.Button(settings_frame, text="Browse...", command=self._pick_output_folder).grid(
+            row=2, column=4, sticky="e", pady=4, padx=(8, 0)
+        )
+
+        progress_frame = ttk.LabelFrame(frame, text="Progress", padding=10)
+        progress_frame.pack(fill="x", pady=(10, 0))
+        progress_frame.columnconfigure(0, weight=1)
+
+        ttk.Label(progress_frame, textvariable=self.phase_text, style="Hint.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w"
+        )
+
+        ttk.Label(progress_frame, text="Overall:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(progress_frame, textvariable=self.overall_text, style="Hint.TLabel").grid(
+            row=1, column=1, sticky="e", pady=(6, 0)
+        )
+        self.overall_bar = ttk.Progressbar(progress_frame, orient="horizontal", mode="determinate", maximum=100)
+        self.overall_bar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(2, 6))
+
+        ttk.Label(progress_frame, text="File:").grid(row=3, column=0, sticky="w")
+        ttk.Label(progress_frame, textvariable=self.file_text, style="Hint.TLabel").grid(
+            row=3, column=1, sticky="e"
+        )
+        self.file_bar = ttk.Progressbar(progress_frame, orient="horizontal", mode="determinate", maximum=100)
+        self.file_bar.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x", pady=(12, 0))
+        self.start_button = ttk.Button(
+            actions, text="Start", style="Accent.TButton", command=self._start_processing
+        )
+        self.start_button.pack(side="left")
+        self.pause_button = ttk.Button(
+            actions, textvariable=self.pause_button_text, command=self._toggle_pause
+        )
+        self.pause_button.pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Stop", command=self._stop_processing).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Close", command=self._on_close).pack(side="right")
+
+    def _on_format_changed(self, *_args) -> None:
+        fmt = self.output_format.get()
+        if fmt == "OGG":
+            presets = list(self.OGG_PRESETS.keys())
+            self.quality_preset.set(presets[0])
+            self.quality_box.configure(values=presets, state="readonly")
+        elif fmt == "WAV":
+            self.quality_box.configure(values=["Lossless (no quality setting)"], state="disabled")
+            self.quality_preset.set("Lossless (no quality setting)")
+        else:
+            presets = list(self.MP3_PRESETS.keys())
+            self.quality_preset.set(presets[2])
+            self.quality_box.configure(values=presets, state="readonly")
+
+    def _add_documents(self) -> None:
+        formats = " ".join(f"*{ext}" for ext in DocumentExtractor.SUPPORTED)
+        paths = filedialog.askopenfilenames(
+            title="Select documents",
+            filetypes=[
+                ("All supported documents", formats),
+                ("DOCX files", "*.docx"),
+                ("ODT files", "*.odt"),
+                ("PDF files", "*.pdf"),
+                ("EPUB files", "*.epub"),
+                ("MOBI files", "*.mobi"),
+                ("All files", "*.*"),
+            ],
+        )
+        for path_str in paths:
+            path = Path(path_str)
+            if path not in self.documents:
+                self.documents.append(path)
+                self.doc_status[path] = "Ready"
+        self._refresh_tree()
+
+    def _remove_selected(self) -> None:
+        selection = self.tree.selection()
+        for iid in selection:
+            path = Path(iid)
+            if path in self.documents:
+                self.documents.remove(path)
+                self.doc_status.pop(path, None)
+        self._refresh_tree()
+
+    def _clear_all(self) -> None:
+        self.documents.clear()
+        self.doc_status.clear()
+        self._refresh_tree()
+
+    def _pick_output_folder(self) -> None:
+        folder = filedialog.askdirectory(
+            title="Choose output folder",
+            initialdir=self.output_folder.get(),
+        )
+        if folder:
+            self.output_folder.set(folder)
+
+    def _refresh_tree(self) -> None:
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        for path in self.documents:
+            size_kb = path.stat().st_size / 1024 if path.exists() else 0
+            self.tree.insert(
+                "",
+                "end",
+                iid=str(path),
+                values=(
+                    path.name,
+                    DocumentExtractor.SUPPORTED.get(path.suffix.lower(), "Unknown"),
+                    f"{size_kb:.0f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB",
+                    self.doc_status.get(path, "Ready"),
+                ),
+            )
+        self.start_button.configure(state="normal" if self.documents else "disabled")
+
+    def _set_buttons_state(self, processing: bool) -> None:
+        state = "disabled" if processing else "normal"
+        self.start_button.configure(state=state)
+        self.pause_button_text.set("Pause")
+
+    def _start_processing(self) -> None:
+        if self.worker and self.worker.is_alive():
+            return
+        if not self.documents:
+            messagebox.showinfo("No documents", "Add at least one document first.")
+            return
+
+        output_folder = Path(self.output_folder.get())
+        output_folder.mkdir(parents=True, exist_ok=True)
+
+        self.doc_status = {p: "Queued" for p in self.documents}
+        self.extracted_texts.clear()
+        self.chunk_counts.clear()
+        self._refresh_tree()
+
+        self._set_buttons_state(processing=True)
+        self.stop_event.clear()
+        self.pause_event.set()
+
+        self.worker = threading.Thread(target=self._run_processing, args=(output_folder,), daemon=True)
+        self.worker.start()
+
+    def _run_processing(self, output_folder: Path) -> None:
+        try:
+            self._do_extraction()
+            if self.stop_event.is_set():
+                return self._finish("Stopped.")
+
+            self._do_preparation()
+            if self.stop_event.is_set():
+                return self._finish("Stopped.")
+
+            if self.merge_files.get():
+                self._do_synthesis_merged(output_folder)
+            else:
+                self._do_synthesis_per_file(output_folder)
+        except Exception as exc:
+            self.app.enqueue_log(f"Document wizard error: {exc}")
+            self.window.after(0, lambda e=str(exc): self._finish(f"Error: {e}"))
+
+    def _do_extraction(self) -> None:
+        docs = list(self.documents)
+        total = len(docs)
+        for i, doc_path in enumerate(docs):
+            if self.stop_event.is_set():
+                return
+            self.window.after(0, lambda p=doc_path, s="Extracting...": self._update_doc_status(p, s))
+            self.window.after(
+                0,
+                lambda cur=i + 1, tot=total: self.phase_text.set(
+                    f"Extracting text ({cur}/{tot})..."
+                ),
+            )
+            self.window.after(
+                0,
+                lambda cur=i + 1, tot=total: self._set_overall(
+                    round(cur / tot * 100) if tot > 0 else 0,
+                    f"Extracting ({cur}/{tot})",
+                ),
+            )
+            try:
+                text = DocumentExtractor.extract_text(doc_path)
+                self.extracted_texts[doc_path] = text
+                word_count = len(text.split())
+                self.window.after(
+                    0,
+                    lambda p=doc_path, wc=word_count: self._update_doc_status(
+                        p, f"Extracted ({wc:,} words)"
+                    ),
+                )
+            except Exception as exc:
+                self.window.after(
+                    0,
+                    lambda p=doc_path, e=str(exc): self._update_doc_status(p, f"Failed: {e}"),
+                )
+
+    def _do_preparation(self) -> None:
+        valid = [d for d in self.documents if d in self.extracted_texts]
+        if not valid:
+            raise RuntimeError("No documents could be extracted.")
+
+        self.window.after(0, lambda: self.phase_text.set("Preparing text chunks..."))
+        self.window.after(0, lambda: self._set_overall(0, "Preparing..."))
+
+        self.chunk_counts: dict[Path, int] = {}
+        total_chunks = 0
+        for i, doc_path in enumerate(valid):
+            if self.stop_event.is_set():
+                return
+            text = self.extracted_texts[doc_path]
+            count = len(chunk_text_with_offsets(text, MAX_CHARS_PER_CHUNK))
+            self.chunk_counts[doc_path] = max(count, 1)
+            total_chunks += self.chunk_counts[doc_path]
+            self.window.after(
+                0,
+                lambda cur=i + 1, tot=len(valid): self._set_overall(
+                    round(cur / tot * 10),
+                    f"Preparing ({cur}/{tot})",
+                ),
+            )
+
+        self._total_chunks = max(total_chunks, 1)
+
+    def _build_request(self, text: str, output_path: Path) -> SynthesisRequest:
+        piper_label = self.app.piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL
+        voice_metadata = self.app.piper_voice_options.get(
+            piper_label, get_piper_voice_metadata(piper_label)
+        )
+        return SynthesisRequest(
+            text=text,
+            language=self.app.language.get().strip() or "hu",
+            output_file=output_path,
+            engine=self.app.engine.get().strip() or ENGINE_AUTO,
+            piper_voice_label=piper_label,
+            piper_voice_code=voice_metadata["code"],
+            speaker_name=self.app.speaker_name.get().strip() or DEFAULT_SPEAKER,
+            speaker_wav=self.app.speaker_wav.get().strip(),
+        )
+
+    def _do_synthesis_per_file(self, output_folder: Path) -> None:
+        valid = [d for d in self.documents if d in self.extracted_texts]
+        if not valid:
+            raise RuntimeError("No documents with valid extracted text.")
+
+        total_docs = len(valid)
+        cumul_chunks = 0
+
+        for i, doc_path in enumerate(valid):
+            if self.stop_event.is_set():
+                return
+
+            self.window.after(0, lambda p=doc_path: self._update_doc_status(p, "Synthesizing..."))
+            self.window.after(
+                0,
+                lambda cur=i + 1, tot=total_docs: self.phase_text.set(
+                    f"Synthesizing document {cur}/{tot}..."
+                ),
+            )
+
+            suffix = f".{self.output_format.get().lower()}"
+            output_path = output_folder / f"{doc_path.stem}{suffix}"
+
+            text = self.extracted_texts[doc_path]
+            expected = self.chunk_counts.get(doc_path, 1)
+            self._synthesize_text(
+                text,
+                output_path,
+                expected_chunks=expected,
+                doc_index=i,
+                total_docs=total_docs,
+                cumul_chunks_start=cumul_chunks,
+            )
+            cumul_chunks += expected
+
+            if self.stop_event.is_set():
+                self.window.after(0, lambda p=doc_path: self._update_doc_status(p, "Stopped"))
+                return
+
+            self.window.after(0, lambda p=doc_path: self._update_doc_status(p, "Done"))
+
+        self._finish(None)
+
+    def _do_synthesis_merged(self, output_folder: Path) -> None:
+        valid = [d for d in self.documents if d in self.extracted_texts]
+        if not valid:
+            raise RuntimeError("No documents with valid extracted text.")
+
+        merged_text = "\n\n".join(self.extracted_texts[d] for d in valid)
+        total_expected = sum(self.chunk_counts.get(d, 1) for d in valid)
+
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        suffix = f".{self.output_format.get().lower()}"
+        output_path = output_folder / f"merged_{timestamp}{suffix}"
+
+        self.window.after(0, lambda: self.phase_text.set("Synthesizing merged output..."))
+
+        self._synthesize_text(
+            merged_text,
+            output_path,
+            expected_chunks=total_expected,
+            doc_index=0,
+            total_docs=1,
+            cumul_chunks_start=0,
+        )
+
+        if not self.stop_event.is_set():
+            self._finish(None)
+
+    def _synthesize_text(
+        self,
+        text: str,
+        output_path: Path,
+        expected_chunks: int,
+        doc_index: int,
+        total_docs: int,
+        cumul_chunks_start: int,
+    ) -> None:
+        request = self._build_request(text, output_path)
+        combined = AudioSegment.silent(duration=0)
+        chunk_count = 0
+
+        for _chunk, segment in self.app.service.iter_segments(request):
+            if self.stop_event.is_set():
+                return
+            self.pause_event.wait()
+
+            combined += segment
+            chunk_count += 1
+            if chunk_count < expected_chunks:
+                combined += AudioSegment.silent(duration=PAUSE_MS)
+
+            current = cumul_chunks_start + chunk_count
+            total = max(self._total_chunks, 1)
+            overall_pct = round(current / total * 100)
+            file_pct = (
+                round(chunk_count / expected_chunks * 100)
+                if expected_chunks > 0
+                else 0
+            )
+            self.window.after(
+                0,
+                lambda ov=overall_pct, msg=f"{current}/{total} chunks": self._set_overall(ov, msg),
+            )
+            self.window.after(
+                0,
+                lambda fp=file_pct, msg=f"Chunk {chunk_count}/{expected_chunks}": self._set_file(fp, msg),
+            )
+            self.window.after(
+                0,
+                lambda cur=doc_index + 1, tot=total_docs: self.phase_text.set(
+                    f"Synthesizing document {cur}/{tot}..."
+                ),
+            )
+
+        if self.stop_event.is_set():
+            return
+
+        quality = self.quality_preset.get()
+        preset: dict = {}
+        if self.output_format.get() == "OGG":
+            preset = self.OGG_PRESETS.get(quality, {})
+        elif self.output_format.get() == "MP3":
+            preset = self.MP3_PRESETS.get(quality, {})
+
+        self.window.after(0, lambda: self.phase_text.set("Exporting audio file..."))
+        export_audio_segment(
+            combined,
+            output_path,
+            bitrate=preset.get("bitrate"),
+            quality_params=preset.get("quality_params"),
+        )
+        self.app.enqueue_log(f"Exported: {output_path}")
+
+    def _toggle_pause(self) -> None:
+        if self.pause_event.is_set():
+            self.pause_event.clear()
+            self.pause_button_text.set("Resume")
+        else:
+            self.pause_event.set()
+            self.pause_button_text.set("Pause")
+
+    def _stop_processing(self) -> None:
+        self.stop_event.set()
+        self.pause_event.set()
+        self.pause_button_text.set("Pause")
+
+    def _on_close(self) -> None:
+        if self.worker and self.worker.is_alive():
+            if not messagebox.askyesno(
+                "Processing in progress",
+                "A conversion job is running. Stop it and close?",
+            ):
+                return
+            self._stop_processing()
+            self.worker.join(timeout=3)
+        self.window.destroy()
+
+    def _update_doc_status(self, doc_path: Path, status: str) -> None:
+        self.doc_status[doc_path] = status
+        iid = str(doc_path)
+        if self.tree.exists(iid):
+            values = list(self.tree.item(iid, "values"))
+            if len(values) >= 4:
+                values[3] = status
+                self.tree.item(iid, values=values)
+
+    def _set_overall(self, value: int, text: str) -> None:
+        self.overall_bar["value"] = value
+        self.overall_text.set(text)
+
+    def _set_file(self, value: int, text: str) -> None:
+        self.file_bar["value"] = value
+        self.file_text.set(text)
+
+    def _finish(self, error: str | None) -> None:
+        def apply() -> None:
+            self._set_buttons_state(processing=False)
+            if error:
+                self.phase_text.set(error)
+                self.overall_text.set("Failed")
+            else:
+                self.phase_text.set("Conversion complete.")
+                self.overall_bar["value"] = 100
+                self.overall_text.set("Done")
+                self.file_bar["value"] = 100
+                self.file_text.set("")
+                self.app.enqueue_log("Document conversion complete.")
+        self.window.after(0, apply)
+
+
 class App:
     def __init__(self, root: Tk) -> None:
         self.root = root
@@ -768,6 +1456,7 @@ class App:
         self.player = AudioPlayer(self.enqueue_log)
         self.settings = load_app_settings()
         self.voice_wizard: PiperVoiceWizard | None = None
+        self.doc_wizard: DocumentToAudioWizard | None = None
         self.piper_voice_options = discover_local_piper_voices()
 
         self.language = StringVar(value="hu")
@@ -925,6 +1614,7 @@ class App:
         actions = ttk.Frame(main, style="Toolbar.TFrame")
         actions.pack(fill="x", pady=(0, 8))
         ttk.Button(actions, text="Load Text", command=self.load_text_file).pack(side="left")
+        ttk.Button(actions, text="Convert Docs", command=self.open_document_wizard).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Voice Wizard", command=self.open_voice_wizard).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="▶ Read Aloud", style="Accent.TButton", command=self.start_read_aloud).pack(side="left", padx=(8, 0))
         self.playback_toggle_button = ttk.Button(
@@ -1074,6 +1764,13 @@ class App:
             self.voice_wizard.window.focus_force()
             return
         self.voice_wizard = PiperVoiceWizard(self)
+
+    def open_document_wizard(self) -> None:
+        if self.doc_wizard is not None and self.doc_wizard.window.winfo_exists():
+            self.doc_wizard.window.lift()
+            self.doc_wizard.window.focus_force()
+            return
+        self.doc_wizard = DocumentToAudioWizard(self)
 
     def open_path_in_system(self, path: Path) -> None:
         if sys.platform.startswith("win"):
