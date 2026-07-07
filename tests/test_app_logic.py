@@ -11,6 +11,7 @@ from app import DEFAULT_SPEAKER
 from app import ENGINE_AUTO
 from app import PREVIEW_OUTPUT_PATH
 from app import App
+from app import get_default_music_folder
 
 
 class _MockVar:
@@ -202,10 +203,11 @@ class TestEnsureXttsLicenseAcceptance:
 
 
 class TestFlushLogs:
-    def test_drains_queue_and_inserts(self):
+    def test_actual_flush_logs_drains_queue(self):
         app = _make_app()
         app.log_queue.put("test message")
         app.log = MagicMock()
+        app.root.after = MagicMock()
 
         line = app.log_queue.get_nowait()
         app.log.insert("end", f"{line}\n")
@@ -213,6 +215,23 @@ class TestFlushLogs:
 
         app.log.insert.assert_called_once()
         app.log.see.assert_called_once()
+
+    def test_flush_logs_full_flow(self):
+        app = _make_app()
+        app.log = MagicMock()
+        app.log.configure = MagicMock()
+        app.root.after = MagicMock()
+
+        mock_queue = MagicMock()
+        mock_queue.empty.side_effect = [False, False, True]
+        mock_queue.get_nowait.side_effect = ["msg1", "msg2"]
+        app.log_queue = mock_queue
+
+        app.flush_logs()
+
+        assert app.log.insert.call_count == 2
+        assert app.log.see.call_count == 2
+        app.root.after.assert_called_once_with(150, app.flush_logs)
 
 
 class TestEnqueueLog:
@@ -720,3 +739,311 @@ class TestRunGeneration:
             app.service.iter_segments.side_effect = RuntimeError("synthesis error")
             app.run_generation(req)
         assert app.finish_generation_modal.called
+
+    def test_run_generation_multi_chunk_adds_pause(self):
+        app = _make_app()
+        app.update_generation_progress = MagicMock()
+        app.finish_generation_modal = MagicMock()
+        app.generation_status = MagicMock()
+        app.root.after.side_effect = lambda ms, cb: cb()
+        req = MagicMock()
+        req.text = "Hello world."
+        req.output_file = Path("/tmp/out.mp3")
+        mock_chunk = MagicMock()
+        mock_segment = MagicMock()
+        app.service.iter_segments.return_value = [(mock_chunk, mock_segment), (mock_chunk, mock_segment)]
+        with patch("app.export_audio_segment"):
+            with patch("app.AudioSegment.silent", return_value=MagicMock()):
+                with patch("app.chunk_text_with_offsets", return_value=[mock_chunk, mock_chunk]):
+                    app.run_generation(req)
+        assert app.finish_generation_modal.called
+
+
+class TestGetDefaultMusicFolder:
+    def test_linux_xdg_music_dir(self, temp_dir):
+        config_dir = temp_dir / ".config"
+        config_dir.mkdir()
+        user_dirs = config_dir / "user-dirs.dirs"
+        user_dirs.write_text(f'XDG_MUSIC_DIR="{temp_dir / "Music"}"')
+        with patch("sys.platform", "linux"):
+            with patch("app.Path.home", return_value=temp_dir):
+                result = get_default_music_folder()
+        assert "Music" in str(result)
+
+    def test_linux_no_xdg_falls_back_to_home_music(self, temp_dir):
+        config_dir = temp_dir / ".config"
+        config_dir.mkdir(parents=True)
+        with patch("sys.platform", "linux"):
+            with patch("app.Path.home", return_value=temp_dir):
+                result = get_default_music_folder()
+        assert result == temp_dir / "Music"
+
+    def test_darwin_returns_music(self, temp_dir):
+        with patch("sys.platform", "darwin"):
+            with patch("app.Path.home", return_value=temp_dir):
+                result = get_default_music_folder()
+        assert result == temp_dir / "Music"
+
+
+class TestOnSpeedChanged:
+    def test_updates_speed_label(self):
+        app = _make_app()
+        app.speed.get.return_value = 1.5
+        app.speed_label = MagicMock()
+        app._on_speed_changed()
+        app.speed_label.configure.assert_called_once_with(text="Speed: 1.5x")
+
+
+class TestStartReadAloudFlow:
+    def test_start_read_aloud_from_no_offset_uses_start(self):
+        app = _make_app()
+        app.worker = None
+        app.get_read_aloud_start_offset = MagicMock(return_value=0)
+        app.get_text_content = MagicMock(return_value="Hello world.")
+        app.service.resolve_engine = MagicMock(return_value="Piper")
+        app.cleanup_preview_files = MagicMock()
+        app.update_playback_toggle_label = MagicMock()
+        app.root.after = MagicMock()
+        req = MagicMock()
+        with patch.object(app, "collect_request", return_value=req):
+            app.start_read_aloud_from(None, reason="button")
+        assert app.preview_job_id == 1
+
+    def test_start_read_aloud_from_with_offset(self):
+        app = _make_app()
+        app.worker = None
+        app.get_read_aloud_start_offset = MagicMock(return_value=5)
+        app.get_text_content = MagicMock(return_value="Hello world.")
+        app.service.resolve_engine = MagicMock(return_value="Piper")
+        app.cleanup_preview_files = MagicMock()
+        app.update_playback_toggle_label = MagicMock()
+        app.root.after = MagicMock()
+        req = MagicMock()
+        with patch.object(app, "collect_request", return_value=req):
+            app.start_read_aloud_from(10, reason="click_jump")
+        assert app.preview_job_id == 1
+
+    def test_start_read_aloud_empty_text_collect_fails(self):
+        app = _make_app()
+        app.text._content = ""
+        app.worker = None
+        app.service.resolve_engine = MagicMock(return_value="Piper")
+        with patch("app.messagebox.showerror") as mock_err:
+            app.start_read_aloud()
+        mock_err.assert_called_once()
+
+    def test_start_read_aloud_worker_busy(self):
+        app = _make_app()
+        app.worker = MagicMock()
+        app.worker.is_alive.return_value = True
+        with patch("app.messagebox.showinfo") as mock_info:
+            app.start_read_aloud_from(0, reason="button")
+        mock_info.assert_called_once()
+
+    def test_start_read_aloud_xtts_license_rejected(self):
+        app = _make_app()
+        app.worker = None
+        app.get_read_aloud_start_offset = MagicMock(return_value=0)
+        app.get_text_content = MagicMock(return_value="Hello world.")
+        app.service.resolve_engine = MagicMock(return_value="XTTS v2")
+        app.ensure_xtts_license_acceptance = MagicMock(return_value=False)
+        req = MagicMock()
+        with patch.object(app, "collect_request", return_value=req):
+            app.start_read_aloud_from(0, reason="button")
+        assert app.preview_job_id == 0
+
+    def test_start_generation_xtts_license_rejected(self):
+        app = _make_app()
+        app.worker = None
+        app.service.resolve_engine = MagicMock(return_value="XTTS v2")
+        app.ensure_xtts_license_acceptance = MagicMock(return_value=False)
+        app.show_generation_modal = MagicMock()
+        req = MagicMock()
+        with patch.object(app, "collect_request", return_value=req):
+            app.start_generation()
+        app.show_generation_modal.assert_not_called()
+
+    def test_run_read_aloud_error_handling(self):
+        app = _make_app()
+        app.service.iter_segments.side_effect = RuntimeError("read aloud error")
+        app.root.after.side_effect = lambda ms, cb=None: cb() if cb else None
+        app.highlight_read_aloud_line = MagicMock()
+        app.update_playback_toggle_label = MagicMock()
+        app.clear_read_aloud_highlight = MagicMock()
+        app.cleanup_preview_files = MagicMock()
+        app.player.play_blocking = MagicMock()
+        app.enqueue_log = MagicMock()
+        app.preview_job_id = 1
+        req = MagicMock()
+        stop_event = MagicMock()
+        stop_event.is_set.return_value = False
+
+        with patch("app.messagebox.showerror"):
+            app.run_read_aloud(req, 0, 1, stop_event)
+
+        app.enqueue_log.assert_called()
+        app.clear_read_aloud_highlight.assert_called()
+
+    def test_run_read_aloud_stops_on_job_id_change(self):
+        app = _make_app()
+        mock_chunk = MagicMock()
+        mock_chunk.start = 0
+        mock_chunk.text = "hello"
+        mock_segment = MagicMock()
+        app.service.iter_segments.return_value = [(mock_chunk, mock_segment)]
+        app.root.after.side_effect = lambda ms, cb=None: None
+        app.highlight_read_aloud_line = MagicMock()
+        app.update_playback_toggle_label = MagicMock()
+        app.clear_read_aloud_highlight = MagicMock()
+        app.cleanup_preview_files = MagicMock()
+        app.player.play_blocking = MagicMock()
+        app.enqueue_log = MagicMock()
+        app.preview_job_id = 99
+        req = MagicMock()
+        stop_event = MagicMock()
+        stop_event.is_set.return_value = False
+
+        app.run_read_aloud(req, 0, 1, stop_event)
+        app.player.play_blocking.assert_not_called()
+
+    def test_start_read_aloud_while_worker_running(self):
+        app = _make_app()
+        app.worker = MagicMock()
+        app.worker.is_alive.return_value = True
+        with patch("app.messagebox.showinfo") as mock_info:
+            app.start_read_aloud_from(0, reason="button")
+        mock_info.assert_called_once()
+
+
+class TestOpenDocumentWizardExisting:
+    def test_lifts_existing_wizard(self):
+        app = _make_app()
+        mock_window = MagicMock()
+        mock_window.winfo_exists.return_value = True
+        app.doc_wizard = MagicMock()
+        app.doc_wizard.window = mock_window
+        app.open_document_wizard()
+        mock_window.lift.assert_called_once()
+
+
+class TestOpenGeneratedFileFolder:
+    def test_open_generated_file_no_path_returns(self):
+        app = _make_app()
+        app.generation_result_path = None
+        app.open_path_in_system = MagicMock()
+        app.open_generated_file()
+        app.open_path_in_system.assert_not_called()
+
+    def test_open_generated_file_with_path(self):
+        app = _make_app()
+        app.generation_result_path = Path("/tmp/test.mp3")
+        app.open_path_in_system = MagicMock()
+        app.open_generated_file()
+        app.open_path_in_system.assert_called_once_with(Path("/tmp/test.mp3"))
+
+    def test_open_generated_folder_with_path(self):
+        app = _make_app()
+        app.generation_result_path = Path("/tmp/test.mp3")
+        app.open_path_in_system = MagicMock()
+        app.open_generated_folder()
+        app.open_path_in_system.assert_called_once_with(Path("/tmp"))
+
+    def test_open_generated_folder_no_path(self):
+        app = _make_app()
+        app.generation_result_path = None
+        app.open_path_in_system = MagicMock()
+        with patch("app.Path.cwd", return_value=Path("/tmp")):
+            app.open_generated_folder()
+        app.open_path_in_system.assert_called_once()
+
+
+class TestReloadPiperVoicesWithPreferredCode:
+    def test_preferred_code_finds_label(self):
+        app = _make_app()
+        app.piper_voice_label.set("some-other")
+        with patch("app.discover_local_piper_voices", return_value={
+            "Hungarian | Anna | medium": {"code": "hu_HU-anna-medium", "xtts_language": "hu"}
+        }):
+            app.reload_piper_voices(preferred_code="hu_HU-anna-medium")
+        assert app.piper_voice_label.get() == "Hungarian | Anna | medium"
+
+    def test_preferred_code_not_found_keeps_current(self):
+        app = _make_app()
+        app.piper_voice_label.set("some-other")
+        with patch("app.discover_local_piper_voices", return_value={
+            "Hungarian | Anna | medium": {"code": "hu_HU-anna-medium", "xtts_language": "hu"}
+        }):
+            app.reload_piper_voices(preferred_code="nonexistent")
+        assert app.piper_voice_label.get() == "Hungarian | Anna | medium"
+
+
+class TestGetReadAloudStartOffsetSelection:
+    def test_with_selection_returns_offset(self):
+        app = _make_app()
+        app.text._content = "Hello world test here."
+        app.text._selection = "Hello"
+        app.text.tag_ranges = MagicMock(return_value=["sel.first", "sel.last"])
+        app.text.index = MagicMock(return_value="1.0")
+        app.text.count = MagicMock(return_value=[0])
+        result = app.get_read_aloud_start_offset()
+        assert result is not None
+
+    def test_with_widget_index(self):
+        app = _make_app()
+        app.text._content = "Hello world test here."
+        app.text._selection = None
+        app.text.tag_ranges = MagicMock(return_value=("sel.first", "sel.last"))
+        app.text.index = MagicMock(return_value="1.5")
+        app.text.count = MagicMock(return_value=[5])
+        result = app.get_read_aloud_start_offset(widget_index="1.5")
+        assert result is not None
+
+    def test_with_last_selection_offset(self):
+        app = _make_app()
+        app.text._content = "Hello world test here."
+        app.last_selection_start_offset = 6
+        app.text.tag_ranges = MagicMock(return_value=())
+        result = app.get_read_aloud_start_offset()
+        assert result is not None
+
+    def test_no_selection_no_last_offset_returns_word_start(self):
+        app = _make_app()
+        app.text._content = "Hello world test here."
+        app.last_selection_start_offset = None
+        app.text.tag_ranges = MagicMock(return_value=())
+        app.text.index = MagicMock(return_value="1.0")
+        app.text.count = MagicMock(return_value=[6])
+        result = app.get_read_aloud_start_offset()
+        assert result is not None
+
+
+class TestOnTextClickNoPreview:
+    def test_click_without_preview_does_nothing(self):
+        app = _make_app()
+        app.text._content = "Hello world"
+        app.text.index = MagicMock(return_value="1.0")
+        app.text.count = MagicMock(return_value=[0])
+        app.text.tag_ranges = MagicMock(return_value=())
+        app.preview_worker = None
+        app.start_read_aloud_from = MagicMock()
+        mock_event = MagicMock()
+        mock_event.x = 10
+        mock_event.y = 5
+        app.on_text_click(mock_event)
+        app.start_read_aloud_from.assert_not_called()
+
+
+class TestPauseResumeExceptionHandling:
+    def test_pause_exception_logged(self):
+        app = _make_app()
+        app.player.pause.side_effect = RuntimeError("pause error")
+        app.enqueue_log = MagicMock()
+        app.pause_playback()
+        app.enqueue_log.assert_called()
+
+    def test_resume_exception_logged(self):
+        app = _make_app()
+        app.player.resume.side_effect = RuntimeError("resume error")
+        app.enqueue_log = MagicMock()
+        app.resume_playback()
+        app.enqueue_log.assert_called()

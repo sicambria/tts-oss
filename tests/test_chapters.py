@@ -58,6 +58,9 @@ class TestHeadingLevelHelpers:
     def test_level_for_setting_h1_h3(self):
         assert DocumentExtractor._heading_level_for_setting("h1-h3") == 3
 
+    def test_level_for_setting_unknown(self):
+        assert DocumentExtractor._heading_level_for_setting("unknown") is None
+
 
 class TestDocxChapterExtraction:
     def test_extracts_chapters_with_headings(self, docx_chapters_path):
@@ -269,3 +272,204 @@ class TestMergeShortChapters:
         entries = [self._entry("hello", word_count=1)]
         result = DocumentToAudioWizard._merge_short_chapters(entries)
         assert len(result) == 1
+
+
+class TestPdfChapterFromOutline:
+    def test_outline_extracts_chapters(self, temp_dir):
+        text = "This is the intro text that covers multiple lines.\n\nMore intro content here."
+
+        mock_page1 = MagicMock()
+        mock_page1.extract_text.return_value = text
+
+        outline_item = MagicMock()
+        outline_item.title = "Introduction"
+        mock_reader = MagicMock()
+        mock_reader.pages = [mock_page1, mock_page1]
+        mock_reader.outline = [outline_item]
+        mock_reader.get_destination_page_number.return_value = 0
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            chapters = DocumentExtractor._extract_pdf_chapters_from_outline(mock_reader)
+
+        assert len(chapters) == 1
+        assert chapters[0][0] == "Introduction"
+        assert "intro text" in chapters[0][1].lower()
+
+    def test_outline_with_nested_items(self, temp_dir):
+        mock_page = MagicMock()
+        mock_page.extract_text.return_value = "Content here."
+
+        mock_reader = MagicMock()
+        mock_reader.pages = [mock_page]
+
+        child_item = MagicMock()
+        child_item.title = "Subsection"
+        mock_reader.outline = [[child_item]]
+        mock_reader.get_destination_page_number.return_value = 0
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            chapters = DocumentExtractor._extract_pdf_chapters_from_outline(mock_reader)
+
+        assert len(chapters) >= 1
+
+    def test_outline_no_items_returns_empty(self, temp_dir):
+        mock_page = MagicMock()
+        mock_page.extract_text.return_value = "Some content."
+
+        mock_reader = MagicMock()
+        mock_reader.pages = [mock_page]
+        mock_reader.outline = []
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            chapters = DocumentExtractor._extract_pdf_chapters_from_outline(mock_reader)
+
+        assert chapters == []
+
+    def test_outline_title_stripped(self, temp_dir):
+        mock_page = MagicMock()
+        mock_page.extract_text.return_value = "Some content."
+
+        mock_reader = MagicMock()
+        mock_reader.pages = [mock_page]
+
+        item = MagicMock()
+        item.title = "  Chapter 1  "
+        mock_reader.outline = [item]
+        mock_reader.get_destination_page_number.return_value = 0
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            chapters = DocumentExtractor._extract_pdf_chapters_from_outline(mock_reader)
+
+        assert chapters[0][0] == "Chapter 1"
+
+    def test_outline_skips_empty_title(self, temp_dir):
+        mock_page = MagicMock()
+        mock_page.extract_text.return_value = "Some content."
+
+        mock_reader = MagicMock()
+        mock_reader.pages = [mock_page]
+
+        item = MagicMock()
+        item.title = ""
+        mock_reader.outline = [item]
+        mock_reader.get_destination_page_number.return_value = 0
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            chapters = DocumentExtractor._extract_pdf_chapters_from_outline(mock_reader)
+
+        assert chapters == []
+
+    def test_extract_pdf_chapters_uses_outline(self, temp_dir):
+        mock_page = MagicMock()
+        mock_page.extract_text.return_value = "Content text."
+
+        mock_reader = MagicMock()
+        mock_reader.pages = [mock_page]
+
+        item = MagicMock()
+        item.title = "Chapter 1"
+        mock_reader.outline = [item]
+        mock_reader.get_destination_page_number.return_value = 0
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            chapters = DocumentExtractor._extract_pdf_chapters(temp_dir / "test.pdf")
+
+        assert len(chapters) >= 1
+
+    def test_extract_pdf_chapters_with_page_range(self, temp_dir):
+        mock_page = MagicMock()
+        mock_page.extract_text.return_value = "Page content."
+
+        mock_reader = MagicMock()
+        mock_reader.pages = [mock_page, mock_page, mock_page]
+
+        item = MagicMock()
+        item.title = "Chapter 1"
+        mock_reader.outline = [item]
+        mock_reader.get_destination_page_number.return_value = 0
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            chapters = DocumentExtractor._extract_pdf_chapters(
+                temp_dir / "test.pdf", from_page=1, to_page=2
+            )
+
+        assert len(chapters) >= 1
+
+    def test_extract_pdf_chapters_insufficient_outline_falls_back(self, temp_dir):
+        mock_page = MagicMock()
+        mock_page.extract_text.return_value = "Just some content."
+
+        mock_reader = MagicMock()
+        mock_reader.pages = [mock_page]
+
+        item = MagicMock()
+        item.title = "Only Chapter"
+        mock_reader.outline = [item]
+        mock_reader.get_destination_page_number.return_value = 0
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            chapters = DocumentExtractor._extract_pdf_chapters(temp_dir / "test.pdf")
+
+        assert len(chapters) >= 1
+
+    def test_pdf_chapters_empty_text_fallback(self, temp_dir):
+        mock_page = MagicMock()
+        mock_page.extract_text.return_value = ""
+
+        mock_reader = MagicMock()
+        mock_reader.pages = [mock_page]
+        mock_reader.outline = []
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            chapters = DocumentExtractor._extract_pdf_chapters_by_pattern(temp_dir / "test.pdf")
+
+        assert len(chapters) == 1
+        assert chapters[0][0] == ""
+
+    def test_pdf_chapters_no_pattern_match_falls_back(self, temp_dir):
+        mock_page = MagicMock()
+        mock_page.extract_text.return_value = "Plain text without any chapter headings at all anywhere."
+
+        mock_reader = MagicMock()
+        mock_reader.pages = [mock_page]
+        mock_reader.outline = []
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            chapters = DocumentExtractor._extract_pdf_chapters_by_pattern(temp_dir / "test.pdf")
+
+        assert len(chapters) == 1
+        assert "Plain text" in chapters[0][1]
+
+
+class TestDocumentToAudioWizardFinish:
+    def test_finish_success(self):
+        wizard = DocumentToAudioWizard.__new__(DocumentToAudioWizard)
+        wizard.window = MagicMock()
+        wizard.window.after.side_effect = lambda ms, cb: cb()
+        wizard._set_buttons_state = MagicMock()
+        wizard.phase_text = MagicMock()
+        wizard.overall_bar = MagicMock()
+        wizard.overall_bar.__setitem__ = MagicMock()
+        wizard.overall_text = MagicMock()
+        wizard.file_bar = MagicMock()
+        wizard.file_bar.__setitem__ = MagicMock()
+        wizard.file_text = MagicMock()
+        wizard.app = MagicMock()
+
+        wizard._finish(None)
+        wizard._set_buttons_state.assert_called_once_with(processing=False)
+        wizard.phase_text.set.assert_called_with("Conversion complete.")
+        wizard.app.enqueue_log.assert_called_once_with("Document conversion complete.")
+
+    def test_finish_error(self):
+        wizard = DocumentToAudioWizard.__new__(DocumentToAudioWizard)
+        wizard.window = MagicMock()
+        wizard.window.after.side_effect = lambda ms, cb: cb()
+        wizard._set_buttons_state = MagicMock()
+        wizard.phase_text = MagicMock()
+        wizard.overall_text = MagicMock()
+        wizard.app = MagicMock()
+
+        wizard._finish("Something went wrong")
+        wizard.phase_text.set.assert_called_with("Something went wrong")
+        wizard.overall_text.set.assert_called_with("Failed")

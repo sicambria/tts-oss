@@ -1,9 +1,11 @@
 #!/bin/sh
 set -e
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+VENV="$SCRIPT_DIR/.venv"
 
 echo "=== ruff check ==="
-ruff check app.py tests/
+"$VENV/bin/ruff" check "$SCRIPT_DIR/app.py" "$SCRIPT_DIR/tests/"
 
 echo ""
 echo "=== pytest (--cov-fail-under=50) ==="
-pytest --cov --cov-fail-under=50
+"$VENV/bin/python" -m pytest --cov --cov-fail-under=50

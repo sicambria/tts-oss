@@ -103,6 +103,45 @@ class TestChunkText:
         assert len(result) >= 2
 
 
+class TestSplitLongPieceEdgeCases:
+    def test_empty_clause_skipped(self):
+        result = split_long_piece("a, , b, c", 10)
+        combined = " ".join(result)
+        assert "a" in combined
+        assert "b" in combined
+
+    def test_clause_with_paren_split(self):
+        piece = "Hello (world) there"
+        result = split_long_piece(piece, 50)
+        assert len(result) >= 1
+
+    def test_long_clause_word_split_stores_current(self):
+        piece = "keep, " + "w1 " * 15 + "w2 " * 15
+        result = split_long_piece(piece, 30)
+        assert len(result) >= 1
+
+    def test_single_word_longer_than_max(self):
+        result = split_long_piece("supercalifragilisticexpialidocious", 10)
+        assert len(result) >= 1
+
+    def test_word_chunk_with_current_appended(self):
+        piece = "a " * 5 + "b " * 2 + "c " * 15
+        result = split_long_piece(piece, 8)
+        for chunk in result:
+            assert len(chunk) <= 8
+
+
+class TestChunkTextWithOffsetsEdgeCases:
+    def test_effective_start_none_returns_empty(self):
+        result = chunk_text_with_offsets("hello world", max_chars=200, start_offset=100)
+        assert result == []
+
+    def test_current_word_chunk_with_current_saved(self):
+        text = "keep this, " + "a " * 50
+        result = chunk_text_with_offsets(text, max_chars=40)
+        assert len(result) >= 1
+
+
 class TestChunkTextWithOffsets:
     def test_empty_text(self):
         result = chunk_text_with_offsets("")
