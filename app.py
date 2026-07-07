@@ -12,6 +12,7 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+from urllib.parse import quote
 from urllib.request import urlopen
 
 import imageio_ffmpeg
@@ -705,10 +706,24 @@ class PiperVoiceWizard:
 
     def _download_voice_worker(self, voice_code: str) -> None:
         try:
-            from piper.download_voices import download_voice
+            import shutil
 
             PIPER_VOICE_DIR.mkdir(parents=True, exist_ok=True)
-            download_voice(voice_code, PIPER_VOICE_DIR)
+            info = self.catalog.get(voice_code, {})
+            files = info.get("files", {})
+
+            for rel_path in files:
+                if not rel_path.endswith((".onnx", ".onnx.json")):
+                    continue
+
+                local_path = PIPER_VOICE_DIR / Path(rel_path).name
+                if local_path.exists() and local_path.stat().st_size > 0:
+                    continue
+
+                url = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{quote(rel_path)}?download=true"
+                with urlopen(url, timeout=60) as resp:
+                    with open(local_path, "wb") as f:
+                        shutil.copyfileobj(resp, f)
         except Exception as exc:
             error_message = f"Download failed: {exc}"
             self.window.after(0, lambda message=error_message: self.status.set(message))
