@@ -267,14 +267,14 @@ class DocumentExtractor:
     }
 
     @staticmethod
-    def extract_text(filepath: Path) -> str:
+    def extract_text(filepath: Path, from_page: int | None = None, to_page: int | None = None) -> str:
         suffix = filepath.suffix.lower()
         if suffix == ".docx":
             return DocumentExtractor._extract_docx(filepath)
         if suffix == ".odt":
             return DocumentExtractor._extract_odt(filepath)
         if suffix == ".pdf":
-            return DocumentExtractor._extract_pdf(filepath)
+            return DocumentExtractor._extract_pdf(filepath, from_page=from_page, to_page=to_page)
         if suffix == ".epub":
             return DocumentExtractor._extract_epub(filepath)
         if suffix == ".mobi":
@@ -308,14 +308,19 @@ class DocumentExtractor:
         return "\n\n".join(paragraphs)
 
     @staticmethod
-    def _extract_pdf(filepath: Path) -> str:
+    def _extract_pdf(filepath: Path, from_page: int | None = None, to_page: int | None = None) -> str:
         try:
             from pypdf import PdfReader
         except ImportError:
             raise RuntimeError("pypdf not installed. Run: pip install pypdf")
         reader = PdfReader(str(filepath))
+        total_pages = len(reader.pages)
+        start = (from_page or 1) - 1
+        end = to_page if to_page else total_pages
+        start = max(0, min(start, total_pages - 1))
+        end = max(start + 1, min(end, total_pages))
         pages = []
-        for page in reader.pages:
+        for page in reader.pages[start:end]:
             text = page.extract_text()
             if text:
                 text = re.sub(r"\n{3,}", "\n\n", text)
@@ -386,19 +391,24 @@ class DocumentExtractor:
                     pass
 
     @staticmethod
-    def extract_chapters(filepath: Path, min_level: str = "all") -> list[tuple[str, str]]:
+    def extract_chapters(
+        filepath: Path,
+        min_level: str = "all",
+        from_page: int | None = None,
+        to_page: int | None = None,
+    ) -> list[tuple[str, str]]:
         suffix = filepath.suffix.lower()
         if suffix == ".docx":
             return DocumentExtractor._extract_docx_chapters(filepath, min_level)
         if suffix == ".odt":
             return DocumentExtractor._extract_odt_chapters(filepath, min_level)
         if suffix == ".pdf":
-            return DocumentExtractor._extract_pdf_chapters(filepath, min_level)
+            return DocumentExtractor._extract_pdf_chapters(filepath, min_level, from_page=from_page, to_page=to_page)
         if suffix == ".epub":
             return DocumentExtractor._extract_epub_chapters(filepath, min_level)
         if suffix == ".mobi":
             return DocumentExtractor._extract_mobi_chapters(filepath, min_level)
-        return [(("", DocumentExtractor.extract_text(filepath)))]
+        return [(("", DocumentExtractor.extract_text(filepath, from_page=from_page, to_page=to_page)))]
 
     @staticmethod
     def _heading_level_for_setting(min_level: str) -> int | None:
@@ -519,7 +529,12 @@ class DocumentExtractor:
         return chapters
 
     @staticmethod
-    def _extract_pdf_chapters(filepath: Path, min_level: str = "all") -> list[tuple[str, str]]:
+    def _extract_pdf_chapters(
+        filepath: Path,
+        min_level: str = "all",
+        from_page: int | None = None,
+        to_page: int | None = None,
+    ) -> list[tuple[str, str]]:
         try:
             from pypdf import PdfReader
         except ImportError:
@@ -527,16 +542,29 @@ class DocumentExtractor:
         reader = PdfReader(str(filepath))
 
         if reader.outline:
-            chapters = DocumentExtractor._extract_pdf_chapters_from_outline(reader)
+            chapters = DocumentExtractor._extract_pdf_chapters_from_outline(
+                reader, from_page=from_page, to_page=to_page
+            )
             if len(chapters) >= 2:
                 return chapters
 
-        return DocumentExtractor._extract_pdf_chapters_by_pattern(filepath)
+        return DocumentExtractor._extract_pdf_chapters_by_pattern(filepath, from_page=from_page, to_page=to_page)
 
     @staticmethod
-    def _extract_pdf_chapters_from_outline(reader) -> list[tuple[str, str]]:
+    def _extract_pdf_chapters_from_outline(
+        reader,
+        from_page: int | None = None,
+        to_page: int | None = None,
+    ) -> list[tuple[str, str]]:
+        total_pages = len(reader.pages)
+        user_start = max(0, (from_page or 1) - 1)
+        user_end = min(total_pages, to_page) if to_page else total_pages
+        user_start = max(0, min(user_start, total_pages - 1))
+        user_end = max(user_start + 1, min(user_end, total_pages))
+
         pages_text: dict[int, str] = {}
-        for page_num, page in enumerate(reader.pages):
+        for page_num in range(user_start, user_end):
+            page = reader.pages[page_num]
             text = page.extract_text()
             if text:
                 text = re.sub(r"\n{3,}", "\n\n", text)
@@ -579,8 +607,12 @@ class DocumentExtractor:
         return chapters
 
     @staticmethod
-    def _extract_pdf_chapters_by_pattern(filepath: Path) -> list[tuple[str, str]]:
-        full_text = DocumentExtractor._extract_pdf(filepath)
+    def _extract_pdf_chapters_by_pattern(
+        filepath: Path,
+        from_page: int | None = None,
+        to_page: int | None = None,
+    ) -> list[tuple[str, str]]:
+        full_text = DocumentExtractor._extract_pdf(filepath, from_page=from_page, to_page=to_page)
         if not full_text.strip():
             return [("", "")]
 
@@ -709,6 +741,7 @@ class SynthesisRequest:
     piper_voice_code: str
     speaker_name: str
     speaker_wav: str
+    speed: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -868,6 +901,8 @@ class XTTSService:
         self._log(f"Prepared {len(chunks)} chunk(s) for synthesis.")
 
         kwargs = {"language": request.language}
+        if request.speed != 1.0:
+            kwargs["speed"] = request.speed
         if request.speaker_wav:
             kwargs["speaker_wav"] = request.speaker_wav
             self._log("Voice source: reference WAV")
@@ -945,7 +980,10 @@ class PiperService:
         for index, chunk in enumerate(chunks, start=1):
             self._log(f"Synthesizing chunk {index}/{len(chunks)}")
             segment = AudioSegment.silent(duration=0)
-            for audio_chunk in voice.synthesize(chunk.text):
+            syn_kwargs = {}
+            if request.speed != 1.0:
+                syn_kwargs["length_scale"] = 1.0 / request.speed
+            for audio_chunk in voice.synthesize(chunk.text, **syn_kwargs):
                 segment += AudioSegment(
                     data=audio_chunk.audio_int16_bytes,
                     sample_width=audio_chunk.sample_width,
@@ -1305,6 +1343,11 @@ class DocumentToAudioWizard:
         self.split_chapters = BooleanVar(value=False)
         self.chapter_level = StringVar(value="all")
 
+        self.wizard_speed = DoubleVar(value=self.app.speed.get())
+
+        self.from_page = StringVar(value="")
+        self.to_page = StringVar(value="")
+
         self.wizard_engine = StringVar(value=app.engine.get())
         self.wizard_piper_voice_label = StringVar(value=app.piper_voice_label.get())
         self.wizard_speaker_name = StringVar(value=app.speaker_name.get())
@@ -1439,14 +1482,26 @@ class DocumentToAudioWizard:
         )
         self.wizard_speaker_wav_button.grid(row=2, column=5, sticky="e", pady=4)
 
+        self.wizard_speed_label = ttk.Label(settings_frame, text="Speed: 1.0x")
+        self.wizard_speed_label.grid(row=3, column=0, sticky="w", pady=4)
+        self.wizard_speed_slider = ttk.Scale(
+            settings_frame,
+            from_=0.5,
+            to=2.0,
+            variable=self.wizard_speed,
+            orient="horizontal",
+            command=self._on_wizard_speed_changed,
+        )
+        self.wizard_speed_slider.grid(row=3, column=1, columnspan=5, sticky="ew", pady=4)
+
         ttk.Checkbutton(
             settings_frame,
             text="Merge all documents into one audio file",
             variable=self.merge_files,
-        ).grid(row=3, column=0, columnspan=6, sticky="w", pady=(6, 4))
+        ).grid(row=4, column=0, columnspan=6, sticky="w", pady=(6, 4))
 
         split_row = ttk.Frame(settings_frame)
-        split_row.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(6, 4))
+        split_row.grid(row=5, column=0, columnspan=6, sticky="ew", pady=(6, 4))
         self.split_chapters_check = ttk.Checkbutton(
             split_row,
             text="Split by chapter (experimental)",
@@ -1464,13 +1519,23 @@ class DocumentToAudioWizard:
         )
         self.chapter_level_box.pack(side="left")
 
-        ttk.Label(settings_frame, text="Output Folder").grid(row=5, column=0, sticky="w", pady=4)
+        ttk.Label(settings_frame, text="Output Folder").grid(row=6, column=0, sticky="w", pady=4)
         ttk.Entry(settings_frame, textvariable=self.output_folder).grid(
-            row=5, column=1, columnspan=4, sticky="ew", pady=4
+            row=6, column=1, columnspan=4, sticky="ew", pady=4
         )
         ttk.Button(settings_frame, text="Browse...", command=self._pick_output_folder).grid(
-            row=5, column=5, sticky="e", pady=4, padx=(8, 0)
+            row=6, column=5, sticky="e", pady=4, padx=(8, 0)
         )
+
+        ttk.Label(settings_frame, text="Pages (PDF)").grid(row=7, column=0, sticky="w", pady=4)
+        page_row = ttk.Frame(settings_frame)
+        page_row.grid(row=7, column=1, columnspan=5, sticky="w", pady=4)
+        ttk.Label(page_row, text="From:").pack(side="left")
+        self.from_page_entry = ttk.Entry(page_row, textvariable=self.from_page, width=6)
+        self.from_page_entry.pack(side="left", padx=(4, 12))
+        ttk.Label(page_row, text="To:").pack(side="left")
+        self.to_page_entry = ttk.Entry(page_row, textvariable=self.to_page, width=6)
+        self.to_page_entry.pack(side="left", padx=(4, 0))
 
         progress_frame = ttk.LabelFrame(frame, text="Progress", padding=10)
         progress_frame.pack(fill="x", pady=(10, 0))
@@ -1493,6 +1558,17 @@ class DocumentToAudioWizard:
         )
         self.file_bar = ttk.Progressbar(progress_frame, orient="horizontal", mode="determinate", maximum=100)
         self.file_bar.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+
+    def _on_wizard_speed_changed(self, *args) -> None:
+        speed_val = round(self.wizard_speed.get(), 1)
+        self.wizard_speed_label.configure(text=f"Speed: {speed_val:.1f}x")
+
+    def _parse_page_range(self) -> tuple[int | None, int | None]:
+        from_str = self.from_page.get().strip()
+        to_str = self.to_page.get().strip()
+        from_page = int(from_str) if from_str else None
+        to_page = int(to_str) if to_str else None
+        return from_page, to_page
 
     def _on_wizard_engine_changed(self, *_args) -> None:
         piper_enabled = self.wizard_engine.get() in (ENGINE_AUTO, ENGINE_PIPER)
@@ -1655,6 +1731,7 @@ class DocumentToAudioWizard:
         docs = list(self.documents)
         total = len(docs)
         chapter_formats = {".docx", ".odt", ".pdf", ".epub"}
+        from_page, to_page = self._parse_page_range()
         for i, doc_path in enumerate(docs):
             if self.stop_event.is_set():
                 return
@@ -1675,7 +1752,8 @@ class DocumentToAudioWizard:
             try:
                 if self.split_chapters.get() and doc_path.suffix.lower() in chapter_formats:
                     raw_chapters = DocumentExtractor.extract_chapters(
-                        doc_path, self.chapter_level.get()
+                        doc_path, self.chapter_level.get(),
+                        from_page=from_page, to_page=to_page,
                     )
                     entries = []
                     for idx, (title, content) in enumerate(raw_chapters):
@@ -1709,7 +1787,7 @@ class DocumentToAudioWizard:
                         lambda p=doc_path, s=status: self._update_doc_status(p, s),
                     )
                 else:
-                    text = DocumentExtractor.extract_text(doc_path)
+                    text = DocumentExtractor.extract_text(doc_path, from_page=from_page, to_page=to_page)
                     entry = ChapterEntry(
                         source_path=doc_path,
                         index=0,
@@ -1773,6 +1851,7 @@ class DocumentToAudioWizard:
             piper_voice_code=voice_metadata["code"],
             speaker_name=self.wizard_speaker_name.get().strip() or DEFAULT_SPEAKER,
             speaker_wav=self.wizard_speaker_wav.get().strip(),
+            speed=round(self.wizard_speed.get(), 1),
         )
 
     def _do_synthesis_per_file(self, output_folder: Path) -> None:
@@ -2086,6 +2165,7 @@ class App:
         self.output_file = StringVar(value=str((get_default_music_folder() / "speech.mp3").resolve()))
         self.status = StringVar(value="Ready")
         self.playback_toggle_label = StringVar(value="Pause")
+        self.speed = DoubleVar(value=1.0)
         self.generation_modal: Toplevel | None = None
         self.generation_progress = None
         self.generation_status = StringVar(value="")
@@ -2221,9 +2301,21 @@ class App:
         ttk.Entry(controls, textvariable=self.output_file).grid(row=3, column=1, columnspan=3, sticky="ew", pady=6)
         ttk.Button(controls, text="Save As", command=self.pick_output_file).grid(row=3, column=4, sticky="e", pady=6)
 
+        self.speed_label = ttk.Label(controls, text="Speed: 1.0x")
+        self.speed_label.grid(row=4, column=0, sticky="w", padx=(0, 10), pady=6)
+        self.speed_slider = ttk.Scale(
+            controls,
+            from_=0.5,
+            to=2.0,
+            variable=self.speed,
+            orient="horizontal",
+            command=self._on_speed_changed,
+        )
+        self.speed_slider.grid(row=4, column=1, columnspan=4, sticky="ew", pady=6)
+
         self.engine_hint = StringVar(value="")
         ttk.Label(controls, textvariable=self.engine_hint, style="Hint.TLabel").grid(
-            row=4, column=0, columnspan=5, sticky="w", pady=(4, 0)
+            row=5, column=0, columnspan=5, sticky="w", pady=(4, 0)
         )
 
         actions = ttk.Frame(main, style="Toolbar.TFrame")
@@ -2336,6 +2428,10 @@ class App:
             self.engine_hint.set(
                 "XTTS uses the Language field plus built-in speakers or reference voice cloning. Piper voice selection is ignored."
             )
+
+    def _on_speed_changed(self, *args) -> None:
+        speed_val = round(self.speed.get(), 1)
+        self.speed_label.configure(text=f"Speed: {speed_val:.1f}x")
 
     def enqueue_log(self, message: str) -> None:
         self.log_queue.put(message)
@@ -2546,6 +2642,7 @@ class App:
             )["code"]),
             speaker_name=self.speaker_name.get().strip() or DEFAULT_SPEAKER,
             speaker_wav=speaker_wav,
+            speed=round(self.speed.get(), 1),
         )
 
     def start_generation(self) -> None:
