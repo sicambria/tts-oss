@@ -423,10 +423,34 @@ def load_app_settings() -> dict:
         return json.loads(APP_SETTINGS_PATH.read_text(encoding="utf-8"))
     except Exception:
         return {}
-
-
 def save_app_settings(settings: dict) -> None:
     APP_SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+
+def get_default_music_folder() -> Path:
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        csidl = 13  # CSIDL_MYMUSIC
+        buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+        if ctypes.windll.shell32.SHGetFolderPathW(None, csidl, None, 0, buf) == 0:
+            return Path(buf.value)
+        return Path.home() / "Music"
+
+    if sys.platform == "darwin":
+        return Path.home() / "Music"
+
+    user_dirs = Path.home() / ".config" / "user-dirs.dirs"
+    if user_dirs.exists():
+        for line in user_dirs.read_text().splitlines():
+            if line.startswith("XDG_MUSIC_DIR="):
+                dir_path = line.split("=", 1)[1].strip('"').strip("'")
+                dir_path = dir_path.replace("$HOME", str(Path.home()))
+                resolved = Path(dir_path).expanduser()
+                if resolved.exists():
+                    return resolved
+    return Path.home() / "Music"
 
 
 def discover_local_piper_voices() -> dict[str, dict[str, str]]:
@@ -922,8 +946,8 @@ class DocumentToAudioWizard:
         self.app = app
         self.window = Toplevel(app.root)
         self.window.title("Document to Audio Converter")
-        self.window.geometry("980x640")
-        self.window.minsize(900, 580)
+        self.window.geometry("1000x760")
+        self.window.minsize(920, 680)
 
         self.documents: list[Path] = []
         self.doc_status: dict[Path, str] = {}
@@ -937,10 +961,15 @@ class DocumentToAudioWizard:
         self.stop_event = threading.Event()
 
         self.output_format = StringVar(value="MP3")
-        default_quality = list(self.MP3_PRESETS.keys())[2]
+        default_quality = list(self.MP3_PRESETS.keys())[0]
         self.quality_preset = StringVar(value=default_quality)
         self.merge_files = BooleanVar(value=False)
-        self.output_folder = StringVar(value=str((Path.cwd() / "output").resolve()))
+        self.output_folder = StringVar(value=str(get_default_music_folder().resolve()))
+
+        self.wizard_engine = StringVar(value=app.engine.get())
+        self.wizard_piper_voice_label = StringVar(value=app.piper_voice_label.get())
+        self.wizard_speaker_name = StringVar(value=app.speaker_name.get())
+        self.wizard_speaker_wav = StringVar(value=app.speaker_wav.get())
 
         self.phase_text = StringVar(value="")
         self.overall_text = StringVar(value="Idle")
@@ -949,11 +978,37 @@ class DocumentToAudioWizard:
 
         self._build_ui()
         self.output_format.trace_add("write", self._on_format_changed)
+        self.wizard_engine.trace_add("write", self._on_wizard_engine_changed)
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self) -> None:  # pragma: no cover
         frame = ttk.Frame(self.window, padding=12)
         frame.pack(fill="both", expand=True)
+
+        header = ttk.Frame(frame)
+        header.pack(fill="x", pady=(0, 8))
+        header.columnconfigure(0, weight=1)
+
+        ttk.Label(header, text="Document to Audio Converter", font=(FONT_BODY, 14, "bold")).grid(
+            row=0, column=0, sticky="w"
+        )
+
+        header_actions = ttk.Frame(header)
+        header_actions.grid(row=0, column=1, sticky="e")
+        self.start_button = ttk.Button(
+            header_actions, text="Start", style="Accent.TButton", command=self._start_processing
+        )
+        self.start_button.pack(side="left")
+        self.pause_button = ttk.Button(
+            header_actions, textvariable=self.pause_button_text, command=self._toggle_pause
+        )
+        self.pause_button.pack(side="left", padx=(8, 0))
+        ttk.Button(header_actions, text="Stop", command=self._stop_processing).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(header_actions, text="Close", command=self._on_close).pack(
+            side="left", padx=(8, 0)
+        )
 
         docs_frame = ttk.LabelFrame(frame, text="Documents", padding=10)
         docs_frame.pack(fill="both", expand=True)
@@ -985,6 +1040,7 @@ class DocumentToAudioWizard:
         settings_frame.pack(fill="x", pady=(10, 0))
         settings_frame.columnconfigure(1, weight=1)
         settings_frame.columnconfigure(3, weight=1)
+        settings_frame.columnconfigure(5, weight=1)
 
         ttk.Label(settings_frame, text="Format").grid(row=0, column=0, sticky="w", pady=4)
         self.format_box = ttk.Combobox(
@@ -1005,20 +1061,56 @@ class DocumentToAudioWizard:
             state="readonly",
             width=22,
         )
-        self.quality_box.grid(row=0, column=3, sticky="w", pady=4)
+        self.quality_box.grid(row=0, column=3, sticky="w", pady=4, padx=(0, 18))
+
+        ttk.Label(settings_frame, text="Engine").grid(row=0, column=4, sticky="w", pady=4)
+        self.wizard_engine_box = ttk.Combobox(
+            settings_frame,
+            textvariable=self.wizard_engine,
+            values=[ENGINE_AUTO, ENGINE_PIPER, ENGINE_XTTS],
+            state="readonly",
+            width=14,
+        )
+        self.wizard_engine_box.grid(row=0, column=5, sticky="w", pady=4)
+
+        ttk.Label(settings_frame, text="Piper Voice").grid(row=1, column=0, sticky="w", pady=4)
+        self.wizard_piper_voice_box = ttk.Combobox(
+            settings_frame,
+            textvariable=self.wizard_piper_voice_label,
+            values=list(self.app.piper_voice_options.keys()),
+            state="readonly",
+            width=28,
+        )
+        self.wizard_piper_voice_box.grid(row=1, column=1, columnspan=3, sticky="ew", pady=4)
+
+        ttk.Label(settings_frame, text="Speaker").grid(row=1, column=4, sticky="w", pady=4, padx=(18, 0))
+        self.wizard_speaker_name_entry = ttk.Entry(
+            settings_frame, textvariable=self.wizard_speaker_name
+        )
+        self.wizard_speaker_name_entry.grid(row=1, column=5, sticky="ew", pady=4)
+
+        ttk.Label(settings_frame, text="Reference WAV").grid(row=2, column=0, sticky="w", pady=4)
+        self.wizard_speaker_wav_entry = ttk.Entry(
+            settings_frame, textvariable=self.wizard_speaker_wav
+        )
+        self.wizard_speaker_wav_entry.grid(row=2, column=1, columnspan=4, sticky="ew", pady=4)
+        self.wizard_speaker_wav_button = ttk.Button(
+            settings_frame, text="Browse", command=self._pick_wizard_reference_wav
+        )
+        self.wizard_speaker_wav_button.grid(row=2, column=5, sticky="e", pady=4)
 
         ttk.Checkbutton(
             settings_frame,
             text="Merge all documents into one audio file",
             variable=self.merge_files,
-        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 4))
+        ).grid(row=3, column=0, columnspan=6, sticky="w", pady=(6, 4))
 
-        ttk.Label(settings_frame, text="Output Folder").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Label(settings_frame, text="Output Folder").grid(row=4, column=0, sticky="w", pady=4)
         ttk.Entry(settings_frame, textvariable=self.output_folder).grid(
-            row=2, column=1, columnspan=3, sticky="ew", pady=4
+            row=4, column=1, columnspan=4, sticky="ew", pady=4
         )
         ttk.Button(settings_frame, text="Browse...", command=self._pick_output_folder).grid(
-            row=2, column=4, sticky="e", pady=4, padx=(8, 0)
+            row=4, column=5, sticky="e", pady=4, padx=(8, 0)
         )
 
         progress_frame = ttk.LabelFrame(frame, text="Progress", padding=10)
@@ -1043,18 +1135,14 @@ class DocumentToAudioWizard:
         self.file_bar = ttk.Progressbar(progress_frame, orient="horizontal", mode="determinate", maximum=100)
         self.file_bar.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(2, 0))
 
-        actions = ttk.Frame(frame)
-        actions.pack(fill="x", pady=(12, 0))
-        self.start_button = ttk.Button(
-            actions, text="Start", style="Accent.TButton", command=self._start_processing
-        )
-        self.start_button.pack(side="left")
-        self.pause_button = ttk.Button(
-            actions, textvariable=self.pause_button_text, command=self._toggle_pause
-        )
-        self.pause_button.pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Stop", command=self._stop_processing).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Close", command=self._on_close).pack(side="right")
+    def _on_wizard_engine_changed(self, *_args) -> None:
+        piper_enabled = self.wizard_engine.get() in (ENGINE_AUTO, ENGINE_PIPER)
+        xtts_enabled = self.wizard_engine.get() in (ENGINE_AUTO, ENGINE_XTTS)
+        xtts_state = "normal" if xtts_enabled else "disabled"
+        self.wizard_piper_voice_box.configure(state="readonly" if piper_enabled else "disabled")
+        self.wizard_speaker_name_entry.configure(state=xtts_state)
+        self.wizard_speaker_wav_entry.configure(state=xtts_state)
+        self.wizard_speaker_wav_button.configure(state=xtts_state)
 
     def _on_format_changed(self, *_args) -> None:
         fmt = self.output_format.get()
@@ -1067,7 +1155,7 @@ class DocumentToAudioWizard:
             self.quality_preset.set("Lossless (no quality setting)")
         else:
             presets = list(self.MP3_PRESETS.keys())
-            self.quality_preset.set(presets[2])
+            self.quality_preset.set(presets[0])
             self.quality_box.configure(values=presets, state="readonly")
 
     def _add_documents(self) -> None:
@@ -1112,6 +1200,14 @@ class DocumentToAudioWizard:
         )
         if folder:
             self.output_folder.set(folder)
+
+    def _pick_wizard_reference_wav(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Choose reference voice WAV",
+            filetypes=[("Audio files", "*.wav *.mp3 *.m4a *.flac"), ("All files", "*.*")],
+        )
+        if path:
+            self.wizard_speaker_wav.set(path)
 
     def _refresh_tree(self) -> None:
         for item in self.tree.get_children():
@@ -1240,7 +1336,7 @@ class DocumentToAudioWizard:
         self._total_chunks = max(total_chunks, 1)
 
     def _build_request(self, text: str, output_path: Path) -> SynthesisRequest:
-        piper_label = self.app.piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL
+        piper_label = self.wizard_piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL
         voice_metadata = self.app.piper_voice_options.get(
             piper_label, get_piper_voice_metadata(piper_label)
         )
@@ -1248,11 +1344,11 @@ class DocumentToAudioWizard:
             text=text,
             language=self.app.language.get().strip() or "hu",
             output_file=output_path,
-            engine=self.app.engine.get().strip() or ENGINE_AUTO,
+            engine=self.wizard_engine.get().strip() or ENGINE_AUTO,
             piper_voice_label=piper_label,
             piper_voice_code=voice_metadata["code"],
-            speaker_name=self.app.speaker_name.get().strip() or DEFAULT_SPEAKER,
-            speaker_wav=self.app.speaker_wav.get().strip(),
+            speaker_name=self.wizard_speaker_name.get().strip() or DEFAULT_SPEAKER,
+            speaker_wav=self.wizard_speaker_wav.get().strip(),
         )
 
     def _do_synthesis_per_file(self, output_folder: Path) -> None:
@@ -1475,7 +1571,7 @@ class App:
         self.piper_voice_label = StringVar(value=initial_piper_voice)
         self.speaker_name = StringVar(value=DEFAULT_SPEAKER)
         self.speaker_wav = StringVar()
-        self.output_file = StringVar(value=str((Path.cwd() / "output" / "speech.mp3").resolve()))
+        self.output_file = StringVar(value=str((get_default_music_folder() / "speech.mp3").resolve()))
         self.status = StringVar(value="Ready")
         self.playback_toggle_label = StringVar(value="Pause")
         self.generation_modal: Toplevel | None = None
