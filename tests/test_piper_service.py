@@ -123,3 +123,51 @@ class TestPiperServiceSynthesize:
                     result = svc.synthesize(_make_request(text="Hello."))
         assert result == Path("/tmp/out.mp3")
         mock_export.assert_called_once()
+
+
+@pytest.mark.unit
+class TestPiperServiceSpeed:
+    def test_default_speed_no_length_scale(self):
+        svc = PiperService(log=MagicMock())
+        mock_voice = MagicMock()
+        mock_audio = MagicMock()
+        mock_audio.audio_int16_bytes = b"\x00\x00"
+        mock_audio.sample_width = 2
+        mock_audio.sample_rate = 22050
+        mock_audio.sample_channels = 1
+        mock_voice.synthesize.return_value = [mock_audio]
+
+        with patch.object(svc, "ensure_loaded", return_value=mock_voice):
+            with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
+                list(svc.iter_segments(_make_request(text="Hello.", speed=1.0)))
+        mock_voice.synthesize.assert_called_once_with("Hello.")
+
+    def test_custom_speed_passes_length_scale(self):
+        svc = PiperService(log=MagicMock())
+        mock_voice = MagicMock()
+        mock_audio = MagicMock()
+        mock_audio.audio_int16_bytes = b"\x00\x00"
+        mock_audio.sample_width = 2
+        mock_audio.sample_rate = 22050
+        mock_audio.sample_channels = 1
+        mock_voice.synthesize.return_value = [mock_audio]
+
+        with patch.object(svc, "ensure_loaded", return_value=mock_voice):
+            with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
+                list(svc.iter_segments(_make_request(text="Hello.", speed=1.5)))
+        mock_voice.synthesize.assert_called_once_with("Hello.", length_scale=1.0 / 1.5)
+
+    def test_speed_2_doubles_length_scale(self):
+        svc = PiperService(log=MagicMock())
+        mock_voice = MagicMock()
+        mock_audio = MagicMock()
+        mock_audio.audio_int16_bytes = b"\x00\x00"
+        mock_audio.sample_width = 2
+        mock_audio.sample_rate = 22050
+        mock_audio.sample_channels = 1
+        mock_voice.synthesize.return_value = [mock_audio]
+
+        with patch.object(svc, "ensure_loaded", return_value=mock_voice):
+            with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
+                list(svc.iter_segments(_make_request(text="Hello.", speed=2.0)))
+        mock_voice.synthesize.assert_called_once_with("Hello.", length_scale=0.5)

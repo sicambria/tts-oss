@@ -162,6 +162,23 @@ class TestCollectRequest:
         mock_err.assert_not_called()
         assert req is not None
 
+    def test_speed_included_in_request(self):
+        app = _make_app()
+        with patch("app.messagebox.showerror") as mock_err:
+            req = app.collect_request()
+        mock_err.assert_not_called()
+        assert req is not None
+        assert req.speed == 1.0
+
+    def test_custom_speed_included_in_request(self):
+        app = _make_app()
+        app.speed.get.return_value = 1.5
+        with patch("app.messagebox.showerror") as mock_err:
+            req = app.collect_request()
+        mock_err.assert_not_called()
+        assert req is not None
+        assert req.speed == 1.5
+
 
 class TestEnsureXttsLicenseAcceptance:
     def test_env_var_set_returns_true(self):

@@ -4,6 +4,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import pytest
+
 from app import DEFAULT_SPEAKER
 from app import ENGINE_AUTO
 from app import ENGINE_PIPER
@@ -378,3 +380,167 @@ class TestRefreshTree:
             with patch.object(Path, "stat", return_value=MagicMock(st_size=1024)):
                 wizard._refresh_tree()
         wizard.tree.insert.assert_called_once()
+
+
+class TestParsePageRange:
+    def test_both_empty_returns_none(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard.from_page.set("")
+        wizard.to_page.set("")
+        from_page, to_page = wizard._parse_page_range()
+        assert from_page is None
+        assert to_page is None
+
+    def test_both_populated(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard.from_page.set("3")
+        wizard.to_page.set("7")
+        from_page, to_page = wizard._parse_page_range()
+        assert from_page == 3
+        assert to_page == 7
+
+    def test_only_from(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard.from_page.set("5")
+        wizard.to_page.set("")
+        from_page, to_page = wizard._parse_page_range()
+        assert from_page == 5
+        assert to_page is None
+
+    def test_only_to(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard.from_page.set("")
+        wizard.to_page.set("10")
+        from_page, to_page = wizard._parse_page_range()
+        assert from_page is None
+        assert to_page == 10
+
+
+class TestWizardBuildRequestSpeed:
+    def test_speed_included(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        req = wizard._build_request("text", Path("/tmp/out.mp3"))
+        assert req.speed == 1.0
+
+    def test_custom_speed_included(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard.wizard_speed.set(1.7)
+        req = wizard._build_request("text", Path("/tmp/out.mp3"))
+        assert req.speed == 1.7
+
+
+class TestDoSynthesisPerFile:
+    def test_single_entry_synthesizes_and_finishes(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        entry = ChapterEntry(
+            source_path=Path("/tmp/test.docx"),
+            index=0,
+            title="",
+            content="Hello world.",
+            word_count=2,
+        )
+        wizard.extracted_texts = {entry: "Hello world."}
+        wizard._chapter_entries = {}
+        wizard.chunk_counts = {entry: 1}
+        wizard._total_chunks = 1
+        wizard.stop_event = MagicMock()
+        wizard.stop_event.is_set.return_value = False
+        wizard.window.after = MagicMock()
+        wizard._update_doc_status = MagicMock()
+        wizard._set_overall = MagicMock()
+        wizard._set_file = MagicMock()
+        wizard._finish = MagicMock()
+        wizard._synthesize_text = MagicMock()
+        wizard._chapter_output_path = MagicMock(return_value=Path("/tmp/out/test.mp3"))
+        wizard.phase_text = MagicMock()
+
+        output_folder = Path("/tmp/out")
+        wizard._do_synthesis_per_file(output_folder)
+
+        wizard._synthesize_text.assert_called_once()
+        wizard._finish.assert_called_once_with(None)
+
+    def test_stop_event_breaks_early(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        entry = ChapterEntry(
+            source_path=Path("/tmp/test.docx"),
+            index=0,
+            title="",
+            content="Hello world.",
+            word_count=2,
+        )
+        wizard.extracted_texts = {entry: "Hello world."}
+        wizard.chunk_counts = {entry: 1}
+        wizard._total_chunks = 1
+        wizard.stop_event = MagicMock()
+        wizard.stop_event.is_set.return_value = True
+        wizard.window.after = MagicMock()
+        wizard._update_doc_status = MagicMock()
+        wizard._finish = MagicMock()
+        wizard._synthesize_text = MagicMock()
+
+        output_folder = Path("/tmp/out")
+        wizard._do_synthesis_per_file(output_folder)
+
+        wizard._synthesize_text.assert_not_called()
+
+
+class TestDoSynthesisMerged:
+    def test_merges_text_and_synthesizes(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        entry1 = ChapterEntry(
+            source_path=Path("/tmp/a.docx"),
+            index=0,
+            title="Chapter 1",
+            content="Content one.",
+            word_count=2,
+        )
+        entry2 = ChapterEntry(
+            source_path=Path("/tmp/b.docx"),
+            index=0,
+            title="",
+            content="Content two.",
+            word_count=2,
+        )
+        wizard.extracted_texts = {entry1: "Content one.", entry2: "Content two."}
+        wizard.chunk_counts = {entry1: 1, entry2: 1}
+        wizard._total_chunks = 2
+        wizard.stop_event = MagicMock()
+        wizard.stop_event.is_set.return_value = False
+        wizard.window.after = MagicMock()
+        wizard._finish = MagicMock()
+        wizard._synthesize_text = MagicMock()
+        wizard.phase_text = MagicMock()
+
+        output_folder = Path("/tmp/out")
+        with patch("time.strftime", return_value="20240101_120000"):
+            wizard._do_synthesis_merged(output_folder)
+
+        wizard._synthesize_text.assert_called_once()
+        call_args = wizard._synthesize_text.call_args
+        assert "Chapter 1" in call_args[0][0]
+        assert "Content one" in call_args[0][0]
+        assert "Content two" in call_args[0][0]
+        assert call_args[0][1] == output_folder / "merged_20240101_120000.mp3"
+
+    def test_no_entries_raises(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard.extracted_texts = {}
+        wizard.stop_event = MagicMock()
+        wizard.stop_event.is_set.return_value = False
+        wizard.window.after = MagicMock()
+        wizard._finish = MagicMock()
+
+        output_folder = Path("/tmp/out")
+        with pytest.raises(RuntimeError, match="No documents"):
+            wizard._do_synthesis_merged(output_folder)

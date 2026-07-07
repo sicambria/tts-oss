@@ -96,6 +96,99 @@ class TestPdfExtraction:
         assert "Page two content" in text
 
 
+class TestPdfPageRange:
+    def test_from_page_slices_pages(self, temp_dir):
+        page1 = MagicMock()
+        page1.extract_text.return_value = "Page one."
+        page2 = MagicMock()
+        page2.extract_text.return_value = "Page two."
+        page3 = MagicMock()
+        page3.extract_text.return_value = "Page three."
+
+        mock_reader = MagicMock()
+        mock_reader.pages = [page1, page2, page3]
+
+        pdf_file = temp_dir / "fake.pdf"
+        pdf_file.write_text("")
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            text = DocumentExtractor._extract_pdf(pdf_file, from_page=2)
+        assert "Page one" not in text
+        assert "Page two" in text
+        assert "Page three" in text
+
+    def test_to_page_slices_pages(self, temp_dir):
+        page1 = MagicMock()
+        page1.extract_text.return_value = "Page one."
+        page2 = MagicMock()
+        page2.extract_text.return_value = "Page two."
+        page3 = MagicMock()
+        page3.extract_text.return_value = "Page three."
+
+        mock_reader = MagicMock()
+        mock_reader.pages = [page1, page2, page3]
+
+        pdf_file = temp_dir / "fake.pdf"
+        pdf_file.write_text("")
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            text = DocumentExtractor._extract_pdf(pdf_file, from_page=1, to_page=2)
+        assert "Page one" in text
+        assert "Page two" in text
+        assert "Page three" not in text
+
+    def test_from_and_to_page_both(self, temp_dir):
+        page1 = MagicMock()
+        page1.extract_text.return_value = "Page one."
+        page2 = MagicMock()
+        page2.extract_text.return_value = "Page two."
+        page3 = MagicMock()
+        page3.extract_text.return_value = "Page three."
+
+        mock_reader = MagicMock()
+        mock_reader.pages = [page1, page2, page3]
+
+        pdf_file = temp_dir / "fake.pdf"
+        pdf_file.write_text("")
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            text = DocumentExtractor._extract_pdf(pdf_file, from_page=2, to_page=3)
+        assert "Page one" not in text
+        assert "Page two" in text
+        assert "Page three" in text
+
+    def test_dispatch_passes_page_range(self, temp_dir):
+        page1 = MagicMock()
+        page1.extract_text.return_value = "Only page."
+
+        mock_reader = MagicMock()
+        mock_reader.pages = [page1]
+
+        pdf_file = temp_dir / "fake.pdf"
+        pdf_file.write_text("")
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            text = DocumentExtractor.extract_text(pdf_file, from_page=1, to_page=1)
+        assert "Only page" in text
+
+    def test_page_range_clamped_to_bounds(self, temp_dir):
+        page1 = MagicMock()
+        page1.extract_text.return_value = "Page one."
+        page2 = MagicMock()
+        page2.extract_text.return_value = "Page two."
+
+        mock_reader = MagicMock()
+        mock_reader.pages = [page1, page2]
+
+        pdf_file = temp_dir / "fake.pdf"
+        pdf_file.write_text("")
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            text = DocumentExtractor._extract_pdf(pdf_file, from_page=1, to_page=99)
+        assert "Page one" in text
+        assert "Page two" in text
+
+
 class TestOdtExtraction:
     def test_multi_paragraph(self, odt_path):
         text = DocumentExtractor._extract_odt(odt_path)

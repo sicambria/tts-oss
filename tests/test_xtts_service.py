@@ -162,3 +162,39 @@ class TestXTTSServiceSynthesize:
             with patch("app.export_audio_segment"):
                 result = svc.synthesize(_make_request(text="Hi.", output_file=Path("/tmp/result.wav")))
         assert result == Path("/tmp/result.wav")
+
+
+@pytest.mark.unit
+class TestXTTSServiceSpeed:
+    def test_default_speed_omitted_from_kwargs(self):
+        svc = XTTSService(log=MagicMock())
+        mock_tts = MagicMock()
+        svc._tts = mock_tts
+        mock_tts.tts.return_value = [0.0, 1.0, -1.0]
+
+        with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
+            list(svc.iter_segments(_make_request(text="Hello.", speed=1.0)))
+        call_kwargs = mock_tts.tts.call_args[1]
+        assert "speed" not in call_kwargs
+
+    def test_custom_speed_included_in_kwargs(self):
+        svc = XTTSService(log=MagicMock())
+        mock_tts = MagicMock()
+        svc._tts = mock_tts
+        mock_tts.tts.return_value = [0.0, 1.0, -1.0]
+
+        with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
+            list(svc.iter_segments(_make_request(text="Hello.", speed=1.5)))
+        call_kwargs = mock_tts.tts.call_args[1]
+        assert call_kwargs["speed"] == 1.5
+
+    def test_speed_2_passed_to_tts(self):
+        svc = XTTSService(log=MagicMock())
+        mock_tts = MagicMock()
+        svc._tts = mock_tts
+        mock_tts.tts.return_value = [0.0, 1.0, -1.0]
+
+        with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
+            list(svc.iter_segments(_make_request(text="Hello.", speed=2.0)))
+        call_kwargs = mock_tts.tts.call_args[1]
+        assert call_kwargs["speed"] == 2.0
