@@ -84,8 +84,20 @@ OGG_QUALITY_PRESETS = {
 }
 MAX_MERGE_CHUNKS = 500
 PREVIEW_FILE_GLOB = "read-aloud-preview-*.wav"
+MIN_CHAPTER_WORDS = 30
+HEADING_PATTERNS: list[tuple[str, int]] = [
+    (r'(?m)^\s*(?:Chapter|CHAPTER)\s+(\d+|[IVXLCDM]+)\b', 1),
+    (r'(?m)^\s*(\d+)\.\s+(?:[A-Z][\w\s]{3,})$', 1),
+    (r'(?m)^\s*(?:Part|PART)\s+(\d+|[IVXLCDM]+)\b', 1),
+    (r'(?m)^\s*(?:Section|SECTION)\s+(\d+)\b', 2),
+    (r'(?m)^\s*[IVXLCDM]+\.\s', 1),
+]
 FONT_BODY = "Segoe UI" if sys.platform == "win32" else "DejaVu Sans"
 FONT_MONO = "Consolas" if sys.platform == "win32" else "Liberation Mono"
+
+def sanitize_filename(name: str) -> str:
+    return re.sub(r'[<>:"/\\|?*]', '_', name).strip().rstrip('.')
+
 
 SURFACE_BG = "#f4f6fb"
 CARD_BG = "#ffffff"
@@ -373,6 +385,319 @@ class DocumentExtractor:
                 except Exception:
                     pass
 
+    @staticmethod
+    def extract_chapters(filepath: Path, min_level: str = "all") -> list[tuple[str, str]]:
+        suffix = filepath.suffix.lower()
+        if suffix == ".docx":
+            return DocumentExtractor._extract_docx_chapters(filepath, min_level)
+        if suffix == ".odt":
+            return DocumentExtractor._extract_odt_chapters(filepath, min_level)
+        if suffix == ".pdf":
+            return DocumentExtractor._extract_pdf_chapters(filepath, min_level)
+        if suffix == ".epub":
+            return DocumentExtractor._extract_epub_chapters(filepath, min_level)
+        if suffix == ".mobi":
+            return DocumentExtractor._extract_mobi_chapters(filepath, min_level)
+        return [(("", DocumentExtractor.extract_text(filepath)))]
+
+    @staticmethod
+    def _heading_level_for_setting(min_level: str) -> int | None:
+        if min_level == "h1":
+            return 1
+        if min_level == "h1-h2":
+            return 2
+        if min_level == "h1-h3":
+            return 3
+        return None
+
+    @staticmethod
+    def _heading_level_from_style(style_name: str) -> int | None:
+        if not style_name:
+            return None
+        match = re.match(r'[Hh]eading\s*(\d+)', style_name)
+        if match:
+            return int(match.group(1))
+        return None
+
+    @staticmethod
+    def _extract_docx_chapters(filepath: Path, min_level: str = "all") -> list[tuple[str, str]]:
+        try:
+            import docx
+        except ImportError:
+            raise RuntimeError("python-docx not installed. Run: pip install python-docx")
+        doc = docx.Document(str(filepath))
+        max_level = DocumentExtractor._heading_level_for_setting(min_level)
+
+        chapters: list[tuple[str, str]] = []
+        current_title = ""
+        current_content: list[str] = []
+
+        for p in doc.paragraphs:
+            heading_level = DocumentExtractor._heading_level_from_style(p.style.name if p.style else "")
+            text = p.text.strip()
+            if not text:
+                continue
+
+            if heading_level is not None and (max_level is None or heading_level <= max_level):
+                if current_content:
+                    chapters.append((current_title, "\n\n".join(current_content)))
+                current_title = text
+                current_content = []
+            else:
+                current_content.append(text)
+
+        if current_content:
+            chapters.append((current_title, "\n\n".join(current_content)))
+
+        if not chapters:
+            return [("", DocumentExtractor._extract_docx(filepath))]
+
+        return chapters
+
+    @staticmethod
+    def _extract_odt_chapters(filepath: Path, min_level: str = "all") -> list[tuple[str, str]]:
+        try:
+            from odf import teletype
+            from odf.opendocument import load
+        except ImportError:
+            raise RuntimeError("odfpy not installed. Run: pip install odfpy")
+        doc = load(str(filepath))
+        max_level = DocumentExtractor._heading_level_for_setting(min_level)
+
+        chapters: list[tuple[str, str]] = []
+        current_title = ""
+        current_content: list[str] = []
+
+        body = getattr(doc, "body", None)
+        if body is None:
+            return [("", DocumentExtractor._extract_odt(filepath))]
+
+        children = getattr(body, "childNodes", [])
+        if not children:
+            return [("", DocumentExtractor._extract_odt(filepath))]
+
+        text_children: list = []
+        for body_child in children:
+            tag = getattr(body_child, "tagName", "")
+            if tag in ("text:h", "text:p"):
+                text_children = children
+                break
+            nested = getattr(body_child, "childNodes", [])
+            if nested:
+                text_children = nested
+                break
+
+        if not text_children:
+            text_children = children
+
+        has_headings = False
+
+        for child in text_children:
+            tag_name = getattr(child, "tagName", "")
+            text_content = teletype.extractText(child).strip()
+
+            if tag_name == "text:h":
+                has_headings = True
+                outline_level = int(child.getAttribute("outlinelevel") or "1")
+                if max_level is None or outline_level <= max_level:
+                    if current_content:
+                        chapters.append((current_title, "\n\n".join(current_content)))
+                    current_title = text_content
+                    current_content = []
+                    continue
+                current_content.append(text_content)
+            elif tag_name == "text:p":
+                if text_content:
+                    current_content.append(text_content)
+
+        if current_content:
+            chapters.append((current_title, "\n\n".join(current_content)))
+
+        if not has_headings:
+            return [("", DocumentExtractor._extract_odt(filepath))]
+
+        return chapters
+
+    @staticmethod
+    def _extract_pdf_chapters(filepath: Path, min_level: str = "all") -> list[tuple[str, str]]:
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            raise RuntimeError("pypdf not installed. Run: pip install pypdf")
+        reader = PdfReader(str(filepath))
+
+        if reader.outline:
+            chapters = DocumentExtractor._extract_pdf_chapters_from_outline(reader)
+            if len(chapters) >= 2:
+                return chapters
+
+        return DocumentExtractor._extract_pdf_chapters_by_pattern(filepath)
+
+    @staticmethod
+    def _extract_pdf_chapters_from_outline(reader) -> list[tuple[str, str]]:
+        pages_text: dict[int, str] = {}
+        for page_num, page in enumerate(reader.pages):
+            text = page.extract_text()
+            if text:
+                text = re.sub(r"\n{3,}", "\n\n", text)
+                text = re.sub(r" {2,}", " ", text)
+                pages_text[page_num] = text.strip()
+
+        outline_items: list[tuple[str, int]] = []
+
+        def walk_outline(items, depth=0):
+            for item in items:
+                if isinstance(item, list):
+                    walk_outline(item, depth + 1)
+                else:
+                    title = getattr(item, "title", "")
+                    if not title:
+                        continue
+                    title = title.strip()
+                    try:
+                        page_num = reader.get_destination_page_number(item)
+                    except Exception:
+                        continue
+                    outline_items.append((title, page_num))
+
+        walk_outline(reader.outline)
+
+        if not outline_items:
+            return []
+
+        chapters: list[tuple[str, str]] = []
+        for i, (title, start_page) in enumerate(outline_items):
+            end_page = outline_items[i + 1][1] if i + 1 < len(outline_items) else len(reader.pages)
+            chapter_pages = []
+            for pg in range(start_page, min(end_page, len(reader.pages))):
+                if pg in pages_text:
+                    chapter_pages.append(pages_text[pg])
+            content = "\n\n".join(chapter_pages).strip()
+            if content:
+                chapters.append((title, content))
+
+        return chapters
+
+    @staticmethod
+    def _extract_pdf_chapters_by_pattern(filepath: Path) -> list[tuple[str, str]]:
+        full_text = DocumentExtractor._extract_pdf(filepath)
+        if not full_text.strip():
+            return [("", "")]
+
+        split_points: list[tuple[int, str]] = []
+        for pattern, _level in HEADING_PATTERNS:
+            for match in re.finditer(pattern, full_text):
+                pos = match.start()
+                if all(abs(pos - existing) > 5 for existing, _ in split_points):
+                    split_points.append((pos, match.group().strip()))
+            if split_points:
+                break
+
+        if not split_points:
+            return [("", full_text)]
+
+        split_points.sort(key=lambda x: x[0])
+
+        chapters: list[tuple[str, str]] = []
+        for i, (pos, title) in enumerate(split_points):
+            end = split_points[i + 1][0] if i + 1 < len(split_points) else len(full_text)
+            content = full_text[pos:end].strip()
+            if content:
+                chapters.append((title, content))
+
+        if not chapters:
+            return [("", full_text)]
+
+        return chapters
+
+    @staticmethod
+    def _extract_epub_chapters(filepath: Path, min_level: str = "all") -> list[tuple[str, str]]:
+        try:
+            import ebooklib
+            from bs4 import BeautifulSoup
+            from ebooklib import epub
+        except ImportError:
+            raise RuntimeError("ebooklib and/or beautifulsoup4 not installed. Run: pip install ebooklib beautifulsoup4")
+        book = epub.read_epub(str(filepath))
+        max_level = DocumentExtractor._heading_level_for_setting(min_level)
+
+        chapters: list[tuple[str, str]] = []
+        current_title = ""
+        current_content: list[str] = []
+        has_headings = False
+
+        def _detect_level(tag_name: str) -> int | None:
+            if tag_name and tag_name.startswith("h") and len(tag_name) == 2:
+                try:
+                    return int(tag_name[1])
+                except ValueError:
+                    return None
+            return None
+
+        for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+            soup = BeautifulSoup(item.get_content(), "html.parser")
+
+            for element in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p"], recursive=False):
+                tag_name = getattr(element, "name", "")
+                text_content = element.get_text(separator="\n").strip()
+                if not text_content:
+                    continue
+
+                heading_level = _detect_level(tag_name)
+                if heading_level is not None and (max_level is None or heading_level <= max_level):
+                    has_headings = True
+                    if current_content:
+                        chapters.append((current_title, "\n\n".join(current_content)))
+                    current_title = text_content
+                    current_content = []
+                else:
+                    current_content.append(text_content)
+
+            text = soup.get_text(separator="\n")
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            if text.strip():
+                for elem in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"], recursive=True):
+                    if _detect_level(getattr(elem, "name", "")):
+                        has_headings = True
+                        break
+
+        if current_content:
+            chapters.append((current_title, "\n\n".join(current_content)))
+
+        if not has_headings or not chapters:
+            return [("", DocumentExtractor._extract_epub(filepath))]
+
+        return chapters
+
+    @staticmethod
+    def _extract_mobi_chapters(filepath: Path, min_level: str = "all") -> list[tuple[str, str]]:
+        try:
+            from mobi import extract
+        except ImportError:
+            raise RuntimeError("mobi not installed. Run: pip install mobi")
+        import shutil as _shutil_mod
+
+        temp_dir = None
+        try:
+            temp_dir, extracted_path = extract(str(filepath))
+            temp_dir = Path(temp_dir)
+            extracted = Path(extracted_path)
+
+            if extracted.suffix.lower() == ".epub":
+                result = DocumentExtractor._extract_epub_chapters(extracted, min_level)
+            else:
+                result = [("", DocumentExtractor._extract_mobi(filepath))]
+
+            return result
+        except Exception as exc:
+            raise RuntimeError(f"MOBI extraction failed: {exc}") from exc
+        finally:
+            if temp_dir is not None:
+                try:
+                    _shutil_mod.rmtree(str(temp_dir), ignore_errors=True)
+                except Exception:
+                    pass
+
 
 @dataclass
 class SynthesisRequest:
@@ -384,6 +709,15 @@ class SynthesisRequest:
     piper_voice_code: str
     speaker_name: str
     speaker_wav: str
+
+
+@dataclass(frozen=True)
+class ChapterEntry:
+    source_path: Path
+    index: int
+    title: str
+    content: str
+    word_count: int
 
 
 def get_piper_voice_metadata(label: str) -> dict[str, str]:
@@ -953,8 +1287,9 @@ class DocumentToAudioWizard:
 
         self.documents: list[Path] = []
         self.doc_status: dict[Path, str] = {}
-        self.extracted_texts: dict[Path, str] = {}
-        self.chunk_counts: dict[Path, int] = {}
+        self.extracted_texts: dict[ChapterEntry, str] = {}
+        self.chunk_counts: dict[ChapterEntry, int] = {}
+        self._chapter_entries: dict[Path, list[ChapterEntry]] = {}
         self._total_chunks: int = 0
 
         self.worker: threading.Thread | None = None
@@ -967,6 +1302,8 @@ class DocumentToAudioWizard:
         self.quality_preset = StringVar(value=default_quality)
         self.merge_files = BooleanVar(value=False)
         self.output_folder = StringVar(value=str(get_default_music_folder().resolve()))
+        self.split_chapters = BooleanVar(value=False)
+        self.chapter_level = StringVar(value="all")
 
         self.wizard_engine = StringVar(value=app.engine.get())
         self.wizard_piper_voice_label = StringVar(value=app.piper_voice_label.get())
@@ -979,6 +1316,7 @@ class DocumentToAudioWizard:
         self.pause_button_text = StringVar(value="Pause")
 
         self._build_ui()
+        self._on_split_chapters_toggled()
         self.output_format.trace_add("write", self._on_format_changed)
         self.wizard_engine.trace_add("write", self._on_wizard_engine_changed)
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1107,12 +1445,31 @@ class DocumentToAudioWizard:
             variable=self.merge_files,
         ).grid(row=3, column=0, columnspan=6, sticky="w", pady=(6, 4))
 
-        ttk.Label(settings_frame, text="Output Folder").grid(row=4, column=0, sticky="w", pady=4)
+        split_row = ttk.Frame(settings_frame)
+        split_row.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(6, 4))
+        self.split_chapters_check = ttk.Checkbutton(
+            split_row,
+            text="Split by chapter (experimental)",
+            variable=self.split_chapters,
+            command=self._on_split_chapters_toggled,
+        )
+        self.split_chapters_check.pack(side="left")
+        ttk.Label(split_row, text="Level:").pack(side="left", padx=(12, 4))
+        self.chapter_level_box = ttk.Combobox(
+            split_row,
+            textvariable=self.chapter_level,
+            values=["all", "h1", "h1-h2", "h1-h3"],
+            state="readonly",
+            width=8,
+        )
+        self.chapter_level_box.pack(side="left")
+
+        ttk.Label(settings_frame, text="Output Folder").grid(row=5, column=0, sticky="w", pady=4)
         ttk.Entry(settings_frame, textvariable=self.output_folder).grid(
-            row=4, column=1, columnspan=4, sticky="ew", pady=4
+            row=5, column=1, columnspan=4, sticky="ew", pady=4
         )
         ttk.Button(settings_frame, text="Browse...", command=self._pick_output_folder).grid(
-            row=4, column=5, sticky="e", pady=4, padx=(8, 0)
+            row=5, column=5, sticky="e", pady=4, padx=(8, 0)
         )
 
         progress_frame = ttk.LabelFrame(frame, text="Progress", padding=10)
@@ -1159,6 +1516,22 @@ class DocumentToAudioWizard:
             presets = list(self.MP3_PRESETS.keys())
             self.quality_preset.set(presets[0])
             self.quality_box.configure(values=presets, state="readonly")
+
+    def _on_split_chapters_toggled(self) -> None:
+        enabled = self.split_chapters.get()
+        if hasattr(self, "chapter_level_box"):
+            self.chapter_level_box.configure(state="readonly" if enabled else "disabled")
+        if not hasattr(self, "start_button") or not hasattr(self, "tree"):
+            return
+        if self.extracted_texts:
+            self.extracted_texts.clear()
+            self.chunk_counts.clear()
+            self._chapter_entries.clear()
+            self._total_chunks = 0
+            for doc_path in self.documents:
+                self._update_doc_status(doc_path, "Ready — needs re-extraction")
+            self.start_button.configure(state="disabled")
+            self.app.enqueue_log("Chapter split setting changed — re-extraction required.")
 
     def _add_documents(self) -> None:
         formats = " ".join(f"*{ext}" for ext in DocumentExtractor.SUPPORTED)
@@ -1250,6 +1623,7 @@ class DocumentToAudioWizard:
         self.doc_status = {p: "Queued" for p in self.documents}
         self.extracted_texts.clear()
         self.chunk_counts.clear()
+        self._chapter_entries.clear()
         self._refresh_tree()
 
         self._set_buttons_state(processing=True)
@@ -1280,6 +1654,7 @@ class DocumentToAudioWizard:
     def _do_extraction(self) -> None:
         docs = list(self.documents)
         total = len(docs)
+        chapter_formats = {".docx", ".odt", ".pdf", ".epub"}
         for i, doc_path in enumerate(docs):
             if self.stop_event.is_set():
                 return
@@ -1298,15 +1673,59 @@ class DocumentToAudioWizard:
                 ),
             )
             try:
-                text = DocumentExtractor.extract_text(doc_path)
-                self.extracted_texts[doc_path] = text
-                word_count = len(text.split())
-                self.window.after(
-                    0,
-                    lambda p=doc_path, wc=word_count: self._update_doc_status(
-                        p, f"Extracted ({wc:,} words)"
-                    ),
-                )
+                if self.split_chapters.get() and doc_path.suffix.lower() in chapter_formats:
+                    raw_chapters = DocumentExtractor.extract_chapters(
+                        doc_path, self.chapter_level.get()
+                    )
+                    entries = []
+                    for idx, (title, content) in enumerate(raw_chapters):
+                        stripped = content.strip()
+                        if not stripped:
+                            continue
+                        entry = ChapterEntry(
+                            source_path=doc_path,
+                            index=idx,
+                            title=title,
+                            content=stripped,
+                            word_count=len(stripped.split()),
+                        )
+                        entries.append(entry)
+
+                    entries = self._merge_short_chapters(entries)
+                    for entry in entries:
+                        self.extracted_texts[entry] = entry.content
+                    self._chapter_entries[doc_path] = entries
+
+                    if entries:
+                        titles = [
+                            f"{e.title[:40] if e.title else f'Ch{e.index+1}'}"
+                            for e in entries
+                        ]
+                        status = f"{len(entries)} chapters: {', '.join(titles)}"
+                    else:
+                        status = "No chapters found"
+                    self.window.after(
+                        0,
+                        lambda p=doc_path, s=status: self._update_doc_status(p, s),
+                    )
+                else:
+                    text = DocumentExtractor.extract_text(doc_path)
+                    entry = ChapterEntry(
+                        source_path=doc_path,
+                        index=0,
+                        title="",
+                        content=text,
+                        word_count=len(text.split()),
+                    )
+                    self.extracted_texts[entry] = text
+                    self._chapter_entries[doc_path] = [entry]
+                    word_count = len(text.split())
+                    self.window.after(
+                        0,
+                        lambda p=doc_path, wc=word_count: self._update_doc_status(
+                            p, f"Extracted ({wc:,} words)"
+                        ),
+                    )
             except Exception as exc:
                 self.window.after(
                     0,
@@ -1314,25 +1733,25 @@ class DocumentToAudioWizard:
                 )
 
     def _do_preparation(self) -> None:
-        valid = [d for d in self.documents if d in self.extracted_texts]
-        if not valid:
+        entries = list(self.extracted_texts.keys())
+        if not entries:
             raise RuntimeError("No documents could be extracted.")
 
         self.window.after(0, lambda: self.phase_text.set("Preparing text chunks..."))
         self.window.after(0, lambda: self._set_overall(0, "Preparing..."))
 
-        self.chunk_counts: dict[Path, int] = {}
+        self.chunk_counts: dict[ChapterEntry, int] = {}
         total_chunks = 0
-        for i, doc_path in enumerate(valid):
+        for i, entry in enumerate(entries):
             if self.stop_event.is_set():
                 return
-            text = self.extracted_texts[doc_path]
+            text = self.extracted_texts[entry]
             count = len(chunk_text_with_offsets(text, MAX_CHARS_PER_CHUNK))
-            self.chunk_counts[doc_path] = max(count, 1)
-            total_chunks += self.chunk_counts[doc_path]
+            self.chunk_counts[entry] = max(count, 1)
+            total_chunks += self.chunk_counts[entry]
             self.window.after(
                 0,
-                lambda cur=i + 1, tot=len(valid): self._set_overall(
+                lambda cur=i + 1, tot=len(entries): self._set_overall(
                     round(cur / tot * 10),
                     f"Preparing ({cur}/{tot})",
                 ),
@@ -1357,55 +1776,88 @@ class DocumentToAudioWizard:
         )
 
     def _do_synthesis_per_file(self, output_folder: Path) -> None:
-        valid = [d for d in self.documents if d in self.extracted_texts]
-        if not valid:
+        entries = list(self.extracted_texts.keys())
+        if not entries:
             raise RuntimeError("No documents with valid extracted text.")
 
-        total_docs = len(valid)
+        total_entries = len(entries)
         cumul_chunks = 0
+        suffix = f".{self.output_format.get().lower()}"
+        split_active = self.split_chapters.get()
+        seen_docs: set[Path] = set()
 
-        for i, doc_path in enumerate(valid):
+        for i, entry in enumerate(entries):
             if self.stop_event.is_set():
                 return
 
-            self.window.after(0, lambda p=doc_path: self._update_doc_status(p, "Synthesizing..."))
-            self.window.after(
-                0,
-                lambda cur=i + 1, tot=total_docs: self.phase_text.set(
-                    f"Synthesizing document {cur}/{tot}..."
-                ),
-            )
+            source_path = entry.source_path
+            if split_active and source_path not in seen_docs:
+                seen_docs.add(source_path)
+                all_entries = self._chapter_entries.get(source_path, [entry])
+                self.window.after(
+                    0,
+                    lambda p=source_path: self._update_doc_status(p, "Synthesizing..."),
+                )
 
-            suffix = f".{self.output_format.get().lower()}"
-            output_path = output_folder / f"{doc_path.stem}{suffix}"
+            if split_active:
+                chapter_label = f"ch {entry.index + 1}/{len(self._chapter_entries.get(source_path, [entry]))}"
+                self.window.after(
+                    0,
+                    lambda cur=i + 1, tot=total_entries, lbl=chapter_label: self.phase_text.set(
+                        f"Synthesizing {lbl} ({cur}/{tot})..."
+                    ),
+                )
+            else:
+                self.window.after(
+                    0,
+                    lambda cur=i + 1, tot=total_entries: self.phase_text.set(
+                        f"Synthesizing document {cur}/{tot}..."
+                    ),
+                )
 
-            text = self.extracted_texts[doc_path]
-            expected = self.chunk_counts.get(doc_path, 1)
+            output_path = self._chapter_output_path(entry, output_folder, suffix, split_active)
+
+            text = self.extracted_texts[entry]
+            expected = self.chunk_counts.get(entry, 1)
             self._synthesize_text(
                 text,
                 output_path,
                 expected_chunks=expected,
                 doc_index=i,
-                total_docs=total_docs,
+                total_docs=total_entries,
                 cumul_chunks_start=cumul_chunks,
             )
             cumul_chunks += expected
 
             if self.stop_event.is_set():
-                self.window.after(0, lambda p=doc_path: self._update_doc_status(p, "Stopped"))
+                self.window.after(0, lambda p=source_path: self._update_doc_status(p, "Stopped"))
                 return
 
-            self.window.after(0, lambda p=doc_path: self._update_doc_status(p, "Done"))
+            done_status = "Done"
+            if split_active:
+                all_entries = self._chapter_entries.get(source_path, [])
+                last_in_doc = (entry.index == all_entries[-1].index) if all_entries else True
+                if not last_in_doc:
+                    continue
+            self.window.after(0, lambda p=source_path, s=done_status: self._update_doc_status(p, s))
 
         self._finish(None)
 
     def _do_synthesis_merged(self, output_folder: Path) -> None:
-        valid = [d for d in self.documents if d in self.extracted_texts]
-        if not valid:
+        entries = list(self.extracted_texts.keys())
+        if not entries:
             raise RuntimeError("No documents with valid extracted text.")
 
-        merged_text = "\n\n".join(self.extracted_texts[d] for d in valid)
-        total_expected = sum(self.chunk_counts.get(d, 1) for d in valid)
+        parts: list[str] = []
+        for entry in entries:
+            if entry.title:
+                parts.append(entry.title)
+                parts.append(entry.content)
+            else:
+                parts.append(entry.content)
+
+        merged_text = "\n\n".join(parts)
+        total_expected = sum(self.chunk_counts.get(e, 1) for e in entries)
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         suffix = f".{self.output_format.get().lower()}"
@@ -1424,6 +1876,61 @@ class DocumentToAudioWizard:
 
         if not self.stop_event.is_set():
             self._finish(None)
+
+    def _chapter_output_path(
+        self,
+        entry: ChapterEntry,
+        output_folder: Path,
+        suffix: str,
+        split_active: bool,
+    ) -> Path:
+        if split_active and entry.title:
+            safe_title = sanitize_filename(entry.title)[:50]
+            return output_folder / f"{entry.source_path.stem}__{safe_title}{suffix}"
+        if split_active:
+            return output_folder / f"{entry.source_path.stem}_ch{entry.index + 1:02d}{suffix}"
+        return output_folder / f"{entry.source_path.stem}{suffix}"
+
+    @staticmethod
+    def _merge_short_chapters(
+        entries: list[ChapterEntry],
+        min_words: int = MIN_CHAPTER_WORDS,
+    ) -> list[ChapterEntry]:
+        if not entries:
+            return entries
+
+        merged: list[ChapterEntry] = []
+        i = 0
+        while i < len(entries):
+            current = entries[i]
+            if current.word_count >= min_words or len(merged) == 0:
+                merged.append(current)
+                i += 1
+                continue
+
+            prev = merged[-1]
+            combined_title = f"{prev.title}; {current.title}" if current.title else prev.title
+            combined_content = f"{prev.content}\n\n{current.content}"
+            merged[-1] = ChapterEntry(
+                source_path=prev.source_path,
+                index=prev.index,
+                title=combined_title,
+                content=combined_content,
+                word_count=prev.word_count + current.word_count,
+            )
+            i += 1
+
+        if merged:
+            for idx, entry in enumerate(merged):
+                merged[idx] = ChapterEntry(
+                    source_path=entry.source_path,
+                    index=idx,
+                    title=entry.title,
+                    content=entry.content,
+                    word_count=entry.word_count,
+                )
+
+        return merged
 
     def _synthesize_text(
         self,

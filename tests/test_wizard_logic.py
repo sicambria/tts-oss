@@ -11,6 +11,7 @@ from app import ENGINE_XTTS
 from app import MAX_MERGE_CHUNKS
 from app import MP3_QUALITY_PRESETS
 from app import OGG_QUALITY_PRESETS
+from app import ChapterEntry
 from app import DocumentToAudioWizard
 
 
@@ -307,6 +308,8 @@ class TestDoExtraction:
         wizard._set_overall = MagicMock()
         wizard.documents = [Path("/tmp/test.docx")]
         wizard.extracted_texts = {}
+        wizard._chapter_entries = {}
+        wizard.split_chapters.set(False)
         wizard.pause_event.set()
         wizard.stop_event = MagicMock()
         wizard.stop_event.is_set.return_value = False
@@ -315,8 +318,10 @@ class TestDoExtraction:
         with patch("app.DocumentExtractor.extract_text", return_value="Hello world."):
             wizard._do_extraction()
 
-        assert Path("/tmp/test.docx") in wizard.extracted_texts
-        assert wizard.extracted_texts[Path("/tmp/test.docx")] == "Hello world."
+        assert len(wizard.extracted_texts) == 1
+        entry = list(wizard.extracted_texts.keys())[0]
+        assert isinstance(entry, ChapterEntry)
+        assert wizard.extracted_texts[entry] == "Hello world."
 
 
 class TestDoPreparation:
@@ -325,7 +330,14 @@ class TestDoPreparation:
         wizard = _make_wizard(app)
         wizard._set_overall = MagicMock()
         wizard.documents = [Path("/tmp/test.docx")]
-        wizard.extracted_texts = {Path("/tmp/test.docx"): "Word1 word2 word3 word4 word5 word6 word7 word8 word9 word10"}
+        entry = ChapterEntry(
+            source_path=Path("/tmp/test.docx"),
+            index=0,
+            title="",
+            content="Word1 word2 word3 word4 word5 word6 word7 word8 word9 word10",
+            word_count=10,
+        )
+        wizard.extracted_texts = {entry: entry.content}
         wizard.chunk_counts = {}
         wizard.pause_event.set()
         wizard.stop_event = MagicMock()
@@ -334,8 +346,8 @@ class TestDoPreparation:
 
         wizard._do_preparation()
 
-        assert Path("/tmp/test.docx") in wizard.chunk_counts
-        assert wizard.chunk_counts[Path("/tmp/test.docx")] >= 1
+        assert entry in wizard.chunk_counts
+        assert wizard.chunk_counts[entry] >= 1
 
 
 class TestRefreshTree:
