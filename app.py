@@ -1031,13 +1031,17 @@ class PocketTTSService:
         self._log = log
         self._model = None
         self._loaded_language = None
-        self._voice_states: dict[str, object] = {}
+        self._voice_states: dict = {}
         self._sample_rate = 24000
 
     def _resolve_language(self, lang_code: str) -> str:
         return POCKET_LANG_MAP.get(lang_code, "english")
 
-    def _voice_cache_path(self, voice_source: str) -> Path:
+    @staticmethod
+    def _voice_cache_path(voice_source: str) -> Path | None:
+        source_path = Path(voice_source)
+        if source_path.is_file():
+            return None
         safe = re.sub(r"[^a-zA-Z0-9_-]", "_", voice_source)
         return POCKET_VOICE_DIR / f"{safe}.safetensors"
 
@@ -1063,14 +1067,14 @@ class PocketTTSService:
         self._loaded_language = lang
         self._log("Pocket TTS model is ready.")
 
-    def _get_voice_state(self, voice_source: str):
+    def _get_voice_state(self, voice_source: str) -> dict:
         if voice_source in self._voice_states:
             return self._voice_states[voice_source]
         cache_path = self._voice_cache_path(voice_source)
-        voice_arg = str(cache_path) if cache_path.exists() else voice_source
+        voice_arg = str(cache_path) if cache_path is not None and cache_path.exists() else voice_source
         self._log(f"Loading voice from: {voice_arg}")
         state = self._model.get_state_for_audio_prompt(voice_arg)
-        if not cache_path.exists():
+        if cache_path is not None and not cache_path.exists():
             POCKET_VOICE_DIR.mkdir(parents=True, exist_ok=True)
             try:
                 from pocket_tts import export_model_state
@@ -1083,14 +1087,14 @@ class PocketTTSService:
     def iter_segments(self, request: SynthesisRequest, start_offset: int = 0):
         self.ensure_loaded(request.language)
         AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
+        chunks = chunk_text_with_offsets(request.text, start_offset=start_offset)
+        if not chunks:
+            raise ValueError("Text is empty after cleanup.")
         if request.speaker_wav:
             voice_source = request.speaker_wav
         else:
             voice_source = request.speaker_name or POCKET_DEFAULT_VOICE
         voice_state = self._get_voice_state(voice_source)
-        chunks = chunk_text_with_offsets(request.text, start_offset=start_offset)
-        if not chunks:
-            raise ValueError("Text is empty after cleanup.")
         self._log(f"Prepared {len(chunks)} chunk(s) for synthesis.")
         for index, chunk in enumerate(chunks, start=1):
             self._log(f"Synthesizing chunk {index}/{len(chunks)}")
@@ -1693,9 +1697,11 @@ class DocumentToAudioWizard:
     def _on_wizard_engine_changed(self, *_args) -> None:
         engine = self.wizard_engine.get()
         piper_enabled = engine in (ENGINE_AUTO, ENGINE_PIPER)
-        pocket_enabled = engine in (ENGINE_AUTO, ENGINE_POCKET)
-        xtts_enabled = engine in (ENGINE_AUTO, ENGINE_XTTS)
-        speaker_state = "normal" if (xtts_enabled or pocket_enabled) else "disabled"
+        if engine == ENGINE_AUTO:
+            resolved = ENGINE_XTTS if self.wizard_speaker_wav.get().strip() else ENGINE_PIPER
+        else:
+            resolved = engine
+        speaker_state = "normal" if resolved in (ENGINE_XTTS, ENGINE_POCKET) else "disabled"
         self.wizard_piper_voice_box.configure(state="readonly" if piper_enabled else "disabled")
         self.wizard_speaker_name_entry.configure(state=speaker_state)
         self.wizard_speaker_wav_entry.configure(state=speaker_state)

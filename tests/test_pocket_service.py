@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
+from app import POCKET_VOICE_DIR
 from app import PocketTTSService
 from app import SynthesisRequest
 
@@ -68,6 +69,21 @@ class TestPocketServiceEnsureLoaded:
                 svc.ensure_loaded("fr")
         assert mock_tts.load_model.call_count == 2
 
+    def test_language_change_clears_voice_states(self):
+        svc = PocketTTSService(log=MagicMock())
+        mock_model = MagicMock()
+        mock_model.sample_rate = 24000
+        with patch("app.POCKET_LANG_MAP", {"en": "english", "fr": "french"}):
+            with patch("pocket_tts.TTSModel") as mock_tts:
+                mock_tts.load_model.return_value = mock_model
+                svc.ensure_loaded("en")
+        svc._voice_states["alba"] = {"some": "state"}
+        with patch("app.POCKET_LANG_MAP", {"en": "english", "fr": "french"}):
+            with patch("pocket_tts.TTSModel") as mock_tts:
+                mock_tts.load_model.return_value = mock_model
+                svc.ensure_loaded("fr")
+        assert len(svc._voice_states) == 0
+
     def test_fallback_language_uses_english(self):
         svc = PocketTTSService(log=MagicMock())
         with patch("app.POCKET_LANG_MAP", {"en": "english"}):
@@ -86,9 +102,22 @@ class TestPocketServiceIterSegments:
         svc._model = MagicMock()
         svc._sample_rate = 24000
         svc._loaded_language = "english"
-        with patch.object(svc, "_get_voice_state", return_value={"state": "mock"}):
-            with pytest.raises(ValueError, match="empty"):
-                list(svc.iter_segments(_make_request(text="")))
+        with patch.object(svc, "ensure_loaded"):
+            with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
+                with pytest.raises(ValueError, match="empty"):
+                    list(svc.iter_segments(_make_request(text="")))
+
+    def test_empty_text_does_not_load_voice(self):
+        svc = PocketTTSService(log=MagicMock())
+        svc._model = MagicMock()
+        svc._sample_rate = 24000
+        svc._loaded_language = "english"
+        svc._get_voice_state = MagicMock()
+        with patch.object(svc, "ensure_loaded"):
+            with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
+                with pytest.raises(ValueError, match="empty"):
+                    list(svc.iter_segments(_make_request(text="")))
+        svc._get_voice_state.assert_not_called()
 
     def test_single_chunk_with_builtin_voice(self):
         svc = PocketTTSService(log=MagicMock())
@@ -238,3 +267,15 @@ class TestPocketServiceVoiceCache:
         svc._voice_states["alba"] = cached
         result = svc._get_voice_state("alba")
         assert result is cached
+
+    def test_voice_cache_path_returns_none_for_file(self):
+        with patch.object(Path, "is_file", return_value=True):
+            result = PocketTTSService._voice_cache_path("/some/file.wav")
+        assert result is None
+
+    def test_voice_cache_path_returns_path_for_builtin(self):
+        with patch.object(Path, "is_file", return_value=False):
+            result = PocketTTSService._voice_cache_path("alba")
+        assert result is not None
+        assert str(result).startswith(str(POCKET_VOICE_DIR))
+        assert result.suffix == ".safetensors"
