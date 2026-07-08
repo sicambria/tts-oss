@@ -981,10 +981,12 @@ class PiperService:
         for index, chunk in enumerate(chunks, start=1):
             self._log(f"Synthesizing chunk {index}/{len(chunks)}")
             segment = AudioSegment.silent(duration=0)
-            syn_kwargs = {}
+            from piper.config import SynthesisConfig
+
+            syn_config = None
             if request.speed != 1.0:
-                syn_kwargs["length_scale"] = 1.0 / request.speed
-            for audio_chunk in voice.synthesize(chunk.text, **syn_kwargs):
+                syn_config = SynthesisConfig(length_scale=1.0 / request.speed)
+            for audio_chunk in voice.synthesize(chunk.text, syn_config=syn_config):
                 segment += AudioSegment(
                     data=audio_chunk.audio_int16_bytes,
                     sample_width=audio_chunk.sample_width,

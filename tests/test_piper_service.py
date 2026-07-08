@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
+from piper.config import SynthesisConfig
 
 from app import PiperService
 from app import SynthesisRequest
@@ -140,7 +141,7 @@ class TestPiperServiceSpeed:
         with patch.object(svc, "ensure_loaded", return_value=mock_voice):
             with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
                 list(svc.iter_segments(_make_request(text="Hello.", speed=1.0)))
-        mock_voice.synthesize.assert_called_once_with("Hello.")
+        mock_voice.synthesize.assert_called_once_with("Hello.", syn_config=None)
 
     def test_custom_speed_passes_length_scale(self):
         svc = PiperService(log=MagicMock())
@@ -155,7 +156,7 @@ class TestPiperServiceSpeed:
         with patch.object(svc, "ensure_loaded", return_value=mock_voice):
             with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
                 list(svc.iter_segments(_make_request(text="Hello.", speed=1.5)))
-        mock_voice.synthesize.assert_called_once_with("Hello.", length_scale=1.0 / 1.5)
+        mock_voice.synthesize.assert_called_once_with("Hello.", syn_config=SynthesisConfig(length_scale=1.0 / 1.5))
 
     def test_speed_2_doubles_length_scale(self):
         svc = PiperService(log=MagicMock())
@@ -170,4 +171,4 @@ class TestPiperServiceSpeed:
         with patch.object(svc, "ensure_loaded", return_value=mock_voice):
             with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
                 list(svc.iter_segments(_make_request(text="Hello.", speed=2.0)))
-        mock_voice.synthesize.assert_called_once_with("Hello.", length_scale=0.5)
+        mock_voice.synthesize.assert_called_once_with("Hello.", syn_config=SynthesisConfig(length_scale=0.5))
