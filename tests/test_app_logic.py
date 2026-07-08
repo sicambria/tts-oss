@@ -315,6 +315,11 @@ class TestResolvedEngine:
         app.engine.set("Piper")
         assert app.resolved_engine() == "Piper"
 
+    def test_pocket_engine_returns_pocket(self):
+        app = _make_app()
+        app.engine.set("Pocket TTS")
+        assert app.resolved_engine() == "Pocket TTS"
+
 
 class TestFindPiperLabelByCode:
     def test_existing_code_finds_label(self):
@@ -393,6 +398,13 @@ class TestOnVoiceSettingsChanged:
         app = _make_app()
         app.piper_voice_label.set("nonexistent")
         app.on_voice_settings_changed()
+
+    def test_pocket_engine_enables_speaker_fields(self):
+        app = _make_app()
+        app.engine.set("Pocket TTS")
+        app.on_voice_settings_changed()
+        app.speaker_name_entry.configure.assert_called()
+        app.speaker_wav_entry.configure.assert_called()
 
 
 class TestPauseResumeStop:

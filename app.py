@@ -42,6 +42,23 @@ DEFAULT_SPEAKER = "Ana Florence"
 ENGINE_AUTO = "Auto"
 ENGINE_PIPER = "Piper"
 ENGINE_XTTS = "XTTS v2"
+ENGINE_POCKET = "Pocket TTS"
+POCKET_DEFAULT_VOICE = "alba"
+POCKET_VOICE_DIR = Path.cwd() / "voices" / "pocket"
+POCKET_LANG_MAP: dict[str, str] = {
+    "en": "english",
+    "fr": "french",
+    "de": "german",
+    "pt": "portuguese",
+    "it": "italian",
+    "es": "spanish",
+}
+ENGINE_LANGUAGES: dict[str, list[str]] = {
+    ENGINE_AUTO: ["en", "hu", "fr", "de", "pt", "it", "es"],
+    ENGINE_PIPER: ["hu", "en"],
+    ENGINE_XTTS: ["en", "hu", "fr", "de", "pt", "it", "es"],
+    ENGINE_POCKET: ["en", "fr", "de", "pt", "it", "es"],
+}
 PIPER_VOICE_DIR = Path.cwd() / "voices" / "piper"
 APP_SETTINGS_PATH = Path.cwd() / "settings.json"
 PIPER_VOICES_JSON_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/voices.json?download=true"
@@ -1009,10 +1026,105 @@ class PiperService:
         return request.output_file
 
 
+class PocketTTSService:
+    def __init__(self, log: Callable[[str], None]) -> None:
+        self._log = log
+        self._model = None
+        self._loaded_language = None
+        self._voice_states: dict[str, object] = {}
+        self._sample_rate = 24000
+
+    def _resolve_language(self, lang_code: str) -> str:
+        return POCKET_LANG_MAP.get(lang_code, "english")
+
+    def _voice_cache_path(self, voice_source: str) -> Path:
+        safe = re.sub(r"[^a-zA-Z0-9_-]", "_", voice_source)
+        return POCKET_VOICE_DIR / f"{safe}.safetensors"
+
+    def ensure_loaded(self, lang_code: str = "en") -> None:
+        lang = self._resolve_language(lang_code)
+        if self._model is not None and self._loaded_language == lang:
+            return
+        if self._model is not None:
+            self._log(
+                f"Language changed ({self._loaded_language} → {lang}), reloading model..."
+            )
+            self._voice_states.clear()
+        self._log(f"Loading Pocket TTS model (language: {lang})...")
+        try:
+            from pocket_tts import TTSModel
+        except Exception as exc:
+            raise RuntimeError(
+                "pocket-tts is not installed in this environment. "
+                "Run the setup script first (`.\\setup.ps1` on Windows or `./setup.sh` on Linux/macOS)."
+            ) from exc
+        self._model = TTSModel.load_model(language=lang)
+        self._sample_rate = self._model.sample_rate
+        self._loaded_language = lang
+        self._log("Pocket TTS model is ready.")
+
+    def _get_voice_state(self, voice_source: str):
+        if voice_source in self._voice_states:
+            return self._voice_states[voice_source]
+        cache_path = self._voice_cache_path(voice_source)
+        voice_arg = str(cache_path) if cache_path.exists() else voice_source
+        self._log(f"Loading voice from: {voice_arg}")
+        state = self._model.get_state_for_audio_prompt(voice_arg)
+        if not cache_path.exists():
+            POCKET_VOICE_DIR.mkdir(parents=True, exist_ok=True)
+            try:
+                from pocket_tts import export_model_state
+                export_model_state(state, cache_path)
+            except Exception:
+                pass
+        self._voice_states[voice_source] = state
+        return state
+
+    def iter_segments(self, request: SynthesisRequest, start_offset: int = 0):
+        self.ensure_loaded(request.language)
+        AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
+        if request.speaker_wav:
+            voice_source = request.speaker_wav
+        else:
+            voice_source = request.speaker_name or POCKET_DEFAULT_VOICE
+        voice_state = self._get_voice_state(voice_source)
+        chunks = chunk_text_with_offsets(request.text, start_offset=start_offset)
+        if not chunks:
+            raise ValueError("Text is empty after cleanup.")
+        self._log(f"Prepared {len(chunks)} chunk(s) for synthesis.")
+        for index, chunk in enumerate(chunks, start=1):
+            self._log(f"Synthesizing chunk {index}/{len(chunks)}")
+            audio_tensor = self._model.generate_audio(
+                voice_state, chunk.text, copy_state=True
+            )
+            array = audio_tensor.cpu().numpy()
+            pcm = np.int16(np.clip(array, -1.0, 1.0) * 32767).tobytes()
+            segment = AudioSegment(
+                data=pcm,
+                sample_width=2,
+                frame_rate=self._sample_rate,
+                channels=1,
+            )
+            yield chunk, segment
+
+    def synthesize(self, request: SynthesisRequest) -> Path:
+        chunks = list(self.iter_segments(request))
+        combined = AudioSegment.silent(duration=0)
+        for index, (_chunk, segment) in enumerate(chunks, start=1):
+            combined += segment
+            if index < len(chunks):
+                combined += AudioSegment.silent(duration=PAUSE_MS)
+        self._log(f"Exporting audio to {request.output_file}")
+        export_audio_segment(combined, request.output_file)
+        self._log("Finished.")
+        return request.output_file
+
+
 class SynthesisCoordinator:
     def __init__(self, log: Callable[[str], None]) -> None:
         self._xtts = XTTSService(log)
         self._piper = PiperService(log)
+        self._pocket = PocketTTSService(log)
 
     @staticmethod
     def resolve_engine(request: SynthesisRequest) -> str:
@@ -1024,12 +1136,17 @@ class SynthesisCoordinator:
         resolved_engine = self.resolve_engine(request)
         if resolved_engine == ENGINE_PIPER:
             return self._piper.synthesize(request)
+        if resolved_engine == ENGINE_POCKET:
+            return self._pocket.synthesize(request)
         return self._xtts.synthesize(request)
 
     def iter_segments(self, request: SynthesisRequest, start_offset: int = 0):
         resolved_engine = self.resolve_engine(request)
         if resolved_engine == ENGINE_PIPER:
             yield from self._piper.iter_segments(request, start_offset=start_offset)
+            return
+        if resolved_engine == ENGINE_POCKET:
+            yield from self._pocket.iter_segments(request, start_offset=start_offset)
             return
         yield from self._xtts.iter_segments(request, start_offset=start_offset)
 
@@ -1453,7 +1570,7 @@ class DocumentToAudioWizard:
         self.wizard_engine_box = ttk.Combobox(
             settings_frame,
             textvariable=self.wizard_engine,
-            values=[ENGINE_AUTO, ENGINE_PIPER, ENGINE_XTTS],
+            values=[ENGINE_AUTO, ENGINE_PIPER, ENGINE_XTTS, ENGINE_POCKET],
             state="readonly",
             width=14,
         )
@@ -1574,13 +1691,15 @@ class DocumentToAudioWizard:
         return from_page, to_page
 
     def _on_wizard_engine_changed(self, *_args) -> None:
-        piper_enabled = self.wizard_engine.get() in (ENGINE_AUTO, ENGINE_PIPER)
-        xtts_enabled = self.wizard_engine.get() in (ENGINE_AUTO, ENGINE_XTTS)
-        xtts_state = "normal" if xtts_enabled else "disabled"
+        engine = self.wizard_engine.get()
+        piper_enabled = engine in (ENGINE_AUTO, ENGINE_PIPER)
+        pocket_enabled = engine in (ENGINE_AUTO, ENGINE_POCKET)
+        xtts_enabled = engine in (ENGINE_AUTO, ENGINE_XTTS)
+        speaker_state = "normal" if (xtts_enabled or pocket_enabled) else "disabled"
         self.wizard_piper_voice_box.configure(state="readonly" if piper_enabled else "disabled")
-        self.wizard_speaker_name_entry.configure(state=xtts_state)
-        self.wizard_speaker_wav_entry.configure(state=xtts_state)
-        self.wizard_speaker_wav_button.configure(state=xtts_state)
+        self.wizard_speaker_name_entry.configure(state=speaker_state)
+        self.wizard_speaker_wav_entry.configure(state=speaker_state)
+        self.wizard_speaker_wav_button.configure(state=speaker_state)
 
     def _on_format_changed(self, *_args) -> None:
         fmt = self.output_format.get()
@@ -2258,7 +2377,7 @@ class App:
         self.lang_box = ttk.Combobox(
             controls,
             textvariable=self.language,
-            values=["hu", "en"],
+            values=ENGINE_LANGUAGES[ENGINE_AUTO],
             state="readonly",
             width=12,
         )
@@ -2268,7 +2387,7 @@ class App:
         self.engine_box = ttk.Combobox(
             controls,
             textvariable=self.engine,
-            values=[ENGINE_AUTO, ENGINE_PIPER, ENGINE_XTTS],
+            values=[ENGINE_AUTO, ENGINE_PIPER, ENGINE_XTTS, ENGINE_POCKET],
             state="readonly",
             width=18,
         )
@@ -2416,16 +2535,27 @@ class App:
         resolved = self.resolved_engine()
         xtts_enabled = resolved == ENGINE_XTTS
         piper_enabled = resolved == ENGINE_PIPER
+        pocket_enabled = resolved == ENGINE_POCKET
 
-        state = "normal" if xtts_enabled else "disabled"
-        self.speaker_name_entry.configure(state=state)
-        self.speaker_wav_entry.configure(state=state)
-        self.speaker_wav_button.configure(state=state)
+        resolved_langs = ENGINE_LANGUAGES.get(resolved, ENGINE_LANGUAGES[ENGINE_AUTO])
+        self.lang_box.configure(values=resolved_langs)
+        if self.language.get() not in resolved_langs:
+            self.language.set(resolved_langs[0])
+
+        speaker_state = "normal" if (xtts_enabled or pocket_enabled) else "disabled"
+        self.speaker_name_entry.configure(state=speaker_state)
+        self.speaker_wav_entry.configure(state=speaker_state)
+        self.speaker_wav_button.configure(state=speaker_state)
         self.piper_voice_box.configure(state="readonly" if piper_enabled or self.engine.get() == ENGINE_AUTO else "disabled")
 
         if resolved == ENGINE_PIPER:
             self.engine_hint.set(
                 f"Piper uses the local '{voice_metadata['code']}' voice. Adding a reference WAV switches Auto to XTTS."
+            )
+        elif resolved == ENGINE_POCKET:
+            self.engine_hint.set(
+                "Pocket TTS uses the Language field. Enter a built-in voice name "
+                "(e.g. 'alba', 'anna') or point Reference WAV to a sample for voice cloning."
             )
         else:
             self.engine_hint.set(

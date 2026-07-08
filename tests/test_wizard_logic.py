@@ -9,6 +9,7 @@ import pytest
 from app import DEFAULT_SPEAKER
 from app import ENGINE_AUTO
 from app import ENGINE_PIPER
+from app import ENGINE_POCKET
 from app import ENGINE_XTTS
 from app import MAX_MERGE_CHUNKS
 from app import MP3_QUALITY_PRESETS
@@ -158,6 +159,16 @@ class TestBuildRequest:
 
         req = wizard._build_request("text", Path("/tmp/out.mp3"))
         assert req.engine == ENGINE_AUTO
+
+    def test_pocket_engine_settings(self) -> None:
+        app = MockApp()
+        app.engine.set(ENGINE_POCKET)
+        app.speaker_name.set("alba")
+        wizard = _make_wizard(app)
+
+        req = wizard._build_request("test text", Path("/tmp/out.mp3"))
+        assert req.engine == ENGINE_POCKET
+        assert req.speaker_name == "alba"
 
 
 class TestQualityPresets:

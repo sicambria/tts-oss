@@ -18,6 +18,10 @@ This file records issues and learnings discovered during development so they do 
 - Impact: setup may succeed but the GUI or audio playback can still fail if `tkinter` or SDL-related audio libraries are missing.
 - Workaround: install platform packages such as `python3-tk` and the audio stack required by `pygame`.
 
+- Pocket TTS 2.1.0 declares a `numpy>=2` dependency, but the Piper dependency `gruut` requires `numpy<2.0.0`. In practice both work with numpy 1.26.4, so the pinned `numpy==1.26.4` in `requirements.txt` avoids the conflict.
+- Impact: pip may print a "possibly conflicting dependencies" warning during install, but the application runs correctly.
+- Workaround: ignore the warning; if a future version of pocket-tts actually requires numpy 2.x at runtime, upgrade numpy or adjust `requirements.txt`.
+
 - First-run XTTS startup is slow.
 - Impact: the application may appear idle while model files are downloaded and the model is loaded.
 - Workaround: wait for the status log to advance; this is expected on first use.
