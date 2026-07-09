@@ -94,6 +94,46 @@ class TestPocketServiceEnsureLoaded:
                 svc.ensure_loaded("hu")  # not in map
         mock_tts.load_model.assert_called_once_with(language="english")
 
+    def test_unsupported_language_logs_warning(self):
+        log = MagicMock()
+        svc = PocketTTSService(log=log)
+        with patch("app.POCKET_LANG_MAP", {"en": "english"}):
+            assert svc._resolve_language("hu") == "english"
+        assert any("does not support" in str(c.args[0]) for c in log.call_args_list)
+
+
+@pytest.mark.unit
+class TestPocketVoiceValidation:
+    def test_unknown_builtin_voice_raises(self):
+        svc = PocketTTSService(log=MagicMock())
+        svc._model = MagicMock()
+        with pytest.raises(RuntimeError, match="not a built-in Pocket TTS voice"):
+            svc._get_voice_state("not_a_real_voice")
+
+    def test_known_builtin_voice_passes_validation(self):
+        svc = PocketTTSService(log=MagicMock())
+        svc._model = MagicMock()
+        svc._model.get_state_for_audio_prompt.return_value = {"ok": True}
+        with patch.object(PocketTTSService, "_voice_cache_path", return_value=None):
+            state = svc._get_voice_state("alba")
+        assert state == {"ok": True}
+
+    def test_reference_file_skips_builtin_validation(self):
+        svc = PocketTTSService(log=MagicMock())
+        svc._model = MagicMock()
+        svc._model.get_state_for_audio_prompt.return_value = {"cloned": True}
+        with patch.object(Path, "is_file", return_value=True):
+            state = svc._get_voice_state("/tmp/my_clip.wav")
+        assert state == {"cloned": True}
+
+    def test_voice_load_failure_gives_friendly_error(self):
+        svc = PocketTTSService(log=MagicMock())
+        svc._model = MagicMock()
+        svc._model.get_state_for_audio_prompt.side_effect = ValueError("boom")
+        with patch.object(PocketTTSService, "_voice_cache_path", return_value=None):
+            with pytest.raises(RuntimeError, match="Could not load the Pocket TTS voice 'alba'"):
+                svc._get_voice_state("alba")
+
 
 @pytest.mark.unit
 class TestPocketServiceIterSegments:

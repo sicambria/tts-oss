@@ -53,11 +53,77 @@ POCKET_LANG_MAP: dict[str, str] = {
     "it": "italian",
     "es": "spanish",
 }
-ENGINE_LANGUAGES: dict[str, list[str]] = {
-    ENGINE_AUTO: ["en", "hu", "fr", "de", "pt", "it", "es"],
-    ENGINE_PIPER: ["hu", "en"],
-    ENGINE_XTTS: ["en", "hu", "fr", "de", "pt", "it", "es"],
-    ENGINE_POCKET: ["en", "fr", "de", "pt", "it", "es"],
+# --- Language / engine capability registry ---
+# Human-readable names, ordered as we want them to appear in the Language menu.
+# Covers every language any engine speaks (XTTS is the widest — see below).
+LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English",
+    "hu": "Hungarian",
+    "fr": "French",
+    "de": "German",
+    "pt": "Portuguese",
+    "it": "Italian",
+    "es": "Spanish",
+    "pl": "Polish",
+    "tr": "Turkish",
+    "ru": "Russian",
+    "nl": "Dutch",
+    "cs": "Czech",
+    "ar": "Arabic",
+    "zh-cn": "Chinese",
+    "ko": "Korean",
+    "ja": "Japanese",
+    "hi": "Hindi",
+}
+
+# Languages each neural engine can speak. Piper is intentionally absent here:
+# its language coverage is derived at runtime from the installed voice models
+# (see piper_languages()), because the user can download more via the wizard.
+# XTTS_LANGUAGES is transcribed from the Coqui XTTS v2 model config
+# (TTS.tts.configs.xtts_config.XttsConfig.languages) — the full 17-language set.
+XTTS_LANGUAGES: list[str] = [
+    "en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru",
+    "nl", "cs", "ar", "zh-cn", "hu", "ko", "ja", "hi",
+]
+POCKET_LANGUAGES: list[str] = list(POCKET_LANG_MAP.keys())
+
+# Pocket TTS ships these named voices (kyutai-labs/pocket-tts). Hardcoded so the
+# UI can offer a dropdown without triggering the heavy pocket_tts import.
+POCKET_PREDEFINED_VOICES: list[str] = [
+    "alba", "anna", "vera", "eve", "mary", "jane",
+    "fantine", "cosette", "eponine", "azelma",
+    "jean", "marius", "javert", "charles", "paul", "george", "michael",
+    "bill_boerst", "peter_yearsley", "stuart_bell", "caro_davy",
+    "giovanni", "lola", "juergen", "rafael", "estelle",
+]
+POCKET_DEFAULT_VOICE_FOR_LANG: dict[str, str] = {
+    "en": "alba",
+    "fr": "estelle",
+    "de": "juergen",
+    "pt": "rafael",
+    "it": "giovanni",
+    "es": "lola",
+}
+
+# One-line "what can this engine do" text, surfaced under the selectors so the
+# user can make an informed choice rather than guessing.
+ENGINE_SUMMARIES: dict[str, str] = {
+    ENGINE_AUTO: (
+        "Auto picks the engine for you: a reference clip clones the voice with "
+        "XTTS, otherwise the local Piper voice is used."
+    ),
+    ENGINE_PIPER: (
+        "Piper — fast, fully offline. Speaks whichever languages you have voices "
+        "for; download more in the Voice Wizard. No voice cloning."
+    ),
+    ENGINE_XTTS: (
+        "XTTS v2 — highest quality, 7 languages. Use a built-in speaker or clone "
+        "any voice from a reference clip. Larger download, slower on CPU."
+    ),
+    ENGINE_POCKET: (
+        "Pocket TTS — lightweight neural voices for 6 languages. Choose a built-in "
+        "voice or clone one from a reference clip."
+    ),
 }
 PIPER_VOICE_DIR = Path.cwd() / "voices" / "piper"
 APP_SETTINGS_PATH = Path.cwd() / "settings.json"
@@ -869,6 +935,100 @@ def piper_model_path(voice_code: str) -> Path:
     return PIPER_VOICE_DIR / f"{voice_code}.onnx"
 
 
+def piper_language_of_code(voice_code: str) -> str:
+    """Extract the ISO language ('hu', 'en', 'fr'...) from a Piper voice code.
+
+    Piper codes look like 'hu_HU-anna-medium' or 'fr_FR-siwis-low'; the language
+    is the segment before the first underscore.
+    """
+    prefix = voice_code.split("-", 1)[0]
+    return prefix.split("_", 1)[0].lower()
+
+
+def piper_languages(options: dict[str, dict[str, str]]) -> set[str]:
+    """Languages actually available in Piper, derived from installed voices."""
+    return {piper_language_of_code(meta["code"]) for meta in options.values()}
+
+
+def piper_voices_for_language(
+    options: dict[str, dict[str, str]], language: str
+) -> list[str]:
+    """Piper voice labels whose voice speaks the given language."""
+    return [
+        label
+        for label, meta in options.items()
+        if piper_language_of_code(meta["code"]) == language
+    ]
+
+
+def engines_supporting_language(
+    language: str, piper_options: dict[str, dict[str, str]]
+) -> list[str]:
+    """Concrete engines that can speak `language`, in preference order."""
+    engines: list[str] = []
+    if language in piper_languages(piper_options):
+        engines.append(ENGINE_PIPER)
+    if language in XTTS_LANGUAGES:
+        engines.append(ENGINE_XTTS)
+    if language in POCKET_LANGUAGES:
+        engines.append(ENGINE_POCKET)
+    return engines
+
+
+def available_languages(piper_options: dict[str, dict[str, str]]) -> list[str]:
+    """Union of every language any engine can speak, in display order."""
+    langs = set(XTTS_LANGUAGES) | set(POCKET_LANGUAGES) | piper_languages(piper_options)
+    ordered = [code for code in LANGUAGE_NAMES if code in langs]
+    ordered += sorted(code for code in langs if code not in LANGUAGE_NAMES)
+    return ordered
+
+
+def language_display_name(code: str) -> str:
+    return LANGUAGE_NAMES.get(code, code.upper())
+
+
+def language_code_from_display(display: str) -> str:
+    for code, name in LANGUAGE_NAMES.items():
+        if name == display:
+            return code
+    return display.lower()
+
+
+def pocket_default_voice(language: str) -> str:
+    return POCKET_DEFAULT_VOICE_FOR_LANG.get(language, POCKET_DEFAULT_VOICE)
+
+
+def is_pocket_default_voice(name: str) -> bool:
+    """True when `name` is one of the per-language defaults (i.e. not a voice the
+    user deliberately picked), so it is safe to swap when the language changes."""
+    return not name or name in set(POCKET_DEFAULT_VOICE_FOR_LANG.values()) | {POCKET_DEFAULT_VOICE}
+
+
+def select_engine(
+    engine: str,
+    language: str,
+    has_reference_wav: bool,
+    piper_options: dict[str, dict[str, str]],
+) -> str:
+    """Resolve the effective engine, honouring an explicit choice or resolving
+    ``Auto`` to an engine that can actually speak ``language``.
+
+    Auto prefers XTTS when a reference clip is supplied (for cloning), then
+    Piper, then any remaining engine that supports the language. This prevents
+    Auto from silently routing to an engine with no voice for the language.
+    """
+    if engine and engine != ENGINE_AUTO:
+        return engine
+    supported = engines_supporting_language(language, piper_options)
+    if has_reference_wav and ENGINE_XTTS in supported:
+        return ENGINE_XTTS
+    if ENGINE_PIPER in supported:
+        return ENGINE_PIPER
+    if supported:
+        return supported[0]
+    return ENGINE_XTTS if has_reference_wav else ENGINE_PIPER
+
+
 class XTTSService:
     def __init__(self, log: Callable[[str], None]) -> None:
         self._log = log
@@ -1035,7 +1195,34 @@ class PocketTTSService:
         self._sample_rate = 24000
 
     def _resolve_language(self, lang_code: str) -> str:
-        return POCKET_LANG_MAP.get(lang_code, "english")
+        resolved = POCKET_LANG_MAP.get(lang_code)
+        if resolved is None:
+            self._log(
+                f"Pocket TTS does not support '{lang_code}'; falling back to English. "
+                "For this language, use Piper or XTTS instead."
+            )
+            return "english"
+        return resolved
+
+    @staticmethod
+    def _looks_like_reference(voice_source: str) -> bool:
+        """True when the source is a file to clone from or a remote URL, rather
+        than a built-in voice name."""
+        if Path(voice_source).is_file():
+            return True
+        lowered = voice_source.lower()
+        return lowered.startswith(("http://", "https://", "hf://"))
+
+    def _validate_voice_source(self, voice_source: str) -> None:
+        if self._looks_like_reference(voice_source):
+            return
+        if voice_source not in POCKET_PREDEFINED_VOICES:
+            preview = ", ".join(POCKET_PREDEFINED_VOICES[:6])
+            raise RuntimeError(
+                f"'{voice_source}' is not a built-in Pocket TTS voice. "
+                f"Choose a built-in voice (e.g. {preview}) or pick a reference "
+                "audio file to clone a voice from."
+            )
 
     @staticmethod
     def _voice_cache_path(voice_source: str) -> Path | None:
@@ -1062,7 +1249,14 @@ class PocketTTSService:
                 "pocket-tts is not installed in this environment. "
                 "Run the setup script first (`.\\setup.ps1` on Windows or `./setup.sh` on Linux/macOS)."
             ) from exc
-        self._model = TTSModel.load_model(language=lang)
+        try:
+            self._model = TTSModel.load_model(language=lang)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not load the Pocket TTS model for {lang}. The model is "
+                "downloaded on first use, so check your internet connection and "
+                f"try again. (Details: {exc})"
+            ) from exc
         self._sample_rate = self._model.sample_rate
         self._loaded_language = lang
         self._log("Pocket TTS model is ready.")
@@ -1070,17 +1264,25 @@ class PocketTTSService:
     def _get_voice_state(self, voice_source: str) -> dict:
         if voice_source in self._voice_states:
             return self._voice_states[voice_source]
+        self._validate_voice_source(voice_source)
         cache_path = self._voice_cache_path(voice_source)
         voice_arg = str(cache_path) if cache_path is not None and cache_path.exists() else voice_source
         self._log(f"Loading voice from: {voice_arg}")
-        state = self._model.get_state_for_audio_prompt(voice_arg)
+        try:
+            state = self._model.get_state_for_audio_prompt(voice_arg)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not load the Pocket TTS voice '{voice_source}'. "
+                "Built-in voice names must match exactly; reference clips must be "
+                f"a readable audio file. (Details: {exc})"
+            ) from exc
         if cache_path is not None and not cache_path.exists():
             POCKET_VOICE_DIR.mkdir(parents=True, exist_ok=True)
             try:
                 from pocket_tts import export_model_state
                 export_model_state(state, cache_path)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log(f"Could not cache voice '{voice_source}' for reuse: {exc}")
         self._voice_states[voice_source] = state
         return state
 
@@ -1132,9 +1334,12 @@ class SynthesisCoordinator:
 
     @staticmethod
     def resolve_engine(request: SynthesisRequest) -> str:
-        if request.engine == ENGINE_AUTO:
-            return ENGINE_XTTS if request.speaker_wav else ENGINE_PIPER
-        return request.engine
+        return select_engine(
+            request.engine,
+            request.language,
+            bool(request.speaker_wav),
+            discover_local_piper_voices(),
+        )
 
     def synthesize(self, request: SynthesisRequest) -> Path:
         resolved_engine = self.resolve_engine(request)
@@ -1444,8 +1649,8 @@ class DocumentToAudioWizard:
         self.window = Toplevel(app.root)
         self.window.transient(app.root)
         self.window.title("Document to Audio Converter")
-        self.window.geometry("1000x760")
-        self.window.minsize(920, 680)
+        self.window.geometry("1040x900")
+        self.window.minsize(940, 780)
 
         self.documents: list[Path] = []
         self.doc_status: dict[Path, str] = {}
@@ -1472,10 +1677,16 @@ class DocumentToAudioWizard:
         self.from_page = StringVar(value="")
         self.to_page = StringVar(value="")
 
+        initial_lang = app.language.get().strip() or "hu"
+        self.wizard_language = StringVar(value=initial_lang)
+        self.wizard_language_display = StringVar(value=language_display_name(initial_lang))
         self.wizard_engine = StringVar(value=app.engine.get())
         self.wizard_piper_voice_label = StringVar(value=app.piper_voice_label.get())
         self.wizard_speaker_name = StringVar(value=app.speaker_name.get())
+        self.wizard_pocket_voice = StringVar(value=pocket_default_voice(initial_lang))
         self.wizard_speaker_wav = StringVar(value=app.speaker_wav.get())
+        self.wizard_voice_label = StringVar(value="Voice")
+        self._syncing_wizard = False
 
         self.phase_text = StringVar(value="")
         self.overall_text = StringVar(value="Idle")
@@ -1485,7 +1696,10 @@ class DocumentToAudioWizard:
         self._build_ui()
         self._on_split_chapters_toggled()
         self.output_format.trace_add("write", self._on_format_changed)
+        self.wizard_language_display.trace_add("write", self._on_wizard_language_changed)
         self.wizard_engine.trace_add("write", self._on_wizard_engine_changed)
+        self.wizard_speaker_wav.trace_add("write", self._on_wizard_engine_changed)
+        self._on_wizard_engine_changed()
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self) -> None:  # pragma: no cover
@@ -1517,6 +1731,12 @@ class DocumentToAudioWizard:
             side="left", padx=(8, 0)
         )
 
+        # Reserve the bottom of the window for settings + progress FIRST, so the
+        # progress bars are always on screen when the window opens. The document
+        # list then expands into whatever space is left above them.
+        bottom = ttk.Frame(frame)
+        bottom.pack(side="bottom", fill="x")
+
         docs_frame = ttk.LabelFrame(frame, text="Documents", padding=10)
         docs_frame.pack(fill="both", expand=True)
         docs_frame.columnconfigure(0, weight=1)
@@ -1543,34 +1763,24 @@ class DocumentToAudioWizard:
         ttk.Button(doc_actions, text="Remove Selected", command=self._remove_selected).pack(side="left", padx=(8, 0))
         ttk.Button(doc_actions, text="Clear All", command=self._clear_all).pack(side="right")
 
-        settings_frame = ttk.LabelFrame(frame, text="Output Settings", padding=10)
+        settings_frame = ttk.LabelFrame(bottom, text="Output Settings", padding=10)
         settings_frame.pack(fill="x", pady=(10, 0))
         settings_frame.columnconfigure(1, weight=1)
         settings_frame.columnconfigure(3, weight=1)
         settings_frame.columnconfigure(5, weight=1)
 
-        ttk.Label(settings_frame, text="Format").grid(row=0, column=0, sticky="w", pady=4)
-        self.format_box = ttk.Combobox(
+        # Language first, then engine — same model as the main window.
+        ttk.Label(settings_frame, text="Language").grid(row=0, column=0, sticky="w", pady=4)
+        self.wizard_language_box = ttk.Combobox(
             settings_frame,
-            textvariable=self.output_format,
-            values=list(SUPPORTED_OUTPUT_FORMATS.values()),
+            textvariable=self.wizard_language_display,
+            values=[language_display_name(c) for c in available_languages(self.app.piper_voice_options)],
             state="readonly",
-            width=10,
+            width=14,
         )
-        self.format_box.grid(row=0, column=1, sticky="w", pady=4, padx=(0, 18))
-        self.format_box.set("MP3")
+        self.wizard_language_box.grid(row=0, column=1, sticky="w", pady=4, padx=(0, 18))
 
-        ttk.Label(settings_frame, text="Quality").grid(row=0, column=2, sticky="w", pady=4)
-        self.quality_box = ttk.Combobox(
-            settings_frame,
-            textvariable=self.quality_preset,
-            values=list(self.MP3_PRESETS.keys()),
-            state="readonly",
-            width=22,
-        )
-        self.quality_box.grid(row=0, column=3, sticky="w", pady=4, padx=(0, 18))
-
-        ttk.Label(settings_frame, text="Engine").grid(row=0, column=4, sticky="w", pady=4)
+        ttk.Label(settings_frame, text="Engine").grid(row=0, column=2, sticky="w", pady=4)
         self.wizard_engine_box = ttk.Combobox(
             settings_frame,
             textvariable=self.wizard_engine,
@@ -1578,23 +1788,59 @@ class DocumentToAudioWizard:
             state="readonly",
             width=14,
         )
-        self.wizard_engine_box.grid(row=0, column=5, sticky="w", pady=4)
+        self.wizard_engine_box.grid(row=0, column=3, sticky="w", pady=4, padx=(0, 18))
 
-        ttk.Label(settings_frame, text="Piper Voice").grid(row=1, column=0, sticky="w", pady=4)
-        self.wizard_piper_voice_box = ttk.Combobox(
+        ttk.Label(settings_frame, text="Format").grid(row=0, column=4, sticky="w", pady=4)
+        self.format_box = ttk.Combobox(
             settings_frame,
+            textvariable=self.output_format,
+            values=list(SUPPORTED_OUTPUT_FORMATS.values()),
+            state="readonly",
+            width=10,
+        )
+        self.format_box.grid(row=0, column=5, sticky="w", pady=4)
+        self.format_box.set("MP3")
+
+        # Adaptive voice control: Piper voice list, Pocket voice list, or XTTS
+        # speaker name — whichever the resolved engine uses.
+        ttk.Label(settings_frame, textvariable=self.wizard_voice_label).grid(
+            row=1, column=0, sticky="w", pady=4
+        )
+        wizard_voice_area = ttk.Frame(settings_frame)
+        wizard_voice_area.grid(row=1, column=1, columnspan=3, sticky="ew", pady=4)
+        wizard_voice_area.columnconfigure(0, weight=1)
+        self.wizard_piper_voice_box = ttk.Combobox(
+            wizard_voice_area,
             textvariable=self.wizard_piper_voice_label,
             values=list(self.app.piper_voice_options.keys()),
             state="readonly",
-            width=28,
         )
-        self.wizard_piper_voice_box.grid(row=1, column=1, columnspan=3, sticky="ew", pady=4)
-
-        ttk.Label(settings_frame, text="Speaker").grid(row=1, column=4, sticky="w", pady=4, padx=(18, 0))
+        self.wizard_pocket_voice_box = ttk.Combobox(
+            wizard_voice_area,
+            textvariable=self.wizard_pocket_voice,
+            values=POCKET_PREDEFINED_VOICES,
+            state="readonly",
+        )
         self.wizard_speaker_name_entry = ttk.Entry(
-            settings_frame, textvariable=self.wizard_speaker_name
+            wizard_voice_area, textvariable=self.wizard_speaker_name
         )
-        self.wizard_speaker_name_entry.grid(row=1, column=5, sticky="ew", pady=4)
+        for widget in (
+            self.wizard_piper_voice_box,
+            self.wizard_pocket_voice_box,
+            self.wizard_speaker_name_entry,
+        ):
+            widget.grid(row=0, column=0, sticky="ew")
+            widget.grid_remove()
+
+        ttk.Label(settings_frame, text="Quality").grid(row=1, column=4, sticky="w", pady=4)
+        self.quality_box = ttk.Combobox(
+            settings_frame,
+            textvariable=self.quality_preset,
+            values=list(self.MP3_PRESETS.keys()),
+            state="readonly",
+            width=22,
+        )
+        self.quality_box.grid(row=1, column=5, sticky="w", pady=4)
 
         ttk.Label(settings_frame, text="Reference WAV").grid(row=2, column=0, sticky="w", pady=4)
         self.wizard_speaker_wav_entry = ttk.Entry(
@@ -1661,7 +1907,7 @@ class DocumentToAudioWizard:
         self.to_page_entry = ttk.Entry(page_row, textvariable=self.to_page, width=6)
         self.to_page_entry.pack(side="left", padx=(4, 0))
 
-        progress_frame = ttk.LabelFrame(frame, text="Progress", padding=10)
+        progress_frame = ttk.LabelFrame(bottom, text="Progress", padding=10)
         progress_frame.pack(fill="x", pady=(10, 0))
         progress_frame.columnconfigure(0, weight=1)
 
@@ -1694,18 +1940,82 @@ class DocumentToAudioWizard:
         to_page = int(to_str) if to_str else None
         return from_page, to_page
 
+    def _resolved_wizard_engine(self) -> str:
+        return select_engine(
+            self.wizard_engine.get(),
+            self.wizard_language.get(),
+            bool(self.wizard_speaker_wav.get().strip()),
+            self.app.piper_voice_options,
+        )
+
+    def _on_wizard_language_changed(self, *_args) -> None:
+        self.wizard_language.set(
+            language_code_from_display(self.wizard_language_display.get())
+        )
+        self._on_wizard_engine_changed()
+
     def _on_wizard_engine_changed(self, *_args) -> None:
-        engine = self.wizard_engine.get()
-        piper_enabled = engine in (ENGINE_AUTO, ENGINE_PIPER)
-        if engine == ENGINE_AUTO:
-            resolved = ENGINE_XTTS if self.wizard_speaker_wav.get().strip() else ENGINE_PIPER
-        else:
-            resolved = engine
-        speaker_state = "normal" if resolved in (ENGINE_XTTS, ENGINE_POCKET) else "disabled"
-        self.wizard_piper_voice_box.configure(state="readonly" if piper_enabled else "disabled")
-        self.wizard_speaker_name_entry.configure(state=speaker_state)
-        self.wizard_speaker_wav_entry.configure(state=speaker_state)
-        self.wizard_speaker_wav_button.configure(state=speaker_state)
+        if getattr(self, "_syncing_wizard", False):
+            return
+        self._syncing_wizard = True
+        try:
+            self._sync_wizard_voice_settings()
+        finally:
+            self._syncing_wizard = False
+
+    def _sync_wizard_voice_settings(self) -> None:
+        language = self.wizard_language.get()
+
+        supported = engines_supporting_language(language, self.app.piper_voice_options)
+        engine_values = [ENGINE_AUTO] + supported
+        if hasattr(self, "wizard_engine_box"):
+            self.wizard_engine_box.configure(values=engine_values)
+        if self.wizard_engine.get() not in engine_values:
+            self.app.enqueue_log(
+                f"{self.wizard_engine.get()} can't speak {language_display_name(language)} "
+                "— switched to Auto."
+            )
+            self.wizard_engine.set(ENGINE_AUTO)
+
+        resolved = self._resolved_wizard_engine()
+
+        if resolved == ENGINE_PIPER and hasattr(self, "wizard_piper_voice_box"):
+            labels = piper_voices_for_language(self.app.piper_voice_options, language) or list(
+                self.app.piper_voice_options.keys()
+            )
+            self.wizard_piper_voice_box.configure(values=labels)
+            if self.wizard_piper_voice_label.get() not in labels and labels:
+                self.wizard_piper_voice_label.set(labels[0])
+
+        if resolved == ENGINE_POCKET and is_pocket_default_voice(self.wizard_pocket_voice.get().strip()):
+            self.wizard_pocket_voice.set(pocket_default_voice(language))
+
+        self._show_wizard_voice_widget(resolved)
+
+        clone_applicable = self.wizard_engine.get() == ENGINE_AUTO or resolved in (ENGINE_XTTS, ENGINE_POCKET)
+        clone_state = "normal" if clone_applicable else "disabled"
+        if hasattr(self, "wizard_speaker_wav_entry"):
+            self.wizard_speaker_wav_entry.configure(state=clone_state)
+            self.wizard_speaker_wav_button.configure(state=clone_state)
+
+    def _show_wizard_voice_widget(self, resolved: str) -> None:
+        specs = {
+            ENGINE_PIPER: (getattr(self, "wizard_piper_voice_box", None), "Piper voice", "readonly"),
+            ENGINE_POCKET: (getattr(self, "wizard_pocket_voice_box", None), "Pocket voice", "readonly"),
+            ENGINE_XTTS: (getattr(self, "wizard_speaker_name_entry", None), "Built-in speaker", "normal"),
+        }
+        active = specs.get(resolved, specs[ENGINE_PIPER])
+        if hasattr(self, "wizard_voice_label"):
+            self.wizard_voice_label.set(active[1])
+        for engine_key, (widget, _label, active_state) in specs.items():
+            if widget is None:
+                continue
+            if engine_key == resolved:
+                widget.configure(state=active_state)
+                widget.grid()
+            else:
+                widget.configure(state="disabled")
+                widget.grid_remove()
 
     def _on_format_changed(self, *_args) -> None:
         fmt = self.output_format.get()
@@ -1970,14 +2280,19 @@ class DocumentToAudioWizard:
         voice_metadata = self.app.piper_voice_options.get(
             piper_label, get_piper_voice_metadata(piper_label)
         )
+        language = self.wizard_language.get().strip() or "hu"
+        if self._resolved_wizard_engine() == ENGINE_POCKET:
+            speaker_name = self.wizard_pocket_voice.get().strip() or pocket_default_voice(language)
+        else:
+            speaker_name = self.wizard_speaker_name.get().strip() or DEFAULT_SPEAKER
         return SynthesisRequest(
             text=text,
-            language=self.app.language.get().strip() or "hu",
+            language=language,
             output_file=output_path,
             engine=self.wizard_engine.get().strip() or ENGINE_AUTO,
             piper_voice_label=piper_label,
             piper_voice_code=voice_metadata["code"],
-            speaker_name=self.wizard_speaker_name.get().strip() or DEFAULT_SPEAKER,
+            speaker_name=speaker_name,
             speaker_wav=self.wizard_speaker_wav.get().strip(),
             speed=round(self.wizard_speed.get(), 1),
         )
@@ -2283,12 +2598,15 @@ class App:
         self.piper_voice_options = discover_local_piper_voices()
 
         self.language = StringVar(value="hu")
+        self.language_display = StringVar(value=language_display_name("hu"))
         self.engine = StringVar(value=ENGINE_AUTO)
+        self._syncing_voice_settings = False
         initial_piper_voice = self.settings.get("default_piper_voice_label", DEFAULT_PIPER_VOICE_LABEL)
         if initial_piper_voice not in self.piper_voice_options:
             initial_piper_voice = DEFAULT_PIPER_VOICE_LABEL
         self.piper_voice_label = StringVar(value=initial_piper_voice)
         self.speaker_name = StringVar(value=DEFAULT_SPEAKER)
+        self.pocket_voice = StringVar(value=pocket_default_voice("hu"))
         self.speaker_wav = StringVar()
         self.output_file = StringVar(value=str((get_default_music_folder() / "speech.mp3").resolve()))
         self.status = StringVar(value="Ready")
@@ -2303,11 +2621,16 @@ class App:
         self.generation_open_folder_button = None
 
         self._build_ui()
-        self.language.trace_add("write", self.on_voice_settings_changed)
+        self.language_display.trace_add("write", self._on_language_display_changed)
         self.engine.trace_add("write", self.on_voice_settings_changed)
         self.piper_voice_label.trace_add("write", self.on_voice_settings_changed)
+        self.speaker_wav.trace_add("write", self.on_voice_settings_changed)
         self.on_voice_settings_changed()
         self.root.after(150, self.flush_logs)
+
+    def _on_language_display_changed(self, *_args) -> None:
+        self.language.set(language_code_from_display(self.language_display.get()))
+        self.on_voice_settings_changed()
 
     def _configure_styles(self) -> None:  # pragma: no cover
         style = ttk.Style()
@@ -2370,7 +2693,7 @@ class App:
         ttk.Label(header_text, text="Local TTS Audio Generator", style="Header.TLabel").pack(anchor="w")
         ttk.Label(
             header_text,
-            text="Local Piper and XTTS voices for many languages, with MP3, OGG, and WAV export.",
+            text="Pick a language, then an engine — Piper, XTTS, or Pocket TTS. Export to MP3, OGG, or WAV.",
             style="Subtle.TLabel",
         ).pack(anchor="w", pady=(2, 0))
 
@@ -2379,16 +2702,18 @@ class App:
         controls.columnconfigure(1, weight=1)
         controls.columnconfigure(3, weight=1)
 
+        # Language first: it is the entry point the user thinks in terms of.
         ttk.Label(controls, text="Language").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=6)
         self.lang_box = ttk.Combobox(
             controls,
-            textvariable=self.language,
-            values=ENGINE_LANGUAGES[ENGINE_AUTO],
+            textvariable=self.language_display,
+            values=[language_display_name(c) for c in available_languages(self.piper_voice_options)],
             state="readonly",
-            width=12,
+            width=16,
         )
         self.lang_box.grid(row=0, column=1, sticky="w", pady=6)
 
+        # Engine second: only engines that can speak the chosen language are offered.
         ttk.Label(controls, text="Engine").grid(row=0, column=2, sticky="w", padx=(18, 10), pady=6)
         self.engine_box = ttk.Combobox(
             controls,
@@ -2399,23 +2724,32 @@ class App:
         )
         self.engine_box.grid(row=0, column=3, sticky="w", pady=6)
 
-        ttk.Label(controls, text="Built-in speaker").grid(
+        # Voice: one adaptive slot. Which control shows depends on the engine —
+        # a Piper voice list, a Pocket voice list, or an XTTS speaker name.
+        self.voice_label_var = StringVar(value="Voice")
+        ttk.Label(controls, textvariable=self.voice_label_var).grid(
             row=1, column=0, sticky="w", padx=(0, 10), pady=6
         )
-        self.speaker_name_entry = ttk.Entry(controls, textvariable=self.speaker_name)
-        self.speaker_name_entry.grid(row=1, column=1, sticky="ew", pady=6)
+        voice_area = ttk.Frame(controls, style="HeaderPanel.TFrame")
+        voice_area.grid(row=1, column=1, columnspan=4, sticky="ew", pady=6)
+        voice_area.columnconfigure(0, weight=1)
 
-        ttk.Label(controls, text="Piper voice").grid(
-            row=1, column=2, sticky="w", padx=(18, 10), pady=6
-        )
         self.piper_voice_box = ttk.Combobox(
-            controls,
+            voice_area,
             textvariable=self.piper_voice_label,
             values=list(self.piper_voice_options.keys()),
             state="readonly",
-            width=28,
         )
-        self.piper_voice_box.grid(row=1, column=3, columnspan=2, sticky="ew", pady=6)
+        self.pocket_voice_box = ttk.Combobox(
+            voice_area,
+            textvariable=self.pocket_voice,
+            values=POCKET_PREDEFINED_VOICES,
+            state="readonly",
+        )
+        self.speaker_name_entry = ttk.Entry(voice_area, textvariable=self.speaker_name)
+        for widget in (self.piper_voice_box, self.pocket_voice_box, self.speaker_name_entry):
+            widget.grid(row=0, column=0, sticky="ew")
+            widget.grid_remove()
 
         ttk.Label(controls, text="Reference WAV").grid(
             row=2, column=0, sticky="w", padx=(0, 10), pady=6
@@ -2507,20 +2841,36 @@ class App:
         self.log.configure(state="disabled")
 
     def resolved_engine(self) -> str:
-        if self.engine.get() == ENGINE_AUTO:
-            return ENGINE_XTTS if self.speaker_wav.get().strip() else ENGINE_PIPER
-        return self.engine.get()
+        return select_engine(
+            self.engine.get(),
+            self.language.get(),
+            bool(self.speaker_wav.get().strip()),
+            self.piper_voice_options,
+        )
 
     def reload_piper_voices(self, preferred_code: str | None = None) -> None:
         self.piper_voice_options = discover_local_piper_voices()
         labels = list(self.piper_voice_options.keys())
         self.piper_voice_box.configure(values=labels)
+        if hasattr(self, "lang_box"):
+            self.lang_box.configure(
+                values=[language_display_name(c) for c in available_languages(self.piper_voice_options)]
+            )
 
         preferred_label = self.piper_voice_label.get()
         if preferred_code is not None:
             preferred_label = self.find_piper_label_by_code(preferred_code) or preferred_label
         if preferred_label not in self.piper_voice_options:
             preferred_label = DEFAULT_PIPER_VOICE_LABEL
+        # A freshly downloaded voice may be in a new language — follow it so the
+        # language-first UI stays coherent.
+        if (
+            preferred_code is not None
+            and preferred_label in self.piper_voice_options
+            and hasattr(self, "language_display")
+        ):
+            code = self.piper_voice_options[preferred_label]["code"]
+            self.language_display.set(language_display_name(piper_language_of_code(code)))
         self.piper_voice_label.set(preferred_label)
 
     def find_piper_label_by_code(self, voice_code: str) -> str | None:
@@ -2535,38 +2885,81 @@ class App:
         self.piper_voice_label.set(label)
 
     def on_voice_settings_changed(self, *_args) -> None:
-        selected_label = self.piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL
-        voice_metadata = self.piper_voice_options.get(selected_label) or get_piper_voice_metadata(selected_label)
+        if getattr(self, "_syncing_voice_settings", False):
+            return
+        self._syncing_voice_settings = True
+        try:
+            self._sync_voice_settings()
+        finally:
+            self._syncing_voice_settings = False
+
+    def _sync_voice_settings(self) -> None:
+        language = self.language.get()
+
+        # 1. Offer only engines that can actually speak the chosen language.
+        supported = engines_supporting_language(language, self.piper_voice_options)
+        engine_values = [ENGINE_AUTO] + supported
+        if hasattr(self, "engine_box"):
+            self.engine_box.configure(values=engine_values)
+        if self.engine.get() not in engine_values:
+            self.enqueue_log(
+                f"{self.engine.get()} can't speak {language_display_name(language)} "
+                "— switched to Auto."
+            )
+            self.engine.set(ENGINE_AUTO)
 
         resolved = self.resolved_engine()
-        xtts_enabled = resolved == ENGINE_XTTS
-        piper_enabled = resolved == ENGINE_PIPER
-        pocket_enabled = resolved == ENGINE_POCKET
 
-        resolved_langs = ENGINE_LANGUAGES.get(resolved, ENGINE_LANGUAGES[ENGINE_AUTO])
-        self.lang_box.configure(values=resolved_langs)
-        if self.language.get() not in resolved_langs:
-            self.language.set(resolved_langs[0])
-
-        speaker_state = "normal" if (xtts_enabled or pocket_enabled) else "disabled"
-        self.speaker_name_entry.configure(state=speaker_state)
-        self.speaker_wav_entry.configure(state=speaker_state)
-        self.speaker_wav_button.configure(state=speaker_state)
-        self.piper_voice_box.configure(state="readonly" if piper_enabled or self.engine.get() == ENGINE_AUTO else "disabled")
-
+        # 2. Piper voice list is scoped to the language; keep a valid selection.
         if resolved == ENGINE_PIPER:
-            self.engine_hint.set(
-                f"Piper uses the local '{voice_metadata['code']}' voice. Adding a reference WAV switches Auto to XTTS."
+            labels = piper_voices_for_language(self.piper_voice_options, language) or list(
+                self.piper_voice_options.keys()
             )
-        elif resolved == ENGINE_POCKET:
-            self.engine_hint.set(
-                "Pocket TTS uses the Language field. Enter a built-in voice name "
-                "(e.g. 'alba', 'anna') or point Reference WAV to a sample for voice cloning."
-            )
-        else:
-            self.engine_hint.set(
-                "XTTS uses the Language field plus built-in speakers or reference voice cloning. Piper voice selection is ignored."
-            )
+            self.piper_voice_box.configure(values=labels)
+            if self.piper_voice_label.get() not in labels and labels:
+                self.piper_voice_label.set(labels[0])
+
+        # 3. Point Pocket at the language's default voice, unless the user has
+        #    deliberately chosen a non-default one.
+        if resolved == ENGINE_POCKET and is_pocket_default_voice(self.pocket_voice.get().strip()):
+            self.pocket_voice.set(pocket_default_voice(language))
+
+        # 4. Reveal the one voice control the engine uses; relabel and toggle it.
+        self._show_voice_widget(resolved)
+
+        # 5. A reference clip clones a voice (XTTS/Pocket). Keep it enabled in
+        #    Auto too, since dropping in a clip is how Auto switches to XTTS.
+        clone_applicable = self.engine.get() == ENGINE_AUTO or resolved in (ENGINE_XTTS, ENGINE_POCKET)
+        clone_state = "normal" if clone_applicable else "disabled"
+        self.speaker_wav_entry.configure(state=clone_state)
+        self.speaker_wav_button.configure(state=clone_state)
+
+        # 6. Tell the user what the resolved engine can do.
+        summary = ENGINE_SUMMARIES.get(resolved, "")
+        if self.engine.get() == ENGINE_AUTO and resolved in ENGINE_SUMMARIES:
+            summary = f"Auto → {resolved}. {summary}"
+        self.engine_hint.set(summary)
+
+    def _show_voice_widget(self, resolved: str) -> None:
+        # (widget, label, active-state) per engine. The active control is shown
+        # and enabled; the others are hidden and disabled.
+        specs = {
+            ENGINE_PIPER: (getattr(self, "piper_voice_box", None), "Piper voice", "readonly"),
+            ENGINE_POCKET: (getattr(self, "pocket_voice_box", None), "Pocket voice", "readonly"),
+            ENGINE_XTTS: (getattr(self, "speaker_name_entry", None), "Built-in speaker", "normal"),
+        }
+        active = specs.get(resolved, specs[ENGINE_PIPER])
+        if hasattr(self, "voice_label_var"):
+            self.voice_label_var.set(active[1])
+        for engine_key, (widget, _label, active_state) in specs.items():
+            if widget is None:
+                continue
+            if engine_key == resolved:
+                widget.configure(state=active_state)
+                widget.grid()
+            else:
+                widget.configure(state="disabled")
+                widget.grid_remove()
 
     def _on_speed_changed(self, *args) -> None:
         speed_val = round(self.speed.get(), 1)
@@ -2769,6 +3162,15 @@ class App:
             messagebox.showerror("Missing file", "The selected reference voice file does not exist.")
             return None
 
+        # Pocket draws its built-in voice from its own dropdown; XTTS uses the
+        # speaker-name entry. Feed whichever fits the resolved engine.
+        if self.resolved_engine() == ENGINE_POCKET:
+            speaker_name = getattr(self, "pocket_voice", self.speaker_name).get().strip() or pocket_default_voice(
+                self.language.get()
+            )
+        else:
+            speaker_name = self.speaker_name.get().strip() or DEFAULT_SPEAKER
+
         return SynthesisRequest(
             text=text,
             language=self.language.get().strip() or "hu",
@@ -2779,7 +3181,7 @@ class App:
                 self.piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL,
                 get_piper_voice_metadata(DEFAULT_PIPER_VOICE_LABEL),
             )["code"]),
-            speaker_name=self.speaker_name.get().strip() or DEFAULT_SPEAKER,
+            speaker_name=speaker_name,
             speaker_wav=speaker_wav,
             speed=round(self.speed.get(), 1),
         )

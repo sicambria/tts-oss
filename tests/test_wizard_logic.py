@@ -162,12 +162,13 @@ class TestBuildRequest:
 
     def test_pocket_engine_settings(self) -> None:
         app = MockApp()
+        app.language.set("en")  # Pocket supports English (not Hungarian)
         app.engine.set(ENGINE_POCKET)
-        app.speaker_name.set("alba")
         wizard = _make_wizard(app)
 
         req = wizard._build_request("test text", Path("/tmp/out.mp3"))
         assert req.engine == ENGINE_POCKET
+        # Pocket's voice comes from its own dropdown; "alba" is the English default.
         assert req.speaker_name == "alba"
 
 
