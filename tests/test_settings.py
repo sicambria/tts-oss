@@ -10,6 +10,8 @@ from app import DEFAULT_LANG_LEARNING_SETTINGS
 from app import DEFAULT_PATHS_SETTINGS
 from app import DEFAULT_UI_SETTINGS
 from app import load_app_settings
+from app import normalize_app_settings
+from app import normalize_learning_language
 from app import save_app_settings
 
 DEFAULT_SECTIONS = {
@@ -68,3 +70,21 @@ class TestSaveAppSettings:
             loaded = load_app_settings()
         expected = {**data, **DEFAULT_SECTIONS}
         assert loaded == expected
+
+
+class TestSettingsMigration:
+    def test_legacy_system_theme_migrates_to_light(self):
+        settings = normalize_app_settings({"ui": {"theme": "system"}})
+        assert settings["ui"]["theme"] == "light"
+
+    def test_explicit_theme_is_preserved(self):
+        settings = normalize_app_settings({"ui": {"theme": "dark"}})
+        assert settings["ui"]["theme"] == "dark"
+
+    def test_language_learning_display_name_migrates_to_code(self):
+        settings = normalize_app_settings({"language_learning": {"language": "Spanish"}})
+        assert settings["language_learning"]["language"] == "es"
+
+    def test_unknown_language_learning_value_falls_back_to_portuguese(self):
+        assert normalize_learning_language("Hungarian") == "pt"
+        assert normalize_learning_language(None) == "pt"

@@ -103,6 +103,11 @@ This opens a native desktop window on the same machine.
 - The current read-aloud line is highlighted in the editor while playback advances.
 - Clicking a word during read aloud restarts playback from that word to the end.
 - `Pause`, `Resume`, and `Stop` control local playback for the current read-aloud preview.
+- Language Learning supports Portuguese and Spanish. It provides Generate, Speak,
+  Pause/Resume, and Stop controls; stopping safely cancels pending synthesis and playback.
+- Language Learning is an optional companion feature. If it is unavailable, the
+  app stays open and shows setup instructions instead of closing. For an editable
+  companion checkout, install it with `pip install -e ../language-practice`.
 - `Voice Wizard` loads the official Piper voice catalog, lets you download additional voice models, and can set a default Piper voice for the app.
 - `XTTS v2` is the option that supports built-in speaker selection and reference voice cloning.
 - Leave `Reference WAV` empty to use the built-in speaker name.

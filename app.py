@@ -10,6 +10,7 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Callable
 from urllib.parse import quote
@@ -198,31 +199,6 @@ DEFAULT_LANG_LEARNING_SETTINGS: dict[str, object] = {
     "show_translations": True,
 }
 
-DEFAULT_UI_SETTINGS: dict[str, object] = {
-    "theme": "system",
-    "sidebar_collapsed": False,
-    "sidebar_width": 320,
-    "toolbar_style": "icon_text",
-}
-
-DEFAULT_AUDIO_SETTINGS: dict[str, object] = {
-    "output_device": "",
-}
-
-DEFAULT_GENERAL_SETTINGS: dict[str, object] = {
-    "default_engine": ENGINE_AUTO,
-    "default_language": "hu",
-    "auto_save_output_folder": True,
-    "confirm_on_exit": True,
-    "xtts_license_accepted": False,
-}
-
-DEFAULT_PATHS_SETTINGS: dict[str, object] = {
-    "piper_voice_dir": "voices/piper",
-    "pocket_voice_dir": "voices/pocket",
-    "output_folder": "",
-}
-
 HEADING_PATTERNS: list[tuple[str, int]] = [
     (r'(?m)^\s*(?:Chapter|CHAPTER)\s+(\d+|[IVXLCDM]+)\b', 1),
     (r'(?m)^\s*(\d+)\.\s+(?:[A-Z][\w\s]{3,})$', 1),
@@ -255,8 +231,8 @@ THEMES: dict[str, dict[str, str]] = {
         "muted_text": "#52607a",
         "text_bg": "#fbfcfe",
         "text_border": "#d7deea",
-        "log_bg": "#0f172a",
-        "log_fg": "#dbe4ff",
+        "log_bg": "#eef2ff",
+        "log_fg": "#172554",
         "read_aloud_highlight": "#fff3bf",
         "header_fg": "#101828",
         "label_fg": "#0f172a",
@@ -290,24 +266,24 @@ THEMES: dict[str, dict[str, str]] = {
         "notebook_tab_selected_fg": "#ffffff",
     },
     "high_contrast": {
-        "surface_bg": "#000000",
-        "card_bg": "#000000",
-        "accent": "#ffff00",
-        "accent_active": "#ffff00",
-        "muted_text": "#cccccc",
-        "text_bg": "#000000",
-        "text_border": "#ffffff",
-        "log_bg": "#000000",
-        "log_fg": "#ffffff",
-        "read_aloud_highlight": "#ffff00",
-        "header_fg": "#ffffff",
+        "surface_bg": "#ffffff",
+        "card_bg": "#ffffff",
+        "accent": "#0037a6",
+        "accent_active": "#001f61",
+        "muted_text": "#1f2937",
+        "text_bg": "#ffffff",
+        "text_border": "#111827",
+        "log_bg": "#f3f4f6",
+        "log_fg": "#111827",
+        "read_aloud_highlight": "#fff176",
+        "header_fg": "#000000",
         "label_fg": "#000000",
-        "button_bg": "#000000",
-        "button_fg": "#ffffff",
-        "button_active_bg": "#333300",
-        "notebook_tab_bg": "#000000",
-        "notebook_tab_fg": "#ffffff",
-        "notebook_tab_selected_bg": "#ffff00",
+        "button_bg": "#ffffff",
+        "button_fg": "#000000",
+        "button_active_bg": "#dbeafe",
+        "notebook_tab_bg": "#ffffff",
+        "notebook_tab_fg": "#000000",
+        "notebook_tab_selected_bg": "#0037a6",
         "notebook_tab_selected_fg": "#000000",
     },
 }
@@ -393,6 +369,10 @@ def apply_theme(theme_key: str, root: Tk | None = None) -> None:
     )
     style.configure("TEntry", fieldbackground=CARD_BG, bordercolor=TEXT_BORDER, padding=6)
     style.configure("TCombobox", fieldbackground=CARD_BG, bordercolor=TEXT_BORDER, padding=6)
+    style.configure("TMenubutton", padding=(10, 7), background=colors["button_bg"], foreground=colors["button_fg"])
+    style.configure("TCheckbutton", background=SURFACE_BG, foreground=colors["label_fg"])
+    style.configure("Treeview", background=CARD_BG, fieldbackground=CARD_BG, foreground=colors["label_fg"])
+    style.configure("Treeview.Heading", background=colors["button_active_bg"], foreground=colors["label_fg"])
     style.configure("TSeparator", background=TEXT_BORDER)
     style.configure("TNotebook", background=SURFACE_BG, bordercolor=TEXT_BORDER)
     style.configure("TNotebook.Tab", background=colors["notebook_tab_bg"], foreground=colors["notebook_tab_fg"], bordercolor=TEXT_BORDER, padding=(12, 8))
@@ -1039,6 +1019,67 @@ class SynthesisRequest:
     speed: float = 1.0
 
 
+class SessionState(str, Enum):
+    IDLE = "idle"
+    GENERATING = "generating"
+    SYNTHESIZING = "synthesizing"
+    PLAYING = "playing"
+    PAUSED = "paused"
+    STOPPING = "stopping"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class LanguageLearningAvailability:
+    available: bool
+    message: str
+    wordlist_dir: Path | None = None
+
+
+@dataclass(frozen=True)
+class LanguageSessionConfig:
+    language: str
+    engine: str
+    speed: float
+    pair_pause_ms: int
+    show_translations: bool
+
+
+def language_learning_availability() -> LanguageLearningAvailability:
+    """Validate the optional companion before a wizard tries to use it."""
+    try:
+        import importlib
+
+        package = importlib.import_module("language_practice")
+        importlib.import_module("language_practice.languages.pt")
+        importlib.import_module("language_practice.languages.es")
+    except Exception:
+        return LanguageLearningAvailability(
+            False,
+            "Language Learning needs the optional language-practice companion. "
+            "Install it with: pip install -e ../language-practice",
+        )
+
+    candidates: list[Path] = []
+    configured = os.environ.get("LANGUAGE_PRACTICE_DATA_DIR")
+    if configured:
+        candidates.append(Path(configured))
+    package_file = getattr(package, "__file__", None)
+    if package_file:
+        # Editable installs keep `src/language_practice`; its project root owns data/.
+        candidates.append(Path(package_file).resolve().parents[2] / "data")
+    candidates.append(Path.cwd().parent / "language-practice" / "data")
+
+    for data_dir in candidates:
+        if (data_dir / "pt" / "wordlist.md").is_file() and (data_dir / "es" / "wordlist.md").is_file():
+            return LanguageLearningAvailability(True, "Language Learning is ready.", data_dir)
+    return LanguageLearningAvailability(
+        False,
+        "The language-practice companion is installed but its PT/ES wordlists "
+        "were not found. Set LANGUAGE_PRACTICE_DATA_DIR or use an editable install.",
+    )
+
+
 @dataclass(frozen=True)
 class ChapterEntry:
     source_path: Path
@@ -1079,9 +1120,10 @@ def label_for_piper_voice(voice_code: str, voice_info: dict | None = None) -> st
 
 
 DEFAULT_UI_SETTINGS: dict[str, object] = {
-    "theme": "system",
+    "theme": "light",
     "sidebar_collapsed": False,
     "toolbar_compact": False,
+    "font_size": 11,
 }
 
 DEFAULT_AUDIO_SETTINGS: dict[str, object] = {
@@ -1147,32 +1189,7 @@ def load_app_settings() -> dict:
         except Exception:
             pass
         settings = {}
-    # Ensure language_learning section exists with defaults
-    if "language_learning" not in settings:
-        settings["language_learning"] = {}
-    for key, default in DEFAULT_LANG_LEARNING_SETTINGS.items():
-        settings["language_learning"].setdefault(key, default)
-    # Ensure ui section exists with defaults
-    if "ui" not in settings:
-        settings["ui"] = {}
-    for key, default in DEFAULT_UI_SETTINGS.items():
-        settings["ui"].setdefault(key, default)
-    # Ensure audio section exists with defaults
-    if "audio" not in settings:
-        settings["audio"] = {}
-    for key, default in DEFAULT_AUDIO_SETTINGS.items():
-        settings["audio"].setdefault(key, default)
-    # Ensure general section exists with defaults
-    if "general" not in settings:
-        settings["general"] = {}
-    for key, default in DEFAULT_GENERAL_SETTINGS.items():
-        settings["general"].setdefault(key, default)
-    # Ensure paths section exists with defaults
-    if "paths" not in settings:
-        settings["paths"] = {}
-    for key, default in DEFAULT_PATHS_SETTINGS.items():
-        settings["paths"].setdefault(key, default)
-    return settings
+    return normalize_app_settings(settings)
 
 
 def _default_settings_dict() -> dict:
@@ -1186,8 +1203,56 @@ def _default_settings_dict() -> dict:
     }
 
 
+def normalize_learning_language(value: object) -> str:
+    """Return a supported ISO language code for Language Learning settings."""
+    if not isinstance(value, str):
+        return "pt"
+    normalized = language_code_from_display(value.strip())
+    return normalized if normalized in {"pt", "es"} else "pt"
+
+
+def normalize_app_settings(raw_settings: object) -> dict:
+    """Merge untrusted persisted JSON with defaults and migrate old values."""
+    raw = raw_settings if isinstance(raw_settings, dict) else {}
+    settings = dict(raw)
+    sections = {
+        "language_learning": DEFAULT_LANG_LEARNING_SETTINGS,
+        "ui": DEFAULT_UI_SETTINGS,
+        "audio": DEFAULT_AUDIO_SETTINGS,
+        "general": DEFAULT_GENERAL_SETTINGS,
+        "paths": DEFAULT_PATHS_SETTINGS,
+    }
+    for name, defaults in sections.items():
+        current = raw.get(name)
+        section = dict(current) if isinstance(current, dict) else {}
+        settings[name] = {**defaults, **section}
+
+    # `system` was the old default and can open a dark window on first launch.
+    # Preserve deliberate light/dark/high-contrast choices, but make legacy
+    # system settings deterministic and light.
+    theme = settings["ui"].get("theme")
+    settings["ui"]["theme"] = theme if theme in THEMES and theme != "system" else "light"
+    settings["language_learning"]["language"] = normalize_learning_language(
+        settings["language_learning"].get("language")
+    )
+    settings["general"]["default_language"] = language_code_from_display(
+        str(settings["general"].get("default_language", "hu"))
+    )
+    return settings
+
+
 def save_app_settings(settings: dict) -> None:
-    APP_SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    """Persist settings atomically while retaining the previous valid file."""
+    if APP_SETTINGS_PATH.exists():
+        try:
+            APP_SETTINGS_PATH.with_suffix(".json.bak").write_text(
+                APP_SETTINGS_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+        except OSError:
+            pass
+    temp_path = APP_SETTINGS_PATH.with_suffix(".json.tmp")
+    temp_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    temp_path.replace(APP_SETTINGS_PATH)
 
 
 def add_context_menu(widget) -> None:
@@ -1955,6 +2020,14 @@ class PiperVoiceWizard:
 
         self.app.set_default_piper_voice(label)
         self.status.set(f"Default Piper voice set to {voice_code}.")
+
+    def _rebuild_styles(self) -> None:
+        """Refresh wizard styles after theme change."""
+        self.tree.configure(style="Treeview")
+        self.status_label = getattr(self, 'status_label', None)
+        if self.status_label:
+            self.status_label.configure(style="TLabel")
+        self.window.update_idletasks()
 
 
 class DocumentToAudioWizard:
@@ -2893,6 +2966,13 @@ class DocumentToAudioWizard:
                 self.app.enqueue_log("Document conversion complete.")
         self.window.after(0, apply)
 
+    def _rebuild_styles(self) -> None:
+        """Refresh wizard styles after theme change."""
+        self.tree.configure(style="Treeview")
+        self.overall_bar.configure(style="TProgressbar")
+        self.file_bar.configure(style="TProgressbar")
+        self.window.update_idletasks()
+
 
 class LanguageLearningWizard:
     """Wizard for generating and practicing language learning sentence pairs."""
@@ -2905,12 +2985,13 @@ class LanguageLearningWizard:
         self.window.geometry("900x700")
         self.window.minsize(800, 600)
 
-        # Load settings
-        self.settings = app.settings.get("language_learning", DEFAULT_LANG_LEARNING_SETTINGS.copy())
+        # Load only normalized, canonical language settings.
+        self.settings = normalize_app_settings(app.settings)["language_learning"]
+        self.availability = language_learning_availability()
 
         # State variables
         self.preset_var = StringVar(value=self.settings.get("preset", "A2"))
-        self.lang_var = StringVar(value=language_display_name(self.settings.get("language", "pt")))
+        self.lang_var = StringVar(value=language_display_name(normalize_learning_language(self.settings.get("language"))))
         self.level_var = IntVar(value=self.settings.get("level", 1))
         self.count_var = IntVar(value=self.settings.get("count", 15))
         self.max_length_var = IntVar(value=self.settings.get("max_length", 80))
@@ -2942,14 +3023,18 @@ class LanguageLearningWizard:
         # Worker thread
         self.worker: threading.Thread | None = None
         self.stop_event = threading.Event()
+        self.pause_event = threading.Event()
+        self.pause_event.set()
+        self.session_state = SessionState.IDLE
+        self._job_id = 0
 
         # Temp files for cleanup
         self._temp_files: list[Path] = []
 
-        # Check language-practice availability early
-        self._check_language_practice_available()
-
         self._build_ui()
+        if not self.availability.available:
+            self.window.protocol("WM_DELETE_WINDOW", self._on_close)
+            return
         self._validate_language()
         self._apply_preset()
         self._sync_voice_settings()
@@ -2962,19 +3047,39 @@ class LanguageLearningWizard:
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _check_language_practice_available(self) -> None:
-        """Check if language-practice package is installed; show error if not."""
-        try:
-            import language_practice  # noqa: F401
-        except ImportError:
-            messagebox.showerror(
-                "Missing Dependency",
-                "The 'language-practice' package is required for Language Learning.\n"
-                "Install it with: pip install -e ../language-practice"
-            )
+        """Compatibility wrapper for callers that used the old eager check."""
+        self.availability = language_learning_availability()
+
+    def _build_unavailable_ui(self) -> None:
+        main = ttk.Frame(self.window, padding=28)
+        main.pack(fill="both", expand=True)
+        ttk.Label(main, text="Language Learning is not ready", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(
+            main,
+            text=self.availability.message,
+            style="Hint.TLabel",
+            wraplength=720,
+            justify="left",
+        ).pack(anchor="w", pady=(12, 20))
+        actions = ttk.Frame(main)
+        actions.pack(anchor="w")
+        ttk.Button(actions, text="Retry", style="Accent.TButton", command=self._retry_availability).pack(side="left")
+        ttk.Button(actions, text="Close", command=self._on_close).pack(side="left", padx=(8, 0))
+
+    def _retry_availability(self) -> None:
+        self.availability = language_learning_availability()
+        if self.availability.available:
             self.window.destroy()
-            raise
+            self.app.lang_learning_wizard = LanguageLearningWizard(self.app)
+            return
+        for child in self.window.winfo_children():
+            child.destroy()
+        self._build_unavailable_ui()
 
     def _build_ui(self) -> None:
+        if not self.availability.available:
+            self._build_unavailable_ui()
+            return
         main = ttk.Frame(self.window, padding=12)
         main.pack(fill="both", expand=True)
         main.columnconfigure(0, weight=1)
@@ -3110,8 +3215,15 @@ class LanguageLearningWizard:
         # Action buttons
         actions = ttk.Frame(main)
         actions.grid(row=2, column=0, sticky="ew", pady=(0, 12))
-        ttk.Button(actions, text="Generate", style="Accent.TButton", command=self._generate).pack(side="left")
-        ttk.Button(actions, text="Speak", command=self._speak).pack(side="left", padx=(8, 0))
+        self.generate_button = ttk.Button(actions, text="Generate", style="Accent.TButton", command=self._generate)
+        self.generate_button.pack(side="left")
+        self.speak_button = ttk.Button(actions, text="Speak", command=self._speak)
+        self.speak_button.pack(side="left", padx=(8, 0))
+        self.pause_button_text = StringVar(value="Pause")
+        self.pause_button = ttk.Button(actions, textvariable=self.pause_button_text, command=self._toggle_pause, state="disabled")
+        self.pause_button.pack(side="left", padx=(8, 0))
+        self.stop_button = ttk.Button(actions, text="Stop", command=self._stop_session, state="disabled")
+        self.stop_button.pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Send to Main", command=self._send_to_main).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Export", command=self._export).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Clear", command=self._clear).pack(side="right")
@@ -3131,7 +3243,7 @@ class LanguageLearningWizard:
             pady=12,
             undo=True,
             bg=TEXT_BG,
-            fg="#0f172a",
+            fg=THEMES[CURRENT_THEME]["label_fg"],
             relief="flat",
             insertbackground=ACCENT,
             highlightthickness=1,
@@ -3150,26 +3262,27 @@ class LanguageLearningWizard:
         ttk.Label(main, textvariable=self.status_var, style="Hint.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 0))
 
     def _get_template_ids(self) -> list[str]:
-        lang = self.lang_var.get()
-        if lang == "Portuguese":
-            import language_practice.languages.pt as lang_module
-        else:
-            import language_practice.languages.es as lang_module
+        if not self.availability.available:
+            return []
+        import importlib
+
+        lang_code = normalize_learning_language(self.lang_var.get())
+        lang_module = importlib.import_module(f"language_practice.languages.{lang_code}")
         return [t.id for t in lang_module.TEMPLATES]
 
     def _get_vary_roles(self) -> list[str]:
         return ["N_SUBJ", "N_OBJ", "N_PLACE", "N_SUBJ2", "V_intr", "V_trans", "V_loc", "V_intr2", "PRON_SUBJ", "ADV", "ADJ"]
 
     def _validate_language(self) -> bool:
-        lang = self.lang_var.get()
-        if lang not in ("Portuguese", "Spanish"):
-            messagebox.showerror(
-                "Unsupported Language",
-                f"Language Learning supports Portuguese and Spanish only.\nCurrent: {lang}\nPlease select a supported language."
+        requested = self.lang_var.get()
+        language = normalize_learning_language(requested)
+        normalized_display = language_display_name(language)
+        if requested != normalized_display:
+            self.lang_var.set(normalized_display)
+            self.status_var.set(
+                f"{requested or 'Saved language'} is not supported here; switched to Portuguese."
             )
-            self.window.destroy()
-            return False
-        return True
+        return language in {"pt", "es"}
 
     def _on_preset_changed(self, *_args) -> None:
         if self.preset_var.get() != "Custom":
@@ -3186,6 +3299,7 @@ class LanguageLearningWizard:
             self.settings.update(p)
 
     def _on_language_changed(self, *_args) -> None:
+        self._validate_language()
         self._sync_voice_settings()
         # Update template IDs for new language
         self.template_box.configure(values=self._get_template_ids())
@@ -3230,7 +3344,8 @@ class LanguageLearningWizard:
 
     def _save_preset(self) -> None:
         """Save current settings as a custom preset."""
-        self.settings.update(self._collect_settings())
+        self.settings = self._collect_settings()
+        self.app.settings["language_learning"] = self.settings
         save_app_settings(self.app.settings)
         self.status_var.set("Preset saved")
         self.window.after(2000, lambda: self.status_var.set("Ready"))
@@ -3238,7 +3353,7 @@ class LanguageLearningWizard:
     def _collect_settings(self) -> dict:
         return {
             "preset": self.preset_var.get(),
-            "language": self.lang_var.get(),
+            "language": normalize_learning_language(self.lang_var.get()),
             "level": self.level_var.get(),
             "count": self.count_var.get(),
             "max_length": self.max_length_var.get(),
@@ -3259,68 +3374,83 @@ class LanguageLearningWizard:
         """Generate sentence pairs using language-practice library."""
         if self.worker and self.worker.is_alive():
             return
-
-        lang = self.lang_var.get()
-        if lang not in ("Portuguese", "Spanish"):
+        if not self.availability.available or not self._validate_language():
             return
-
-        self.status_var.set("Generating...")
+        options = self._generation_options()
         self.stop_event.clear()
+        self.pause_event.set()
+        self._job_id += 1
+        job_id = self._job_id
+        self._set_session_state(SessionState.GENERATING)
 
         def worker():
             try:
-                pairs = self._generate_pairs()
-                self.window.after(0, lambda: self._display_pairs(pairs))
+                pairs = self._generate_pairs(options)
+                if not self.stop_event.is_set():
+                    self.window.after(0, lambda: self._display_pairs(pairs, job_id))
             except Exception as exc:
-                self.window.after(0, lambda e=exc: self._on_generate_error(e))
+                if not self.stop_event.is_set():
+                    self.window.after(0, lambda e=exc: self._on_generate_error(e))
+            finally:
+                if self.stop_event.is_set():
+                    self.window.after(0, lambda: self._set_session_state(SessionState.IDLE, "Stopped."))
 
         self.worker = threading.Thread(target=worker, daemon=True)
         self.worker.start()
 
-    def _generate_pairs(self) -> list[tuple[str, str]]:
+    def _generation_options(self) -> dict[str, object]:
+        return {
+            "language": normalize_learning_language(self.lang_var.get()),
+            "level": self.level_var.get(),
+            "count": self.count_var.get(),
+            "max_length": self.max_length_var.get(),
+            "plural_chance": self.plural_chance_var.get(),
+            "seed": int(self.seed_var.get()) if self.seed_var.get().strip() else None,
+            "top_n": int(self.top_n_var.get()) if self.top_n_var.get().strip() else None,
+            "base_word": self.base_word_var.get().strip(),
+            "base_word_count": self.base_word_count_var.get(),
+            "base_template": self.base_template_var.get().strip(),
+            "vary_role": self.vary_role_var.get().strip(),
+            "vary_words": self.vary_words_var.get().strip(),
+        }
+
+    def _generate_pairs(self, options: dict[str, object]) -> list[tuple[str, str]]:
         """Call language-practice library to generate sentence pairs."""
-        # Check if language-practice is available
         try:
-            import importlib.util
-            if importlib.util.find_spec("language_practice") is None:
-                raise ImportError
-            from language_practice.generator import Generator
+            import importlib
+
+            generator_cls = importlib.import_module("language_practice.generator").Generator
+            lang_code = str(options["language"])
+            lang_module = importlib.import_module(f"language_practice.languages.{lang_code}")
         except ImportError as exc:
             raise RuntimeError(
                 "language-practice package not found. "
                 "Install it with: pip install -e ../language-practice"
             ) from exc
 
-        lang_display = self.lang_var.get()
-        lang_code = "pt" if lang_display == "Portuguese" else "es"
-
-        if lang_display == "Portuguese":
-            import language_practice.languages.pt as lang_module
-        else:
-            import language_practice.languages.es as lang_module
-
-        # Load wordlist
-        wordlist_path = Path(__file__).resolve().parent.parent / "language-practice" / "data" / lang_code / "wordlist.md"
+        if self.availability.wordlist_dir is None:
+            raise RuntimeError("Language-practice wordlists are unavailable. Select Retry after fixing the companion setup.")
+        wordlist_path = self.availability.wordlist_dir / lang_code / "wordlist.md"
         raw_words = lang_module.parse_wordlist(wordlist_path)
         words = lang_module.enrich_words(raw_words)
         en_dict = lang_module.build_en_dict(words)
 
         # Create generator
-        gen = Generator(
+        gen = generator_cls(
             words,
-            level=self.level_var.get(),
-            max_length=self.max_length_var.get(),
-            plural_chance=self.plural_chance_var.get(),
-            seed=int(self.seed_var.get()) if self.seed_var.get().strip() else None,
-            top_n=int(self.top_n_var.get()) if self.top_n_var.get().strip() else None,
+            level=int(options["level"]),
+            max_length=int(options["max_length"]),
+            plural_chance=float(options["plural_chance"]),
+            seed=options["seed"],
+            top_n=options["top_n"],
             lang=lang_module,
         )
 
         sentences: list = []
 
-        if self.base_word_var.get().strip():
+        if options["base_word"]:
             # Base word drill
-            base_word = self.base_word_var.get().strip().lower()
+            base_word = str(options["base_word"]).lower()
             # Normalize for comparison (strip accents, lower)
             import unicodedata
             def normalize(s: str) -> str:
@@ -3329,19 +3459,19 @@ class LanguageLearningWizard:
             base_word_obj = next((w for w in words if normalize(getattr(w, "pt", getattr(w, "es", ""))) == base_word_norm), None)
             if not base_word_obj:
                 raise ValueError(f"Base word '{base_word}' not found in vocabulary")
-            sentences = gen.generate_with_base_word(self.base_word_count_var.get(), base_word_obj, seed=int(self.seed_var.get()) if self.seed_var.get().strip() else None)
-        elif self.base_template_var.get().strip():
+            sentences = gen.generate_with_base_word(int(options["base_word_count"]), base_word_obj, seed=options["seed"])
+        elif options["base_template"]:
             # Batch mode
-            tpl = next((t for t in lang_module.TEMPLATES if t.id == self.base_template_var.get().strip()), None)
+            tpl = next((t for t in lang_module.TEMPLATES if t.id == options["base_template"]), None)
             if not tpl:
-                raise ValueError(f"Template '{self.base_template_var.get()}' not found")
-            vary_words = [w.strip() for w in self.vary_words_var.get().split(",")] if self.vary_words_var.get().strip() else None
+                raise ValueError(f"Template '{options['base_template']}' not found")
+            vary_words = [w.strip() for w in str(options["vary_words"]).split(",")] if options["vary_words"] else None
             sentences = gen.generate_batch(
-                self.count_var.get(), tpl, self.vary_role_var.get().strip(), vary_words, seed=int(self.seed_var.get()) if self.seed_var.get().strip() else None
+                int(options["count"]), tpl, str(options["vary_role"]), vary_words, seed=options["seed"]
             )
         else:
             # Normal generation
-            sentences = list(gen.generate(self.count_var.get()))
+            sentences = list(gen.generate(int(options["count"])))
 
         # Format as pairs
         pairs = []
@@ -3350,10 +3480,12 @@ class LanguageLearningWizard:
             translation = lang_module.translate(s.words, en_dict)
             pairs.append((target, translation))
 
-        self.generated_pairs = pairs
         return pairs
 
-    def _display_pairs(self, pairs: list[tuple[str, str]]) -> None:
+    def _display_pairs(self, pairs: list[tuple[str, str]], job_id: int | None = None) -> None:
+        if job_id is not None and job_id != self._job_id:
+            return
+        self.generated_pairs = pairs
         self.output_text.delete("1.0", "end")
         show_trans = self.show_trans_var.get()
         lines = []
@@ -3363,83 +3495,149 @@ class LanguageLearningWizard:
                 lines.append(f"   {trans}")
             lines.append("")
         self.output_text.insert("1.0", "\n".join(lines))
-        self.status_var.set(f"Generated {len(pairs)} sentence pairs")
+        self._set_session_state(SessionState.IDLE, f"Generated {len(pairs)} sentence pairs")
 
         if self.auto_speak_var.get():
             self._speak()
 
     def _on_generate_error(self, exc: Exception) -> None:
-        self.status_var.set("Generation failed")
+        self._set_session_state(SessionState.FAILED, "Generation failed")
         messagebox.showerror("Generation Error", str(exc))
 
     def _speak(self) -> None:
         """Synthesize and play the generated pairs with pair pauses."""
-        if not self.generated_pairs:
+        pairs = self._pairs_from_output()
+        if not pairs:
             messagebox.showinfo("Nothing to speak", "Generate sentences first.")
             return
         if self.worker and self.worker.is_alive():
             return
 
-        self.status_var.set("Synthesizing...")
+        config = LanguageSessionConfig(
+            language=normalize_learning_language(self.lang_var.get()),
+            engine=self.engine_var.get(),
+            speed=round(self.speed_var.get(), 1),
+            pair_pause_ms=max(0, self.pair_pause_var.get()),
+            show_translations=self.show_trans_var.get(),
+        )
         self.stop_event.clear()
+        self.pause_event.set()
+        self._job_id += 1
+        self._set_session_state(SessionState.SYNTHESIZING)
 
         def worker():
             try:
-                combined = self._synthesize_pairs()
-                # Save to temp file and play
+                combined = self._synthesize_pairs(pairs, config)
+                if self.stop_event.is_set():
+                    return
                 import tempfile
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                     temp_path = Path(f.name)
                 self._temp_files.append(temp_path)
                 export_audio_segment(combined, temp_path)
-                self.window.after(0, lambda: self._play_audio(temp_path))
+                if self.stop_event.is_set():
+                    self._cleanup_temp_file(temp_path)
+                    return
+                self.window.after(0, lambda: self._set_session_state(SessionState.PLAYING, "Playing practice audio..."))
+                self.app.player.play_blocking(temp_path, self.stop_event)
+                self._cleanup_temp_file(temp_path)
+                if not self.stop_event.is_set():
+                    self.window.after(0, lambda: self._set_session_state(SessionState.IDLE, "Playback complete"))
             except Exception as exc:
-                self.window.after(0, lambda e=exc: self._on_speak_error(e))
+                if not self.stop_event.is_set():
+                    self.window.after(0, lambda e=exc: self._on_speak_error(e))
+            finally:
+                if self.stop_event.is_set():
+                    self.window.after(0, lambda: self._set_session_state(SessionState.IDLE, "Stopped."))
 
         self.worker = threading.Thread(target=worker, daemon=True)
         self.worker.start()
 
-    def _synthesize_pairs(self) -> AudioSegment:
+    def _wait_for_session(self) -> bool:
+        """Pause at a safe boundary and return False once the session is stopped."""
+        while not self.pause_event.wait(timeout=0.1):
+            if self.stop_event.is_set():
+                return False
+        return not self.stop_event.is_set()
+
+    def _wait_pair_pause(self, milliseconds: int) -> bool:
+        deadline = time.monotonic() + milliseconds / 1000
+        while time.monotonic() < deadline:
+            if not self._wait_for_session():
+                return False
+            time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+        return not self.stop_event.is_set()
+
+    def _synthesize_pairs(
+        self,
+        pairs: list[tuple[str, str]],
+        config: LanguageSessionConfig,
+    ) -> AudioSegment:
         """Synthesize all pairs with pair_pause_ms between pairs."""
         combined = AudioSegment.silent(duration=0)
-        pair_pause = self.pair_pause_var.get()
 
-        for i, (target, translation) in enumerate(self.generated_pairs):
+        for i, (target, translation) in enumerate(pairs):
+            if not self._wait_for_session():
+                break
             # Synthesize target
-            req_target = self._build_request(target)
+            req_target = self._build_request(target, config.language, config)
             for _chunk, segment in self.app.service.iter_segments(req_target):
+                if not self._wait_for_session():
+                    return combined
                 combined += segment
 
             # Synthesize translation if enabled
-            if self.show_trans_var.get():
-                req_trans = self._build_request(translation)
+            if config.show_translations and translation:
+                req_trans = self._build_request(translation, "en", config)
                 for _chunk, segment in self.app.service.iter_segments(req_trans):
+                    if not self._wait_for_session():
+                        return combined
                     combined += segment
 
             # Add pair pause (except after last)
-            if i < len(self.generated_pairs) - 1:
-                combined += AudioSegment.silent(duration=pair_pause)
+            if i < len(pairs) - 1:
+                if not self._wait_pair_pause(config.pair_pause_ms):
+                    return combined
+                combined += AudioSegment.silent(duration=config.pair_pause_ms)
 
         return combined
 
-    def _build_request(self, text: str) -> SynthesisRequest:
+    def _build_request(
+        self,
+        text: str,
+        language: str | None = None,
+        config: LanguageSessionConfig | None = None,
+    ) -> SynthesisRequest:
         """Build synthesis request using current TTS settings."""
-        engine = self.engine_var.get()
-        lang_code = "pt" if self.lang_var.get() == "Portuguese" else "es"
+        lang_code = normalize_learning_language(language or self.lang_var.get()) if language != "en" else "en"
+        engine = config.engine if config else self.engine_var.get()
+        speed = config.speed if config else round(self.speed_var.get(), 1)
 
         # Resolve voice
         if engine == ENGINE_PIPER:
-            piper_label = self.piper_voice_label_var.get().strip() or DEFAULT_PIPER_VOICE_LABEL
-            voice_metadata = self.app.piper_voice_options.get(piper_label, get_piper_voice_metadata(piper_label))
+            labels = piper_voices_for_language(self.app.piper_voice_options, lang_code)
+            if not labels:
+                raise RuntimeError(
+                    f"Piper has no installed {language_display_name(lang_code)} voice. "
+                    "Choose Auto/another engine or download a matching voice."
+                )
+            selected = self.piper_voice_label_var.get().strip()
+            piper_label = selected if selected in labels else labels[0]
+            voice_metadata = self.app.piper_voice_options[piper_label]
             piper_code = voice_metadata["code"]
             speaker_name = DEFAULT_SPEAKER
         elif engine == ENGINE_POCKET:
             piper_label = DEFAULT_PIPER_VOICE_LABEL
             voice_metadata = get_piper_voice_metadata(piper_label)
             piper_code = voice_metadata["code"]
-            speaker_name = self.pocket_voice_var.get().strip() or pocket_default_voice(lang_code)
+            speaker_name = (
+                self.pocket_voice_var.get().strip()
+                if lang_code == normalize_learning_language(self.lang_var.get())
+                else pocket_default_voice(lang_code)
+            )
         else:
-            piper_label = DEFAULT_PIPER_VOICE_LABEL
+            labels = piper_voices_for_language(self.app.piper_voice_options, lang_code)
+            piper_label = labels[0] if labels else DEFAULT_PIPER_VOICE_LABEL
             voice_metadata = get_piper_voice_metadata(piper_label)
             piper_code = voice_metadata["code"]
             speaker_name = self.speaker_name_var.get().strip() or DEFAULT_SPEAKER
@@ -3455,17 +3653,64 @@ class LanguageLearningWizard:
             piper_voice_code=piper_code,
             speaker_name=speaker_name,
             speaker_wav=speaker_wav,
-            speed=round(self.speed_var.get(), 1),
+            speed=speed,
         )
 
-    def _play_audio(self, path: Path) -> None:
-        """Play audio file."""
-        try:
-            self.app.player.play_blocking(path, self.stop_event)
-        finally:
-            # Clean up temp file after playback completes
-            self._cleanup_temp_file(path)
-        self.status_var.set("Playback complete")
+    def _pairs_from_output(self) -> list[tuple[str, str]]:
+        """Use edited output as the source of truth before speaking/exporting."""
+        raw = self.output_text.get("1.0", "end-1c").strip()
+        if not raw:
+            return self.generated_pairs
+        pairs: list[tuple[str, str]] = []
+        for block in re.split(r"\n\s*\n", raw):
+            lines = [line.strip() for line in block.splitlines() if line.strip()]
+            if not lines:
+                continue
+            target = re.sub(r"^\d+\.\s*", "", lines[0]).strip()
+            translation = lines[1] if len(lines) > 1 else ""
+            if target:
+                pairs.append((target, translation))
+        self.generated_pairs = pairs or self.generated_pairs
+        return self.generated_pairs
+
+    def _set_session_state(self, state: SessionState, message: str | None = None) -> None:
+        self.session_state = state
+        if message:
+            self.status_var.set(message)
+        active = state in {
+            SessionState.GENERATING,
+            SessionState.SYNTHESIZING,
+            SessionState.PLAYING,
+            SessionState.PAUSED,
+            SessionState.STOPPING,
+        }
+        can_pause = state in {SessionState.SYNTHESIZING, SessionState.PLAYING, SessionState.PAUSED}
+        self.generate_button.configure(state="disabled" if active else "normal")
+        self.speak_button.configure(state="disabled" if active else "normal")
+        self.pause_button.configure(state="normal" if can_pause else "disabled")
+        self.stop_button.configure(state="normal" if active else "disabled")
+        self.pause_button_text.set("Resume" if state == SessionState.PAUSED else "Pause")
+
+    def _toggle_pause(self) -> None:
+        if self.session_state == SessionState.PAUSED:
+            self.pause_event.set()
+            self.app.player.resume()
+            self._set_session_state(SessionState.PLAYING, "Resumed.")
+            return
+        if self.session_state not in {SessionState.SYNTHESIZING, SessionState.PLAYING}:
+            return
+        self.pause_event.clear()
+        self.app.player.pause()
+        self._set_session_state(SessionState.PAUSED, "Paused.")
+
+    def _stop_session(self) -> None:
+        if self.session_state == SessionState.IDLE:
+            return
+        self._set_session_state(SessionState.STOPPING, "Stopping...")
+        self.stop_event.set()
+        self.pause_event.set()
+        self.app.player.stop(quiet=True)
+        self._job_id += 1
 
     def _cleanup_temp_file(self, path: Path) -> None:
         """Remove temp file and remove from tracking list."""
@@ -3477,16 +3722,17 @@ class LanguageLearningWizard:
             self._temp_files.remove(path)
 
     def _on_speak_error(self, exc: Exception) -> None:
-        self.status_var.set("Playback failed")
+        self._set_session_state(SessionState.FAILED, "Playback failed")
         messagebox.showerror("Playback Error", str(exc))
 
     def _send_to_main(self) -> None:
         """Send generated text to main window."""
-        if not self.generated_pairs:
+        pairs = self._pairs_from_output()
+        if not pairs:
             return
         show_trans = self.show_trans_var.get()
         lines = []
-        for target, trans in self.generated_pairs:
+        for target, trans in pairs:
             lines.append(target)
             if show_trans:
                 lines.append(trans)
@@ -3500,7 +3746,7 @@ class LanguageLearningWizard:
 
     def _export(self) -> None:
         """Export generated pairs to file."""
-        if not self.generated_pairs:
+        if not self._pairs_from_output():
             messagebox.showinfo("Nothing to export", "Generate sentences first.")
             return
 
@@ -3566,10 +3812,13 @@ class LanguageLearningWizard:
 
     def _on_close(self) -> None:
         # Save settings
-        self.app.settings["language_learning"] = self._collect_settings()
+        if self.availability.available:
+            self.app.settings["language_learning"] = self._collect_settings()
         save_app_settings(self.app.settings)
         if self.worker and self.worker.is_alive():
             self.stop_event.set()
+            self.pause_event.set()
+            self.app.player.stop(quiet=True)
             self.worker.join(timeout=1)
         # Clean up any remaining temp files
         for path in self._temp_files:
@@ -3578,6 +3827,19 @@ class LanguageLearningWizard:
             except Exception:
                 pass
         self.window.destroy()
+
+
+    def _rebuild_styles(self) -> None:
+        """Refresh wizard styles after theme change."""
+        if hasattr(self, "output_text"):
+            self.output_text.configure(
+                bg=TEXT_BG,
+                fg=THEMES[CURRENT_THEME]["label_fg"],
+                insertbackground=ACCENT,
+                highlightbackground=TEXT_BORDER,
+                highlightcolor=ACCENT,
+            )
+        self.window.update_idletasks()
 
 
 class SettingsDialog:
@@ -3696,8 +3958,8 @@ class SettingsDialog:
 
         row = 0
         ttk.Label(frame, text="Theme").grid(row=row, column=0, sticky="w", pady=6)
-        self.appearance_theme_var = StringVar(value=self.settings.get("ui", {}).get("theme", "system"))
-        ttk.Combobox(frame, textvariable=self.appearance_theme_var, values=["system", "light", "dark", "high_contrast"], state="readonly", width=20).grid(row=row, column=1, sticky="w", pady=6)
+        self.appearance_theme_var = StringVar(value=self.settings.get("ui", {}).get("theme", "light"))
+        ttk.Combobox(frame, textvariable=self.appearance_theme_var, values=["light", "dark", "high_contrast"], state="readonly", width=20).grid(row=row, column=1, sticky="w", pady=6)
 
         row += 1
         ttk.Label(frame, text="Font Size").grid(row=row, column=0, sticky="w", pady=6)
@@ -3788,9 +4050,10 @@ class SettingsDialog:
         self.app.settings.update(settings)
         save_app_settings(self.app.settings)
         # Apply theme immediately if changed
-        theme_name = settings.get("ui", {}).get("theme", "system")
+        theme_name = settings.get("ui", {}).get("theme", "light")
         resolved = resolve_theme(theme_name)
         apply_theme(resolved, self.app.root)
+        self.app._rebuild_styles()
         # Refresh wizard dialogs if open
         for wizard_attr in ("voice_wizard", "doc_wizard", "lang_learning_wizard"):
             wizard = getattr(self.app, wizard_attr, None)
@@ -3837,9 +4100,13 @@ class App:
         self.lang_learning_wizard: LanguageLearningWizard | None = None
         self.piper_voice_options = discover_local_piper_voices()
 
-        self.language = StringVar(value="hu")
-        self.language_display = StringVar(value=language_display_name("hu"))
-        self.engine = StringVar(value=ENGINE_AUTO)
+        initial_language = self.settings.get("general", {}).get("default_language", "hu")
+        if initial_language not in available_languages(self.piper_voice_options):
+            initial_language = "hu"
+        self.language = StringVar(value=initial_language)
+        self.language_display = StringVar(value=language_display_name(initial_language))
+        initial_engine = self.settings.get("general", {}).get("default_engine", ENGINE_AUTO)
+        self.engine = StringVar(value=initial_engine if initial_engine in ENGINE_SUMMARIES else ENGINE_AUTO)
         self._syncing_voice_settings = False
         initial_piper_voice = self.settings.get("default_piper_voice_label", DEFAULT_PIPER_VOICE_LABEL)
         if initial_piper_voice not in self.piper_voice_options:
@@ -3848,7 +4115,8 @@ class App:
         self.speaker_name = StringVar(value=DEFAULT_SPEAKER)
         self.pocket_voice = StringVar(value=pocket_default_voice("hu"))
         self.speaker_wav = StringVar()
-        self.output_file = StringVar(value=str((get_default_music_folder() / "speech.mp3").resolve()))
+        configured_output = self.settings.get("paths", {}).get("output_folder") or str(get_default_music_folder())
+        self.output_file = StringVar(value=str((Path(configured_output) / "speech.mp3").resolve()))
         self.status = StringVar(value="Ready")
         self.playback_toggle_label = StringVar(value="Pause")
         self.speed = DoubleVar(value=1.0)
@@ -3864,7 +4132,7 @@ class App:
         self.sidebar_collapsed = BooleanVar(value=self.settings.get("ui", {}).get("sidebar_collapsed", False))
 
         # Apply theme from settings
-        theme_name = self.settings.get("ui", {}).get("theme", "system")
+        theme_name = self.settings.get("ui", {}).get("theme", "light")
         resolved_theme = resolve_theme(theme_name)
         apply_theme(resolved_theme, self.root)
 
@@ -3885,6 +4153,26 @@ class App:
         style = ttk.Style()
         if "clam" in style.theme_names():
             style.theme_use("clam")
+        apply_theme(CURRENT_THEME, self.root)
+
+    def _rebuild_styles(self) -> None:
+        """Refresh widgets that ttk cannot recolor through a style alone."""
+        if hasattr(self, "text"):
+            self.text.configure(
+                bg=TEXT_BG,
+                fg=THEMES[CURRENT_THEME]["label_fg"],
+                insertbackground=ACCENT,
+                highlightbackground=TEXT_BORDER,
+                highlightcolor=ACCENT,
+            )
+            self.text.tag_configure(READ_ALOUD_LINE_TAG, background=READ_ALOUD_HIGHLIGHT)
+        if hasattr(self, "log"):
+            self.log.configure(
+                bg=THEMES[CURRENT_THEME]["log_bg"],
+                fg=THEMES[CURRENT_THEME]["log_fg"],
+                insertbackground=ACCENT,
+            )
+        self.root.update_idletasks()
 
     def _bind_shortcuts(self) -> None:
         """Bind keyboard shortcuts."""
@@ -3946,10 +4234,10 @@ class App:
             height=10,
             wrap="word",
             font=(FONT_MONO, 10),
-            bg="#0f172a",
-            fg="#dbe4ff",
+            bg=THEMES[CURRENT_THEME]["log_bg"],
+            fg=THEMES[CURRENT_THEME]["log_fg"],
             relief="flat",
-            insertbackground="#dbe4ff",
+            insertbackground=ACCENT,
         )
         self.log.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.log.configure(state="disabled")
@@ -3979,18 +4267,18 @@ class App:
         file_menu.add_command(label="Document Converter…", command=self.open_document_wizard)
         file_menu.add_separator()
         file_menu.add_command(label="Exit\t\tCtrl+Q", command=self._confirm_exit)
-        file_mb = ttk.Menubutton(toolbar, text="☰ File", menu=file_menu, direction="below")
+        file_mb = ttk.Menubutton(toolbar, text="File", menu=file_menu, direction="below")
         file_mb.grid(row=0, column=0, padx=(0, 8))
 
         # Home actions
         home_frame = ttk.Frame(toolbar)
         home_frame.grid(row=0, column=1, sticky="w")
-        ttk.Button(home_frame, text="📄 Load Text", command=self.load_text_file).pack(side="left", padx=2)
-        ttk.Button(home_frame, text="▶ Generate Audio", style="Accent.TButton", command=self.start_generation).pack(side="left", padx=2)
-        ttk.Button(home_frame, text="🔊 Read Aloud", command=self.start_read_aloud).pack(side="left", padx=2)
-        ttk.Button(home_frame, text="⏯ Play/Pause", command=self.toggle_playback_pause).pack(side="left", padx=2)
-        ttk.Button(home_frame, text="■ Stop", command=self.stop_playback).pack(side="left", padx=2)
-        ttk.Button(home_frame, text="📚 Convert Docs", command=self.open_document_wizard).pack(side="left", padx=2)
+        ttk.Button(home_frame, text="Load text", command=self.load_text_file).pack(side="left", padx=2)
+        ttk.Button(home_frame, text="Generate audio", style="Accent.TButton", command=self.start_generation).pack(side="left", padx=2)
+        ttk.Button(home_frame, text="Read aloud", command=self.start_read_aloud).pack(side="left", padx=2)
+        self.playback_button = ttk.Button(home_frame, textvariable=self.playback_toggle_label, command=self.toggle_playback_pause)
+        self.playback_button.pack(side="left", padx=2)
+        ttk.Button(home_frame, text="Stop", command=self.stop_playback).pack(side="left", padx=2)
 
         # Voice menubutton
         voice_menu = Menu(toolbar, tearoff=0)
@@ -4001,18 +4289,18 @@ class App:
         voice_menu.add_separator()
         voice_menu.add_command(label="Voice Wizard…", command=self.open_voice_wizard)
         voice_menu.add_command(label="Piper Voice Manager…", command=self.open_voice_wizard)
-        voice_mb = ttk.Menubutton(toolbar, text="🎤 Voice ▼", menu=voice_menu, direction="below")
+        voice_mb = ttk.Menubutton(toolbar, text="Voice", menu=voice_menu, direction="below")
         voice_mb.grid(row=0, column=2, padx=(8, 4))
 
         # Tools menubutton
         tools_menu = Menu(toolbar, tearoff=0)
         tools_menu.add_command(label="Language Learning…", command=self.open_language_learning)
         tools_menu.add_command(label="Document Converter…", command=self.open_document_wizard)
-        tools_mb = ttk.Menubutton(toolbar, text="🔧 Tools ▼", menu=tools_menu, direction="below")
+        tools_mb = ttk.Menubutton(toolbar, text="Tools", menu=tools_menu, direction="below")
         tools_mb.grid(row=0, column=3, padx=4)
 
         # Settings button
-        ttk.Button(toolbar, text="⚙ Settings", command=self.open_settings).grid(row=0, column=4, padx=(8, 4))
+        ttk.Button(toolbar, text="Settings", command=self.open_settings).grid(row=0, column=4, padx=(8, 4))
 
         # Sidebar toggle button
         self.sidebar_toggle_btn = ttk.Button(toolbar, text="◀", width=3, command=self._toggle_sidebar)
@@ -4130,7 +4418,7 @@ class App:
             undo=True,
             exportselection=False,
             bg=TEXT_BG,
-            fg="#0f172a",
+            fg=THEMES[CURRENT_THEME]["label_fg"],
             relief="flat",
             insertbackground=ACCENT,
             highlightthickness=1,
