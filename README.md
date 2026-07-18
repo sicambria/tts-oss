@@ -102,9 +102,15 @@ This opens a native desktop window on the same machine.
 - `Read Aloud` starts from the selected text if there is a selection; otherwise it starts from the beginning.
 - The current read-aloud line is highlighted in the editor while playback advances.
 - Clicking a word during read aloud restarts playback from that word to the end.
-- `Pause`, `Resume`, and `Stop` control local playback for the current read-aloud preview.
-- Language Learning supports Portuguese and Spanish. It provides Generate, Speak,
-  Pause/Resume, and Stop controls; stopping safely cancels pending synthesis and playback.
+- Icon buttons in the main toolbar pause/resume and stop the current read-aloud preview.
+- Language Learning supports Portuguese and Spanish. `Generate` closes the learner and
+  copies editable target/English pairs into the main editor with the target language selected.
+  `Speak` performs the same handoff and immediately starts playback.
+- Language-learning pairs are read with a target-language voice followed by an English voice.
+  Uncheck `Read English translations` in the main options to practice only the target lines.
+  If the selected target setup cannot speak English, the app selects an available English voice
+  and reports the fallback in Status.
+- Export current language-learning pairs from the main window as Text, Anki CSV, or JSON.
 - Language Learning is an optional companion feature. If it is unavailable, the
   app stays open and shows setup instructions instead of closing. For an editable
   companion checkout, install it with `pip install -e ../language-practice`.

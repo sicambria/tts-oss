@@ -10,6 +10,7 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass
+from dataclasses import replace
 from enum import Enum
 from pathlib import Path
 from typing import Callable
@@ -30,6 +31,7 @@ from tkinter import BooleanVar
 from tkinter import DoubleVar
 from tkinter import IntVar
 from tkinter import Menu
+from tkinter import PhotoImage
 from tkinter import StringVar
 from tkinter import Text
 from tkinter import Tk
@@ -195,8 +197,6 @@ DEFAULT_LANG_LEARNING_SETTINGS: dict[str, object] = {
     "vary_role": None,
     "vary_words": None,
     "pair_pause_ms": 2000,
-    "auto_speak": False,
-    "show_translations": True,
 }
 
 HEADING_PATTERNS: list[tuple[str, int]] = [
@@ -208,6 +208,51 @@ HEADING_PATTERNS: list[tuple[str, int]] = [
 ]
 FONT_BODY = "Segoe UI" if sys.platform == "win32" else "DejaVu Sans"
 FONT_MONO = "Consolas" if sys.platform == "win32" else "Liberation Mono"
+
+
+def make_playback_icon(master, kind: str) -> PhotoImage:
+    """Create small bitmap controls without relying on platform font glyphs."""
+    image = PhotoImage(master=master, width=16, height=16)
+    color = ACCENT
+    if kind == "pause":
+        image.put(color, to=(3, 2, 6, 14))
+        image.put(color, to=(10, 2, 13, 14))
+    elif kind == "resume":
+        for x, top, bottom in ((4, 2, 14), (5, 3, 13), (6, 4, 12), (7, 5, 11), (8, 6, 10), (9, 7, 9)):
+            image.put(color, to=(x, top, x + 1, bottom))
+    elif kind == "stop":
+        image.put(color, to=(3, 3, 13, 13))
+    elif kind == "load":
+        image.put(color, to=(2, 5, 14, 13))
+        image.put(TEXT_BG, to=(3, 7, 13, 12))
+        image.put(color, to=(3, 3, 8, 6))
+    elif kind == "generate":
+        for x, height in ((3, 5), (6, 10), (9, 7), (12, 12)):
+            image.put(color, to=(x, 14 - height, x + 2, 14))
+    return image
+
+
+def add_tooltip(widget, text: str) -> None:
+    """Provide a text label for icon-only controls."""
+    popup: Toplevel | None = None
+
+    def show(_event=None) -> None:
+        nonlocal popup
+        if popup is not None:
+            return
+        popup = Toplevel(widget)
+        popup.wm_overrideredirect(True)
+        popup.geometry(f"+{widget.winfo_rootx()}+{widget.winfo_rooty() + widget.winfo_height() + 4}")
+        ttk.Label(popup, text=text, padding=(6, 3)).pack()
+
+    def hide(_event=None) -> None:
+        nonlocal popup
+        if popup is not None:
+            popup.destroy()
+            popup = None
+
+    widget.bind("<Enter>", show, add="+")
+    widget.bind("<Leave>", hide, add="+")
 
 def sanitize_filename(name: str) -> str:
     return re.sub(r'[<>:"/\\|?*]', '_', name).strip().rstrip('.')
@@ -1043,6 +1088,34 @@ class LanguageSessionConfig:
     speed: float
     pair_pause_ms: int
     show_translations: bool
+
+
+@dataclass(frozen=True)
+class LanguagePracticeSession:
+    """Metadata that makes alternating main-editor lines bilingual practice."""
+
+    target_language: str
+    pair_pause_ms: int
+
+
+@dataclass(frozen=True)
+class SpeechItem:
+    """One language-aware editor range to synthesize."""
+
+    text: str
+    language: str
+    start: int
+    pause_after_ms: int = PAUSE_MS
+
+
+def language_practice_pairs(text: str) -> list[tuple[str, str]]:
+    """Parse editable target/English blocks from the main editor."""
+    pairs: list[tuple[str, str]] = []
+    for block in re.split(r"\n\s*\n", text.strip()):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if lines:
+            pairs.append((lines[0], lines[1] if len(lines) > 1 else ""))
+    return pairs
 
 
 def language_learning_availability() -> LanguageLearningAvailability:
@@ -2982,8 +3055,8 @@ class LanguageLearningWizard:
         self.window = Toplevel(app.root)
         self.window.transient(app.root)
         self.window.title("Language Learning Practice")
-        self.window.geometry("900x700")
-        self.window.minsize(800, 600)
+        self.window.geometry("760x540")
+        self.window.minsize(700, 500)
 
         # Load only normalized, canonical language settings.
         self.settings = normalize_app_settings(app.settings)["language_learning"]
@@ -3004,32 +3077,15 @@ class LanguageLearningWizard:
         self.vary_role_var = StringVar(value=self.settings.get("vary_role") or "")
         self.vary_words_var = StringVar(value=self.settings.get("vary_words") or "")
 
-        # TTS settings
-        self.engine_var = StringVar(value=app.engine.get())
+        # Practice pacing remains specific to generated pairs. Voice settings
+        # live in the main window so there is one source of truth.
         self.pair_pause_var = IntVar(value=self.settings.get("pair_pause_ms", 2000))
-        self.auto_speak_var = BooleanVar(value=self.settings.get("auto_speak", False))
-        self.show_trans_var = BooleanVar(value=self.settings.get("show_translations", True))
-        self.speed_var = DoubleVar(value=app.speed.get())
-
-        # Voice selections (synced from main window)
-        self.piper_voice_label_var = StringVar(value=app.piper_voice_label.get())
-        self.pocket_voice_var = StringVar(value=app.pocket_voice.get())
-        self.speaker_name_var = StringVar(value=app.speaker_name.get())
-        self.speaker_wav_var = StringVar(value=app.speaker_wav.get())
-
-        # Generated content
-        self.generated_pairs: list[tuple[str, str]] = []
 
         # Worker thread
         self.worker: threading.Thread | None = None
         self.stop_event = threading.Event()
-        self.pause_event = threading.Event()
-        self.pause_event.set()
         self.session_state = SessionState.IDLE
         self._job_id = 0
-
-        # Temp files for cleanup
-        self._temp_files: list[Path] = []
 
         self._build_ui()
         if not self.availability.available:
@@ -3037,12 +3093,10 @@ class LanguageLearningWizard:
             return
         self._validate_language()
         self._apply_preset()
-        self._sync_voice_settings()
 
         # Traces
         self.preset_var.trace_add("write", self._on_preset_changed)
         self.lang_var.trace_add("write", self._on_language_changed)
-        self.engine_var.trace_add("write", self._on_engine_changed)
 
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -3083,7 +3137,6 @@ class LanguageLearningWizard:
         main = ttk.Frame(self.window, padding=12)
         main.pack(fill="both", expand=True)
         main.columnconfigure(0, weight=1)
-        main.rowconfigure(3, weight=1)
 
         # Header with preset and language
         header = ttk.Frame(main)
@@ -3116,11 +3169,10 @@ class LanguageLearningWizard:
         settings_panels = ttk.Frame(main)
         settings_panels.grid(row=1, column=0, sticky="ew", pady=(0, 12))
         settings_panels.columnconfigure(0, weight=1)
-        settings_panels.columnconfigure(1, weight=1)
 
         # Generator Settings
         gen_frame = ttk.LabelFrame(settings_panels, text="Generator Settings", padding=10)
-        gen_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        gen_frame.grid(row=0, column=0, sticky="nsew")
         gen_frame.columnconfigure(1, weight=1)
 
         row = 0
@@ -3173,93 +3225,28 @@ class LanguageLearningWizard:
         ttk.Label(gen_frame, text="Vary words (comma-separated)").grid(row=row, column=0, sticky="w", pady=4)
         make_validated_entry(gen_frame, self.vary_words_var, width=24).grid(row=row, column=1, sticky="w", pady=4)
 
-        # TTS Settings
-        tts_frame = ttk.LabelFrame(settings_panels, text="TTS Settings", padding=10)
-        tts_frame.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-        tts_frame.columnconfigure(1, weight=1)
-
-        row = 0
-        ttk.Label(tts_frame, text="Engine").grid(row=row, column=0, sticky="w", pady=4)
-        self.engine_box = ttk.Combobox(tts_frame, textvariable=self.engine_var, values=[ENGINE_AUTO, ENGINE_PIPER, ENGINE_XTTS, ENGINE_POCKET], state="readonly", width=14)
-        self.engine_box.grid(row=row, column=1, sticky="w", pady=4)
-        row += 1
-
-        ttk.Label(tts_frame, text="Voice").grid(row=row, column=0, sticky="w", pady=4)
-        self.voice_area = ttk.Frame(tts_frame)
-        self.voice_area.grid(row=row, column=1, sticky="ew", pady=4)
-        self.voice_area.columnconfigure(0, weight=1)
-        self.piper_voice_box = ttk.Combobox(self.voice_area, textvariable=self.piper_voice_label_var, values=list(self.app.piper_voice_options.keys()), state="readonly")
-        self.pocket_voice_box = ttk.Combobox(self.voice_area, textvariable=self.pocket_voice_var, values=POCKET_PREDEFINED_VOICES, state="readonly")
-        self.speaker_name_entry = ttk.Entry(self.voice_area, textvariable=self.speaker_name_var)
-        add_context_menu(self.speaker_name_entry)
-        for w in (self.piper_voice_box, self.pocket_voice_box, self.speaker_name_entry):
-            w.grid(row=0, column=0, sticky="ew")
-            w.grid_remove()
-        row += 1
-
-        ttk.Label(tts_frame, text="Speed").grid(row=row, column=0, sticky="w", pady=4)
-        self.speed_label = ttk.Label(tts_frame, text=f"Speed: {self.speed_var.get():.1f}x")
-        self.speed_label.grid(row=row, column=1, sticky="w", pady=4)
-        self.speed_slider = ttk.Scale(tts_frame, from_=0.5, to=2.0, variable=self.speed_var, orient="horizontal", command=self._on_speed_changed)
-        self.speed_slider.grid(row=row, column=2, sticky="ew", pady=4, padx=(8, 0))
-        row += 1
-
-        ttk.Label(tts_frame, text="Pair pause (ms)").grid(row=row, column=0, sticky="w", pady=4)
-        make_validated_entry(tts_frame, self.pair_pause_var, validator="int", width=8).grid(row=row, column=1, sticky="w", pady=4)
-        row += 1
-
-        ttk.Checkbutton(tts_frame, text="Auto-speak after generate", variable=self.auto_speak_var).grid(row=row, column=0, columnspan=2, sticky="w", pady=4)
-        row += 1
-        ttk.Checkbutton(tts_frame, text="Show translations in output", variable=self.show_trans_var).grid(row=row, column=0, columnspan=2, sticky="w", pady=4)
+        practice_frame = ttk.LabelFrame(main, text="Practice", padding=10)
+        practice_frame.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        ttk.Label(practice_frame, text="Pause between pairs (ms)").pack(side="left")
+        make_validated_entry(practice_frame, self.pair_pause_var, validator="int", width=8).pack(side="left", padx=(8, 0))
+        ttk.Label(
+            practice_frame,
+            text="Voice, speed, and English playback are controlled in the main window.",
+            style="Hint.TLabel",
+        ).pack(side="left", padx=(16, 0))
 
         # Action buttons
         actions = ttk.Frame(main)
-        actions.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        actions.grid(row=3, column=0, sticky="ew", pady=(0, 12))
         self.generate_button = ttk.Button(actions, text="Generate", style="Accent.TButton", command=self._generate)
         self.generate_button.pack(side="left")
         self.speak_button = ttk.Button(actions, text="Speak", command=self._speak)
         self.speak_button.pack(side="left", padx=(8, 0))
-        self.pause_button_text = StringVar(value="Pause")
-        self.pause_button = ttk.Button(actions, textvariable=self.pause_button_text, command=self._toggle_pause, state="disabled")
-        self.pause_button.pack(side="left", padx=(8, 0))
-        self.stop_button = ttk.Button(actions, text="Stop", command=self._stop_session, state="disabled")
-        self.stop_button.pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Send to Main", command=self._send_to_main).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Export", command=self._export).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Clear", command=self._clear).pack(side="right")
-
-        # Output text area
-        ttk.Label(main, text="Generated Sentences (editable)").grid(row=3, column=0, sticky="w", pady=(0, 4))
-        text_frame = ttk.Frame(main)
-        text_frame.grid(row=4, column=0, sticky="nsew")
-        text_frame.columnconfigure(0, weight=1)
-        text_frame.rowconfigure(0, weight=1)
-
-        self.output_text = Text(
-            text_frame,
-            wrap="word",
-            font=(FONT_MONO, 10),
-            padx=12,
-            pady=12,
-            undo=True,
-            bg=TEXT_BG,
-            fg=THEMES[CURRENT_THEME]["label_fg"],
-            relief="flat",
-            insertbackground=ACCENT,
-            highlightthickness=1,
-            highlightbackground=TEXT_BORDER,
-            highlightcolor=ACCENT,
-        )
-        self.output_text.grid(row=0, column=0, sticky="nsew")
-        add_context_menu(self.output_text)
-
-        scroll = ttk.Scrollbar(text_frame, orient="vertical", command=self.output_text.yview)
-        scroll.grid(row=0, column=1, sticky="ns")
-        self.output_text.configure(yscrollcommand=scroll.set)
+        ttk.Button(actions, text="Close", command=self._on_close).pack(side="right")
 
         # Status bar
         self.status_var = StringVar(value="Ready")
-        ttk.Label(main, textvariable=self.status_var, style="Hint.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(main, textvariable=self.status_var, style="Hint.TLabel").grid(row=4, column=0, sticky="w", pady=(8, 0))
 
     def _get_template_ids(self) -> list[str]:
         if not self.availability.available:
@@ -3300,47 +3287,10 @@ class LanguageLearningWizard:
 
     def _on_language_changed(self, *_args) -> None:
         self._validate_language()
-        self._sync_voice_settings()
         # Update template IDs for new language
         self.template_box.configure(values=self._get_template_ids())
         if self.base_template_var.get() not in self._get_template_ids():
             self.base_template_var.set("")
-
-    def _on_engine_changed(self, *_args) -> None:
-        self._sync_voice_settings()
-
-    def _on_speed_changed(self, *_args) -> None:
-        self.speed_label.configure(text=f"Speed: {self.speed_var.get():.1f}x")
-
-    def _sync_voice_settings(self) -> None:
-        """Sync voice controls based on selected engine and language."""
-        engine = self.engine_var.get()
-        lang_code = "pt" if self.lang_var.get() == "Portuguese" else "es"
-
-        # Filter engines that support this language
-        supported = engines_supporting_language(lang_code, self.app.piper_voice_options)
-        engine_values = [ENGINE_AUTO] + supported
-        self.engine_box.configure(values=engine_values)
-        if engine not in engine_values:
-            engine = ENGINE_AUTO
-            self.engine_var.set(engine)
-
-        # Show appropriate voice control
-        for w in (self.piper_voice_box, self.pocket_voice_box, self.speaker_name_entry):
-            w.grid_remove()
-
-        if engine == ENGINE_PIPER:
-            labels = piper_voices_for_language(self.app.piper_voice_options, lang_code) or list(self.app.piper_voice_options.keys())
-            self.piper_voice_box.configure(values=labels)
-            if self.piper_voice_label_var.get() not in labels and labels:
-                self.piper_voice_label_var.set(labels[0])
-            self.piper_voice_box.grid()
-        elif engine == ENGINE_POCKET:
-            if self.pocket_voice_var.get() not in POCKET_PREDEFINED_VOICES:
-                self.pocket_voice_var.set(pocket_default_voice(lang_code))
-            self.pocket_voice_box.grid()
-        else:  # XTTS or Auto
-            self.speaker_name_entry.grid()
 
     def _save_preset(self) -> None:
         """Save current settings as a custom preset."""
@@ -3366,19 +3316,22 @@ class LanguageLearningWizard:
             "vary_role": self.vary_role_var.get().strip() or None,
             "vary_words": self.vary_words_var.get().strip() or None,
             "pair_pause_ms": self.pair_pause_var.get(),
-            "auto_speak": self.auto_speak_var.get(),
-            "show_translations": self.show_trans_var.get(),
         }
 
     def _generate(self) -> None:
-        """Generate sentence pairs using language-practice library."""
+        self._start_handoff(speak=False)
+
+    def _speak(self) -> None:
+        self._start_handoff(speak=True)
+
+    def _start_handoff(self, speak: bool) -> None:
+        """Generate a fresh batch, then continue in the main window."""
         if self.worker and self.worker.is_alive():
             return
         if not self.availability.available or not self._validate_language():
             return
         options = self._generation_options()
         self.stop_event.clear()
-        self.pause_event.set()
         self._job_id += 1
         job_id = self._job_id
         self._set_session_state(SessionState.GENERATING)
@@ -3387,7 +3340,7 @@ class LanguageLearningWizard:
             try:
                 pairs = self._generate_pairs(options)
                 if not self.stop_event.is_set():
-                    self.window.after(0, lambda: self._display_pairs(pairs, job_id))
+                    self.window.after(0, lambda: self._handoff_pairs(pairs, job_id, speak))
             except Exception as exc:
                 if not self.stop_event.is_set():
                     self.window.after(0, lambda e=exc: self._on_generate_error(e))
@@ -3482,76 +3435,22 @@ class LanguageLearningWizard:
 
         return pairs
 
-    def _display_pairs(self, pairs: list[tuple[str, str]], job_id: int | None = None) -> None:
+    def _handoff_pairs(self, pairs: list[tuple[str, str]], job_id: int | None, speak: bool) -> None:
         if job_id is not None and job_id != self._job_id:
             return
-        self.generated_pairs = pairs
-        self.output_text.delete("1.0", "end")
-        show_trans = self.show_trans_var.get()
-        lines = []
-        for i, (target, trans) in enumerate(pairs, 1):
-            lines.append(f"{i}. {target}")
-            if show_trans:
-                lines.append(f"   {trans}")
-            lines.append("")
-        self.output_text.insert("1.0", "\n".join(lines))
-        self._set_session_state(SessionState.IDLE, f"Generated {len(pairs)} sentence pairs")
-
-        if self.auto_speak_var.get():
-            self._speak()
+        self.app.activate_language_practice(
+            pairs,
+            normalize_learning_language(self.lang_var.get()),
+            max(0, self.pair_pause_var.get()),
+            speak=speak,
+        )
+        self.app.settings["language_learning"] = self._collect_settings()
+        save_app_settings(self.app.settings)
+        self.window.destroy()
 
     def _on_generate_error(self, exc: Exception) -> None:
         self._set_session_state(SessionState.FAILED, "Generation failed")
         messagebox.showerror("Generation Error", str(exc))
-
-    def _speak(self) -> None:
-        """Synthesize and play the generated pairs with pair pauses."""
-        pairs = self._pairs_from_output()
-        if not pairs:
-            messagebox.showinfo("Nothing to speak", "Generate sentences first.")
-            return
-        if self.worker and self.worker.is_alive():
-            return
-
-        config = LanguageSessionConfig(
-            language=normalize_learning_language(self.lang_var.get()),
-            engine=self.engine_var.get(),
-            speed=round(self.speed_var.get(), 1),
-            pair_pause_ms=max(0, self.pair_pause_var.get()),
-            show_translations=self.show_trans_var.get(),
-        )
-        self.stop_event.clear()
-        self.pause_event.set()
-        self._job_id += 1
-        self._set_session_state(SessionState.SYNTHESIZING)
-
-        def worker():
-            try:
-                combined = self._synthesize_pairs(pairs, config)
-                if self.stop_event.is_set():
-                    return
-                import tempfile
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                    temp_path = Path(f.name)
-                self._temp_files.append(temp_path)
-                export_audio_segment(combined, temp_path)
-                if self.stop_event.is_set():
-                    self._cleanup_temp_file(temp_path)
-                    return
-                self.window.after(0, lambda: self._set_session_state(SessionState.PLAYING, "Playing practice audio..."))
-                self.app.player.play_blocking(temp_path, self.stop_event)
-                self._cleanup_temp_file(temp_path)
-                if not self.stop_event.is_set():
-                    self.window.after(0, lambda: self._set_session_state(SessionState.IDLE, "Playback complete"))
-            except Exception as exc:
-                if not self.stop_event.is_set():
-                    self.window.after(0, lambda e=exc: self._on_speak_error(e))
-            finally:
-                if self.stop_event.is_set():
-                    self.window.after(0, lambda: self._set_session_state(SessionState.IDLE, "Stopped."))
-
-        self.worker = threading.Thread(target=worker, daemon=True)
-        self.worker.start()
 
     def _wait_for_session(self) -> bool:
         """Pause at a safe boundary and return False once the session is stopped."""
@@ -3677,19 +3576,9 @@ class LanguageLearningWizard:
         self.session_state = state
         if message:
             self.status_var.set(message)
-        active = state in {
-            SessionState.GENERATING,
-            SessionState.SYNTHESIZING,
-            SessionState.PLAYING,
-            SessionState.PAUSED,
-            SessionState.STOPPING,
-        }
-        can_pause = state in {SessionState.SYNTHESIZING, SessionState.PLAYING, SessionState.PAUSED}
+        active = state == SessionState.GENERATING
         self.generate_button.configure(state="disabled" if active else "normal")
         self.speak_button.configure(state="disabled" if active else "normal")
-        self.pause_button.configure(state="normal" if can_pause else "disabled")
-        self.stop_button.configure(state="normal" if active else "disabled")
-        self.pause_button_text.set("Resume" if state == SessionState.PAUSED else "Pause")
 
     def _toggle_pause(self) -> None:
         if self.session_state == SessionState.PAUSED:
@@ -3724,25 +3613,6 @@ class LanguageLearningWizard:
     def _on_speak_error(self, exc: Exception) -> None:
         self._set_session_state(SessionState.FAILED, "Playback failed")
         messagebox.showerror("Playback Error", str(exc))
-
-    def _send_to_main(self) -> None:
-        """Send generated text to main window."""
-        pairs = self._pairs_from_output()
-        if not pairs:
-            return
-        show_trans = self.show_trans_var.get()
-        lines = []
-        for target, trans in pairs:
-            lines.append(target)
-            if show_trans:
-                lines.append(trans)
-            lines.append("")
-        text = "\n".join(lines)
-        self.app.text.delete("1.0", "end")
-        self.app.text.insert("1.0", text)
-        self.app.root.lift()
-        self.app.root.focus_force()
-        self.status_var.set("Sent to main window")
 
     def _export(self) -> None:
         """Export generated pairs to file."""
@@ -3817,15 +3687,7 @@ class LanguageLearningWizard:
         save_app_settings(self.app.settings)
         if self.worker and self.worker.is_alive():
             self.stop_event.set()
-            self.pause_event.set()
-            self.app.player.stop(quiet=True)
             self.worker.join(timeout=1)
-        # Clean up any remaining temp files
-        for path in self._temp_files:
-            try:
-                path.unlink(missing_ok=True)
-            except Exception:
-                pass
         self.window.destroy()
 
 
@@ -4092,6 +3954,7 @@ class App:
         self.preview_worker: threading.Thread | None = None
         self.preview_stop_event = threading.Event()
         self.preview_job_id = 0
+        self.practice_session: LanguagePracticeSession | None = None
         self.last_selection_start_offset: int | None = None
         self.player = AudioPlayer(self.enqueue_log)
         self.settings = load_app_settings()
@@ -4119,6 +3982,7 @@ class App:
         self.output_file = StringVar(value=str((Path(configured_output) / "speech.mp3").resolve()))
         self.status = StringVar(value="Ready")
         self.playback_toggle_label = StringVar(value="Pause")
+        self.read_translations = BooleanVar(value=True)
         self.speed = DoubleVar(value=1.0)
         self.generation_modal: Toplevel | None = None
         self.generation_progress = None
@@ -4273,12 +4137,61 @@ class App:
         # Home actions
         home_frame = ttk.Frame(toolbar)
         home_frame.grid(row=0, column=1, sticky="w")
-        ttk.Button(home_frame, text="Load text", command=self.load_text_file).pack(side="left", padx=2)
-        ttk.Button(home_frame, text="Generate audio", style="Accent.TButton", command=self.start_generation).pack(side="left", padx=2)
-        ttk.Button(home_frame, text="Read aloud", command=self.start_read_aloud).pack(side="left", padx=2)
-        self.playback_button = ttk.Button(home_frame, textvariable=self.playback_toggle_label, command=self.toggle_playback_pause)
+        compact = bool(self.settings.get("ui", {}).get("toolbar_compact", False))
+        self.toolbar_icons = {
+            "load": make_playback_icon(self.root, "load"),
+            "generate": make_playback_icon(self.root, "generate"),
+            "read": make_playback_icon(self.root, "resume"),
+        }
+        load_button = ttk.Button(
+            home_frame,
+            text="" if compact else "Load text",
+            image=self.toolbar_icons["load"] if compact else "",
+            command=self.load_text_file,
+        )
+        load_button.pack(side="left", padx=2)
+        generate_button = ttk.Button(
+            home_frame,
+            text="" if compact else "Generate audio",
+            image=self.toolbar_icons["generate"] if compact else "",
+            style="Accent.TButton",
+            command=self.start_generation,
+        )
+        generate_button.pack(side="left", padx=2)
+        read_button = ttk.Button(
+            home_frame,
+            text="" if compact else "Read aloud",
+            image=self.toolbar_icons["read"] if compact else "",
+            command=self.start_read_aloud,
+        )
+        read_button.pack(side="left", padx=2)
+        if compact:
+            add_tooltip(load_button, "Load text")
+            add_tooltip(generate_button, "Generate audio")
+            add_tooltip(read_button, "Read aloud")
+        self.playback_icons = {
+            "pause": make_playback_icon(self.root, "pause"),
+            "resume": make_playback_icon(self.root, "resume"),
+            "stop": make_playback_icon(self.root, "stop"),
+        }
+        self.playback_button = ttk.Button(
+            home_frame,
+            image=self.playback_icons["pause"],
+            command=self.toggle_playback_pause,
+            state="disabled",
+            width=3,
+        )
         self.playback_button.pack(side="left", padx=2)
-        ttk.Button(home_frame, text="Stop", command=self.stop_playback).pack(side="left", padx=2)
+        add_tooltip(self.playback_button, "Pause or resume read aloud")
+        self.stop_playback_button = ttk.Button(
+            home_frame,
+            image=self.playback_icons["stop"],
+            command=self.stop_playback,
+            state="disabled",
+            width=3,
+        )
+        self.stop_playback_button.pack(side="left", padx=2)
+        add_tooltip(self.stop_playback_button, "Stop read aloud")
 
         # Voice menubutton
         voice_menu = Menu(toolbar, tearoff=0)
@@ -4295,6 +4208,7 @@ class App:
         # Tools menubutton
         tools_menu = Menu(toolbar, tearoff=0)
         tools_menu.add_command(label="Language Learning…", command=self.open_language_learning)
+        tools_menu.add_command(label="Export Language Pairs…", command=self.export_language_pairs)
         tools_menu.add_command(label="Document Converter…", command=self.open_document_wizard)
         tools_mb = ttk.Menubutton(toolbar, text="Tools", menu=tools_menu, direction="below")
         tools_mb.grid(row=0, column=3, padx=4)
@@ -4401,6 +4315,23 @@ class App:
             row=6, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
 
+        self.read_translations_check = ttk.Checkbutton(
+            controls,
+            text="Read English translations",
+            variable=self.read_translations,
+            state="disabled",
+        )
+        self.read_translations_check.grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self.export_pairs_button = ttk.Button(
+            controls,
+            text="Export language pairs",
+            command=self.export_language_pairs,
+            state="disabled",
+        )
+        self.export_pairs_button.grid(
+            row=8, column=0, columnspan=3, sticky="w", pady=(6, 0)
+        )
+
     def _build_text_area(self) -> None:
         """Build the main text editing area."""
         ttk.Label(self.text_area_frame, text="Text").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 0))
@@ -4465,9 +4396,116 @@ class App:
     def new_document(self) -> None:
         """Clear the text area for a new document."""
         self.text.delete("1.0", "end")
+        self.clear_language_practice()
         self.last_selection_start_offset = None
         self.clear_read_aloud_highlight()
         self.enqueue_log("New document created.")
+
+    def activate_language_practice(
+        self,
+        pairs: list[tuple[str, str]],
+        target_language: str,
+        pair_pause_ms: int,
+        *,
+        speak: bool,
+    ) -> None:
+        """Move generated PT/ES pairs into the editable main speech workflow."""
+        if not pairs:
+            return
+        language = normalize_learning_language(target_language)
+        lines: list[str] = []
+        for target, translation in pairs:
+            lines.extend((target.strip(), translation.strip(), ""))
+        self.text.delete("1.0", END)
+        self.text.insert("1.0", "\n".join(lines).rstrip())
+        self.practice_session = LanguagePracticeSession(language, max(0, pair_pause_ms))
+        self.read_translations.set(True)
+        self.language_display.set(language_display_name(language))
+        self.read_translations_check.configure(state="normal")
+        self.export_pairs_button.configure(state="normal")
+        self.last_selection_start_offset = None
+        self.clear_read_aloud_highlight()
+        self.root.lift()
+        self.root.focus_force()
+        self.enqueue_log(
+            f"Loaded {len(pairs)} {language_display_name(language)} / English practice pairs into the main editor."
+        )
+        if speak:
+            self.root.after(0, self.start_read_aloud)
+
+    def clear_language_practice(self) -> None:
+        self.practice_session = None
+        if hasattr(self, "read_translations"):
+            self.read_translations.set(True)
+        if hasattr(self, "read_translations_check"):
+            self.read_translations_check.configure(state="disabled")
+        if hasattr(self, "export_pairs_button"):
+            self.export_pairs_button.configure(state="disabled")
+
+    def current_language_pairs(self) -> list[tuple[str, str]]:
+        if getattr(self, "practice_session", None) is None:
+            return []
+        return language_practice_pairs(self.get_text_content())
+
+    def export_language_pairs(self) -> None:
+        pairs = self.current_language_pairs()
+        if not pairs:
+            messagebox.showinfo("No language pairs", "Generate a language-learning batch first.")
+            return
+        format_var = StringVar(value="Text")
+        dialog = Toplevel(self.root)
+        dialog.transient(self.root)
+        dialog.title("Export Language Pairs")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+        frame = ttk.Frame(dialog, padding=14)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Export format").pack(anchor="w")
+        ttk.Combobox(
+            frame,
+            textvariable=format_var,
+            values=["Text", "Anki CSV", "JSON"],
+            state="readonly",
+            width=18,
+        ).pack(anchor="w", pady=(6, 12))
+        ttk.Button(
+            frame,
+            text="Export",
+            command=lambda: self._save_language_pairs(format_var.get(), dialog),
+        ).pack(side="right")
+        ttk.Button(frame, text="Cancel", command=dialog.destroy).pack(side="right", padx=(0, 8))
+
+    def _save_language_pairs(self, fmt: str, dialog: Toplevel | None = None) -> None:
+        pairs = self.current_language_pairs()
+        extension = ".txt" if fmt == "Text" else ".csv" if fmt == "Anki CSV" else ".json"
+        path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Save language pairs",
+            defaultextension=extension,
+            filetypes=[("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            if fmt == "Text":
+                content = "\n\n".join(f"{target}\n{translation}".rstrip() for target, translation in pairs)
+                Path(path).write_text(content, encoding="utf-8")
+            elif fmt == "Anki CSV":
+                import csv
+
+                with Path(path).open("w", encoding="utf-8", newline="") as output:
+                    writer = csv.writer(output)
+                    writer.writerow(["Front", "Back", "Tags"])
+                    writer.writerows((target, translation, "language-learning") for target, translation in pairs)
+            else:
+                data = [{"front": target, "back": translation, "tags": ["language-learning"]} for target, translation in pairs]
+                Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("Export Error", str(exc))
+            return
+        if dialog is not None and dialog.winfo_exists():
+            dialog.destroy()
+        self.enqueue_log(f"Exported {len(pairs)} language pairs to {Path(path).name}")
 
     def save_audio_as(self) -> None:
         """Pick output file and generate audio."""
@@ -4809,6 +4847,7 @@ class App:
         content = Path(path).read_text(encoding="utf-8")
         self.text.delete("1.0", END)
         self.text.insert("1.0", content)
+        self.clear_language_practice()
         self.last_selection_start_offset = None
         self.clear_read_aloud_highlight()
         self.enqueue_log(f"Loaded text from {path}")
@@ -4859,6 +4898,101 @@ class App:
             speed=round(self.speed.get(), 1),
         )
 
+    def request_for_language(
+        self,
+        base_request: SynthesisRequest,
+        text: str,
+        language: str,
+    ) -> tuple[SynthesisRequest, bool]:
+        """Reuse main settings for another language without reusing a wrong voice."""
+        language = language_code_from_display(language)
+        requested_engine = base_request.engine
+        supported = engines_supporting_language(language, self.piper_voice_options)
+        fallback = requested_engine != ENGINE_AUTO and requested_engine not in supported
+        engine = ENGINE_AUTO if fallback else requested_engine
+        labels = piper_voices_for_language(self.piper_voice_options, language)
+        piper_label = base_request.piper_voice_label if base_request.piper_voice_label in labels else (labels[0] if labels else DEFAULT_PIPER_VOICE_LABEL)
+        piper_code = self.piper_voice_options.get(piper_label, get_piper_voice_metadata(DEFAULT_PIPER_VOICE_LABEL))["code"]
+        resolved = select_engine(engine, language, bool(base_request.speaker_wav), self.piper_voice_options)
+        speaker_name = base_request.speaker_name
+        if resolved == ENGINE_POCKET and language != base_request.language:
+            speaker_name = pocket_default_voice(language)
+        return (
+            replace(
+                base_request,
+                text=text,
+                language=language,
+                engine=engine,
+                piper_voice_label=piper_label,
+                piper_voice_code=piper_code,
+                speaker_name=speaker_name,
+            ),
+            fallback,
+        )
+
+    def practice_speech_items(self, base_request: SynthesisRequest, start_offset: int = 0) -> list[SpeechItem]:
+        """Turn editable target/English blocks into requests made at playback time."""
+        session = getattr(self, "practice_session", None)
+        if session is None:
+            return [SpeechItem(base_request.text, base_request.language, start_offset, 0)]
+
+        text = self.get_text_content()
+        include_english = self.read_translations.get()
+        items: list[SpeechItem] = []
+        def starts_at_or_after_selected_line(line_start: int, line_text: str) -> bool:
+            return line_start >= start_offset or line_start + len(line_text) > start_offset
+
+        for block in re.finditer(r"(?ms)\S.*?(?=\n\s*\n|\Z)", text):
+            lines = list(re.finditer(r"(?m)^.*\S.*$", block.group()))
+            if not lines:
+                continue
+            target_match = re.search(r"\S.*", lines[0].group())
+            if target_match is None:
+                continue
+            target = target_match.group().strip()
+            target_start = block.start() + lines[0].start() + target_match.start()
+            if starts_at_or_after_selected_line(target_start, target):
+                items.append(SpeechItem(target, session.target_language, target_start))
+            if include_english and len(lines) > 1:
+                translation_match = re.search(r"\S.*", lines[1].group())
+                if translation_match is None:
+                    continue
+                translation = translation_match.group().strip()
+                translation_start = block.start() + lines[1].start() + translation_match.start()
+                if starts_at_or_after_selected_line(translation_start, translation):
+                    items.append(SpeechItem(translation, "en", translation_start))
+
+        if not items:
+            return []
+        planned: list[SpeechItem] = []
+        for index, item in enumerate(items):
+            next_is_same_pair_translation = (
+                include_english
+                and item.language == session.target_language
+                and index + 1 < len(items)
+                and items[index + 1].language == "en"
+            )
+            pause = PAUSE_MS if next_is_same_pair_translation else session.pair_pause_ms
+            if index == len(items) - 1:
+                pause = 0
+            planned.append(replace(item, pause_after_ms=pause))
+        return planned
+
+    def practice_requests(
+        self,
+        base_request: SynthesisRequest,
+        start_offset: int = 0,
+    ) -> list[tuple[SpeechItem, SynthesisRequest]]:
+        requests: list[tuple[SpeechItem, SynthesisRequest]] = []
+        used_fallback = False
+        for item in self.practice_speech_items(base_request, start_offset):
+            request, fallback = self.request_for_language(base_request, item.text, item.language)
+            requests.append((item, request))
+            used_fallback = used_fallback or fallback
+        if used_fallback:
+            self.enqueue_log("Using an available English voice because the selected target-language engine cannot speak English.")
+        return requests
+
     def start_generation(self) -> None:
         if self.worker and self.worker.is_alive():
             messagebox.showinfo("Busy", "Generation is already running.")
@@ -4866,6 +5000,24 @@ class App:
 
         request = self.collect_request(require_output=True)
         if request is None:
+            return
+
+        if getattr(self, "practice_session", None) is not None:
+            requests = self.practice_requests(request)
+            if not requests:
+                messagebox.showinfo("No speech content", "The language-learning pairs are empty.")
+                return
+            if any(self.service.resolve_engine(item_request) == ENGINE_XTTS for _item, item_request in requests):
+                if not self.ensure_xtts_license_acceptance():
+                    return
+            self.enqueue_log("Starting bilingual synthesis job.")
+            self.show_generation_modal(request.output_file)
+            self.worker = threading.Thread(
+                target=self.run_practice_generation,
+                args=(requests, request.output_file),
+                daemon=True,
+            )
+            self.worker.start()
             return
 
         if self.service.resolve_engine(request) == ENGINE_XTTS and not self.ensure_xtts_license_acceptance():
@@ -4893,6 +5045,30 @@ class App:
             resolved_start_offset = self.get_read_aloud_start_offset()
         if resolved_start_offset is None:
             messagebox.showinfo("No speech content", "Enter some text first.")
+            return
+
+        if getattr(self, "practice_session", None) is not None:
+            requests = self.practice_requests(request, resolved_start_offset)
+            if not requests:
+                messagebox.showinfo("No speech content", "There are no practice lines after this position.")
+                return
+            if any(self.service.resolve_engine(item_request) == ENGINE_XTTS for _item, item_request in requests):
+                if not self.ensure_xtts_license_acceptance():
+                    return
+            self.preview_job_id += 1
+            self.preview_stop_event.set()
+            self.player.stop(quiet=True)
+            self.cleanup_preview_files()
+            self.preview_stop_event = threading.Event()
+            job_id = self.preview_job_id
+            self.enqueue_log("Preparing bilingual read-aloud preview.")
+            self.preview_worker = threading.Thread(
+                target=self.run_practice_read_aloud,
+                args=(requests, job_id, self.preview_stop_event),
+                daemon=True,
+            )
+            self.preview_worker.start()
+            self.update_playback_toggle_label()
             return
 
         if self.service.resolve_engine(request) == ENGINE_XTTS and not self.ensure_xtts_license_acceptance():
@@ -4936,12 +5112,51 @@ class App:
                 preview_path = preview_dir / f"read-aloud-preview-{job_id}-{index}.wav"
                 preview_paths.append(preview_path)
                 export_audio_segment(segment, preview_path)
-                self.root.after(0, self.update_playback_toggle_label)
+                self.root.after(0, lambda: self.set_playback_controls_active(True))
                 self.player.play_blocking(preview_path, stop_event)
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
             error_message = str(exc)
             self.root.after(0, lambda message=error_message: messagebox.showerror("Read aloud failed", message))
+        finally:
+            if preview_paths:
+                self.root.after(750, lambda paths=tuple(preview_paths): self.cleanup_preview_files(paths))
+            if job_id == self.preview_job_id:
+                self.root.after(0, self.clear_read_aloud_highlight)
+            self.root.after(0, self.update_playback_toggle_label)
+
+    def run_practice_read_aloud(
+        self,
+        requests: list[tuple[SpeechItem, SynthesisRequest]],
+        job_id: int,
+        stop_event: threading.Event,
+    ) -> None:
+        preview_paths: list[Path] = []
+        try:
+            preview_dir = PREVIEW_OUTPUT_PATH.resolve().parent
+            preview_index = 0
+            for item, request in requests:
+                if stop_event.is_set() or job_id != self.preview_job_id:
+                    break
+                self.root.after(0, lambda offset=item.start: self.highlight_read_aloud_line(offset))
+                for _chunk, segment in self.service.iter_segments(request):
+                    if stop_event.is_set() or job_id != self.preview_job_id:
+                        break
+                    preview_index += 1
+                    preview_path = preview_dir / f"read-aloud-preview-{job_id}-{preview_index}.wav"
+                    preview_paths.append(preview_path)
+                    export_audio_segment(segment, preview_path)
+                    self.root.after(0, lambda: self.set_playback_controls_active(True))
+                    self.player.play_blocking(preview_path, stop_event)
+                if stop_event.is_set() or job_id != self.preview_job_id:
+                    break
+                if item.pause_after_ms:
+                    deadline = time.monotonic() + item.pause_after_ms / 1000
+                    while time.monotonic() < deadline and not stop_event.is_set():
+                        time.sleep(min(0.05, deadline - time.monotonic()))
+        except Exception as exc:
+            self.enqueue_log(f"Error: {exc}")
+            self.root.after(0, lambda message=str(exc): messagebox.showerror("Read aloud failed", message))
         finally:
             if preview_paths:
                 self.root.after(750, lambda paths=tuple(preview_paths): self.cleanup_preview_files(paths))
@@ -4968,6 +5183,7 @@ class App:
             self.preview_stop_event.set()
             self.player.stop()
             self.clear_read_aloud_highlight()
+            self.set_playback_controls_active(False)
             self.update_playback_toggle_label()
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
@@ -4983,6 +5199,22 @@ class App:
             self.playback_toggle_label.set("Resume")
         else:
             self.playback_toggle_label.set("Pause")
+        if not hasattr(self, "playback_button"):
+            return
+        active = bool(self.player.is_active())
+        paused = bool(self.player.is_paused())
+        self.playback_button.configure(
+            image=self.playback_icons["resume" if paused else "pause"],
+            state="normal" if active else "disabled",
+        )
+        worker_running = self.preview_worker and self.preview_worker.is_alive() and not self.preview_stop_event.is_set()
+        self.stop_playback_button.configure(state="normal" if active or worker_running else "disabled")
+
+    def set_playback_controls_active(self, active: bool) -> None:
+        if not hasattr(self, "playback_button"):
+            return
+        self.playback_button.configure(state="normal" if active else "disabled")
+        self.stop_playback_button.configure(state="normal" if active else "disabled")
 
     def get_text_content(self) -> str:
         return self.text.get("1.0", "end-1c")
@@ -5109,6 +5341,40 @@ class App:
 
         self.enqueue_log(f"Saved audio: {result}")
         self.root.after(0, lambda path=result: self.finish_generation_modal(path))
+
+    def run_practice_generation(
+        self,
+        requests: list[tuple[SpeechItem, SynthesisRequest]],
+        output_file: Path,
+    ) -> None:
+        """Export the same per-language sequence used by bilingual read aloud."""
+        try:
+            combined = AudioSegment.silent(duration=0)
+            total = len(requests)
+            for index, (item, request) in enumerate(requests, start=1):
+                segments = list(self.service.iter_segments(request))
+                for chunk_index, (_chunk, segment) in enumerate(segments, start=1):
+                    combined += segment
+                    if chunk_index < len(segments):
+                        combined += AudioSegment.silent(duration=PAUSE_MS)
+                if item.pause_after_ms:
+                    combined += AudioSegment.silent(duration=item.pause_after_ms)
+                self.root.after(
+                    0,
+                    lambda current=index, count=total, language=item.language: self.update_generation_progress(
+                        current,
+                        count,
+                        f"Synthesizing {language_display_name(language)} line {current}/{count}...",
+                    ),
+                )
+            self.root.after(0, lambda: self.generation_status.set("Saving audio file..."))
+            export_audio_segment(combined, output_file)
+        except Exception as exc:
+            self.enqueue_log(f"Error: {exc}")
+            self.root.after(0, lambda message=str(exc): self.finish_generation_modal(None, error=message))
+            return
+        self.enqueue_log(f"Saved audio: {output_file}")
+        self.root.after(0, lambda: self.finish_generation_modal(output_file))
 
 
 def main() -> None:

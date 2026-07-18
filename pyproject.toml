@@ -31,6 +31,7 @@ known-first-party = ["app"]
 [tool.pytest.ini_options]
 markers = [
     "unit: Unit tests (fast, small scope, no real I/O)",
+    "integration: Cross-component tests with mocked UI, audio, or services",
 ]
 addopts = "-p no:warnings"
 pythonpath = ["."]
