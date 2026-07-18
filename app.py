@@ -198,6 +198,31 @@ DEFAULT_LANG_LEARNING_SETTINGS: dict[str, object] = {
     "show_translations": True,
 }
 
+DEFAULT_UI_SETTINGS: dict[str, object] = {
+    "theme": "system",
+    "sidebar_collapsed": False,
+    "sidebar_width": 320,
+    "toolbar_style": "icon_text",
+}
+
+DEFAULT_AUDIO_SETTINGS: dict[str, object] = {
+    "output_device": "",
+}
+
+DEFAULT_GENERAL_SETTINGS: dict[str, object] = {
+    "default_engine": ENGINE_AUTO,
+    "default_language": "hu",
+    "auto_save_output_folder": True,
+    "confirm_on_exit": True,
+    "xtts_license_accepted": False,
+}
+
+DEFAULT_PATHS_SETTINGS: dict[str, object] = {
+    "piper_voice_dir": "voices/piper",
+    "pocket_voice_dir": "voices/pocket",
+    "output_folder": "",
+}
+
 HEADING_PATTERNS: list[tuple[str, int]] = [
     (r'(?m)^\s*(?:Chapter|CHAPTER)\s+(\d+|[IVXLCDM]+)\b', 1),
     (r'(?m)^\s*(\d+)\.\s+(?:[A-Z][\w\s]{3,})$', 1),
@@ -219,6 +244,163 @@ ACCENT_ACTIVE = "#1d4ed8"
 MUTED_TEXT = "#52607a"
 TEXT_BG = "#fbfcfe"
 TEXT_BORDER = "#d7deea"
+READ_ALOUD_HIGHLIGHT = "#fff3bf"
+
+THEMES: dict[str, dict[str, str]] = {
+    "light": {
+        "surface_bg": "#f4f6fb",
+        "card_bg": "#ffffff",
+        "accent": "#2563eb",
+        "accent_active": "#1d4ed8",
+        "muted_text": "#52607a",
+        "text_bg": "#fbfcfe",
+        "text_border": "#d7deea",
+        "log_bg": "#0f172a",
+        "log_fg": "#dbe4ff",
+        "read_aloud_highlight": "#fff3bf",
+        "header_fg": "#101828",
+        "label_fg": "#0f172a",
+        "button_bg": "#ffffff",
+        "button_fg": "#0f172a",
+        "button_active_bg": "#eef2ff",
+        "notebook_tab_bg": "#ffffff",
+        "notebook_tab_fg": "#0f172a",
+        "notebook_tab_selected_bg": "#2563eb",
+        "notebook_tab_selected_fg": "#ffffff",
+    },
+    "dark": {
+        "surface_bg": "#1e1e2e",
+        "card_bg": "#282838",
+        "accent": "#3b82f6",
+        "accent_active": "#2563eb",
+        "muted_text": "#9ca3af",
+        "text_bg": "#1e1e2e",
+        "text_border": "#374151",
+        "log_bg": "#0f0f1a",
+        "log_fg": "#e5e7eb",
+        "read_aloud_highlight": "#3d2b00",
+        "header_fg": "#e5e7eb",
+        "label_fg": "#e5e7eb",
+        "button_bg": "#282838",
+        "button_fg": "#e5e7eb",
+        "button_active_bg": "#374151",
+        "notebook_tab_bg": "#282838",
+        "notebook_tab_fg": "#e5e7eb",
+        "notebook_tab_selected_bg": "#3b82f6",
+        "notebook_tab_selected_fg": "#ffffff",
+    },
+    "high_contrast": {
+        "surface_bg": "#000000",
+        "card_bg": "#000000",
+        "accent": "#ffff00",
+        "accent_active": "#ffff00",
+        "muted_text": "#cccccc",
+        "text_bg": "#000000",
+        "text_border": "#ffffff",
+        "log_bg": "#000000",
+        "log_fg": "#ffffff",
+        "read_aloud_highlight": "#ffff00",
+        "header_fg": "#ffffff",
+        "label_fg": "#000000",
+        "button_bg": "#000000",
+        "button_fg": "#ffffff",
+        "button_active_bg": "#333300",
+        "notebook_tab_bg": "#000000",
+        "notebook_tab_fg": "#ffffff",
+        "notebook_tab_selected_bg": "#ffff00",
+        "notebook_tab_selected_fg": "#000000",
+    },
+}
+
+CURRENT_THEME = "light"
+
+
+def resolve_theme(theme_name: str) -> str:
+    if theme_name != "system":
+        return theme_name
+    try:
+        if sys.platform == "win32":
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            winreg.CloseKey(key)
+            return "light" if value == 1 else "dark"
+        elif sys.platform == "darwin":
+            result = subprocess.run(["defaults", "read", "-g", "AppleInterfaceStyle"], capture_output=True, text=True)
+            return "dark" if "Dark" in result.stdout else "light"
+        else:
+            gtk_theme = os.environ.get("GTK_THEME", "").lower()
+            if "dark" in gtk_theme:
+                return "dark"
+            return "light"
+    except Exception:
+        return "light"
+
+
+def apply_theme(theme_key: str, root: Tk | None = None) -> None:
+    global SURFACE_BG, CARD_BG, ACCENT, ACCENT_ACTIVE, MUTED_TEXT, TEXT_BG, TEXT_BORDER, READ_ALOUD_HIGHLIGHT
+    global CURRENT_THEME
+    colors = THEMES[theme_key]
+    SURFACE_BG = colors["surface_bg"]
+    CARD_BG = colors["card_bg"]
+    ACCENT = colors["accent"]
+    ACCENT_ACTIVE = colors["accent_active"]
+    MUTED_TEXT = colors["muted_text"]
+    TEXT_BG = colors["text_bg"]
+    TEXT_BORDER = colors["text_border"]
+    READ_ALOUD_HIGHLIGHT = colors["read_aloud_highlight"]
+    CURRENT_THEME = theme_key
+
+    style = ttk.Style()
+    style.configure("TFrame", background=SURFACE_BG)
+    style.configure("HeaderPanel.TFrame", background=CARD_BG)
+    style.configure("Toolbar.TFrame", background=SURFACE_BG)
+    style.configure("Sidebar.TFrame", background=CARD_BG)
+    style.configure("TLabel", background=SURFACE_BG, foreground=colors["label_fg"])
+    style.configure("Header.TLabel", background=CARD_BG, foreground=colors["header_fg"], font=(FONT_BODY, 20, "bold"))
+    style.configure("HeroIcon.TLabel", background=CARD_BG, foreground=ACCENT, font=(FONT_BODY, 22))
+    style.configure("Subtle.TLabel", background=CARD_BG, foreground=MUTED_TEXT, font=(FONT_BODY, 10))
+    style.configure("Hint.TLabel", background=SURFACE_BG, foreground=MUTED_TEXT, font=(FONT_BODY, 9))
+    style.configure(
+        "TLabelframe",
+        background=CARD_BG,
+        bordercolor=TEXT_BORDER,
+        relief="solid",
+        borderwidth=1,
+    )
+    style.configure("TLabelframe.Label", background=CARD_BG, foreground=colors["label_fg"], font=(FONT_BODY, 10, "bold"))
+    style.configure(
+        "TButton",
+        padding=(12, 8),
+        font=(FONT_BODY, 9, "bold"),
+        background=colors["button_bg"],
+        foreground=colors["button_fg"],
+        bordercolor=TEXT_BORDER,
+        focusthickness=0,
+    )
+    style.map("TButton", background=[("active", colors["button_active_bg"])], bordercolor=[("active", ACCENT)])
+    style.configure(
+        "Accent.TButton",
+        background=ACCENT,
+        foreground="#ffffff" if theme_key != "high_contrast" else "#000000",
+        bordercolor=ACCENT,
+    )
+    style.map(
+        "Accent.TButton",
+        background=[("active", ACCENT_ACTIVE)],
+        bordercolor=[("active", ACCENT_ACTIVE)],
+        foreground=[("active", "#ffffff" if theme_key != "high_contrast" else "#000000")],
+    )
+    style.configure("TEntry", fieldbackground=CARD_BG, bordercolor=TEXT_BORDER, padding=6)
+    style.configure("TCombobox", fieldbackground=CARD_BG, bordercolor=TEXT_BORDER, padding=6)
+    style.configure("TSeparator", background=TEXT_BORDER)
+    style.configure("TNotebook", background=SURFACE_BG, bordercolor=TEXT_BORDER)
+    style.configure("TNotebook.Tab", background=colors["notebook_tab_bg"], foreground=colors["notebook_tab_fg"], bordercolor=TEXT_BORDER, padding=(12, 8))
+    style.map("TNotebook.Tab", background=[("selected", colors["notebook_tab_selected_bg"])], foreground=[("selected", colors["notebook_tab_selected_fg"])])
+
+    if root is not None:
+        root.configure(bg=SURFACE_BG)
+        root.update_idletasks()
 
 
 def sentence_split(text: str) -> list[str]:
@@ -896,41 +1078,26 @@ def label_for_piper_voice(voice_code: str, voice_info: dict | None = None) -> st
     return f"{language_name} | {name.replace('_', ' ').title()} | {quality}"
 
 
-def load_app_settings() -> dict:
-    if not APP_SETTINGS_PATH.exists():
-        return {}
-    try:
-        settings = json.loads(APP_SETTINGS_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        settings = {}
-    # Ensure language_learning section exists with defaults
-    if "language_learning" not in settings:
-        settings["language_learning"] = {}
-    for key, default in DEFAULT_LANG_LEARNING_SETTINGS.items():
-        settings["language_learning"].setdefault(key, default)
-    return settings
-def save_app_settings(settings: dict) -> None:
-    APP_SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+DEFAULT_UI_SETTINGS: dict[str, object] = {
+    "theme": "system",
+    "sidebar_collapsed": False,
+    "toolbar_compact": False,
+}
 
+DEFAULT_AUDIO_SETTINGS: dict[str, object] = {
+    "default_format": "MP3",
+    "mp3_quality": "192 kbps (recommended)",
+    "ogg_quality": "High (q5)",
+    "sample_rate": 44100,
+}
 
-def add_context_menu(widget) -> None:
-    """Attach right-click context menu with Cut/Copy/Paste/Select All to a Text/Entry widget."""
-    menu = Menu(widget, tearoff=0)
-    menu.add_command(label="Cut", command=lambda: widget.event_generate("<<Cut>>"))
-    menu.add_command(label="Copy", command=lambda: widget.event_generate("<<Copy>>"))
-    menu.add_command(label="Paste", command=lambda: widget.event_generate("<<Paste>>"))
-    menu.add_separator()
-    menu.add_command(label="Select All", command=lambda: widget.event_generate("<<SelectAll>>"))
-
-    def show_menu(event):
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
-
-    widget.bind("<Button-3>", show_menu)
-    widget.bind("<Control-a>", lambda e: widget.event_generate("<<SelectAll>>"))
-
+DEFAULT_GENERAL_SETTINGS: dict[str, object] = {
+    "default_engine": ENGINE_AUTO,
+    "default_language": "hu",
+    "auto_save_output_folder": True,
+    "confirm_on_exit": True,
+    "xtts_license_accepted": False,
+}
 
 def get_default_music_folder() -> Path:
     if sys.platform == "win32":
@@ -956,6 +1123,103 @@ def get_default_music_folder() -> Path:
                 if resolved.exists():
                     return resolved
     return Path.home() / "Music"
+
+
+DEFAULT_PATHS_SETTINGS: dict[str, object] = {
+    "piper_voice_dir": "voices/piper",
+    "pocket_voice_dir": "voices/pocket",
+    "output_folder": str(get_default_music_folder()),
+}
+
+
+def load_app_settings() -> dict:
+    if not APP_SETTINGS_PATH.exists():
+        return _default_settings_dict()
+    try:
+        settings = json.loads(APP_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        import logging
+        logging.warning(f"Corrupted settings.json, using defaults: {exc}")
+        # Backup corrupted file
+        try:
+            backup_path = APP_SETTINGS_PATH.with_suffix(".json.bak")
+            APP_SETTINGS_PATH.rename(backup_path)
+        except Exception:
+            pass
+        settings = {}
+    # Ensure language_learning section exists with defaults
+    if "language_learning" not in settings:
+        settings["language_learning"] = {}
+    for key, default in DEFAULT_LANG_LEARNING_SETTINGS.items():
+        settings["language_learning"].setdefault(key, default)
+    # Ensure ui section exists with defaults
+    if "ui" not in settings:
+        settings["ui"] = {}
+    for key, default in DEFAULT_UI_SETTINGS.items():
+        settings["ui"].setdefault(key, default)
+    # Ensure audio section exists with defaults
+    if "audio" not in settings:
+        settings["audio"] = {}
+    for key, default in DEFAULT_AUDIO_SETTINGS.items():
+        settings["audio"].setdefault(key, default)
+    # Ensure general section exists with defaults
+    if "general" not in settings:
+        settings["general"] = {}
+    for key, default in DEFAULT_GENERAL_SETTINGS.items():
+        settings["general"].setdefault(key, default)
+    # Ensure paths section exists with defaults
+    if "paths" not in settings:
+        settings["paths"] = {}
+    for key, default in DEFAULT_PATHS_SETTINGS.items():
+        settings["paths"].setdefault(key, default)
+    return settings
+
+
+def _default_settings_dict() -> dict:
+    """Return settings dict with all default sections populated."""
+    return {
+        "language_learning": DEFAULT_LANG_LEARNING_SETTINGS.copy(),
+        "ui": DEFAULT_UI_SETTINGS.copy(),
+        "audio": DEFAULT_AUDIO_SETTINGS.copy(),
+        "general": DEFAULT_GENERAL_SETTINGS.copy(),
+        "paths": DEFAULT_PATHS_SETTINGS.copy(),
+    }
+
+
+def save_app_settings(settings: dict) -> None:
+    APP_SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+
+def add_context_menu(widget) -> None:
+    """Attach right-click context menu with Cut/Copy/Paste/Select All to a Text/Entry widget."""
+    menu = Menu(widget, tearoff=0)
+    menu.add_command(label="Cut", command=lambda: widget.event_generate("<<Cut>>"))
+    menu.add_command(label="Copy", command=lambda: widget.event_generate("<<Copy>>"))
+    menu.add_command(label="Paste", command=lambda: widget.event_generate("<<Paste>>"))
+    menu.add_separator()
+    menu.add_command(label="Select All", command=lambda: widget.event_generate("<<SelectAll>>"))
+
+    def show_menu(event):
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    widget.bind("<Button-3>", show_menu)
+    widget.bind("<Control-a>", lambda e: widget.event_generate("<<SelectAll>>"))
+
+
+def make_validated_entry(parent, textvariable, validator="int", width=8, **kwargs):
+    """Create an Entry with input validation for int/float."""
+    if validator == "int":
+        vcmd = (parent.register(lambda s: s == "" or s.lstrip("-").isdigit()), "%P")
+    elif validator == "float":
+        vcmd = (parent.register(lambda s: s == "" or (s.replace(".", "", 1).lstrip("-").isdigit() and s.count(".") <= 1)), "%P")
+    else:
+        vcmd = None
+    entry = ttk.Entry(parent, textvariable=textvariable, width=width, validate="key", validatecommand=vcmd, **kwargs)
+    add_context_menu(entry)
+    return entry
 
 
 def discover_local_piper_voices() -> dict[str, dict[str, str]]:
@@ -2679,6 +2943,12 @@ class LanguageLearningWizard:
         self.worker: threading.Thread | None = None
         self.stop_event = threading.Event()
 
+        # Temp files for cleanup
+        self._temp_files: list[Path] = []
+
+        # Check language-practice availability early
+        self._check_language_practice_available()
+
         self._build_ui()
         self._validate_language()
         self._apply_preset()
@@ -2690,6 +2960,19 @@ class LanguageLearningWizard:
         self.engine_var.trace_add("write", self._on_engine_changed)
 
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _check_language_practice_available(self) -> None:
+        """Check if language-practice package is installed; show error if not."""
+        try:
+            import language_practice  # noqa: F401
+        except ImportError:
+            messagebox.showerror(
+                "Missing Dependency",
+                "The 'language-practice' package is required for Language Learning.\n"
+                "Install it with: pip install -e ../language-practice"
+            )
+            self.window.destroy()
+            raise
 
     def _build_ui(self) -> None:
         main = ttk.Frame(self.window, padding=12)
@@ -2722,7 +3005,7 @@ class LanguageLearningWizard:
         )
         self.lang_box.grid(row=0, column=3, sticky="w", padx=(0, 18))
 
-        ttk.Button(header, text="Save as Preset", command=self._save_preset).grid(row=0, column=4, sticky="e")
+        ttk.Button(header, text="Save as Defaults", command=self._save_preset).grid(row=0, column=4, sticky="e")
 
         # Settings panels
         settings_panels = ttk.Frame(main)
@@ -2742,43 +3025,33 @@ class LanguageLearningWizard:
         row += 1
 
         ttk.Label(gen_frame, text="Count").grid(row=row, column=0, sticky="w", pady=4)
-        ttk.Entry(gen_frame, textvariable=self.count_var, width=8).grid(row=row, column=1, sticky="w", pady=4)
+        make_validated_entry(gen_frame, self.count_var, validator="int", width=8).grid(row=row, column=1, sticky="w", pady=4)
         row += 1
 
         ttk.Label(gen_frame, text="Max words").grid(row=row, column=0, sticky="w", pady=4)
-        ttk.Entry(gen_frame, textvariable=self.max_length_var, width=8).grid(row=row, column=1, sticky="w", pady=4)
+        make_validated_entry(gen_frame, self.max_length_var, validator="int", width=8).grid(row=row, column=1, sticky="w", pady=4)
         row += 1
 
         ttk.Label(gen_frame, text="Plural %").grid(row=row, column=0, sticky="w", pady=4)
-        e = ttk.Entry(gen_frame, textvariable=self.plural_chance_var, width=8)
-        e.grid(row=row, column=1, sticky="w", pady=4)
-        add_context_menu(e)
+        make_validated_entry(gen_frame, self.plural_chance_var, validator="float", width=8).grid(row=row, column=1, sticky="w", pady=4)
         row += 1
 
         ttk.Label(gen_frame, text="Seed (optional)").grid(row=row, column=0, sticky="w", pady=4)
-        e = ttk.Entry(gen_frame, textvariable=self.seed_var, width=12)
-        e.grid(row=row, column=1, sticky="w", pady=4)
-        add_context_menu(e)
+        make_validated_entry(gen_frame, self.seed_var, validator="int", width=12).grid(row=row, column=1, sticky="w", pady=4)
         row += 1
 
         ttk.Label(gen_frame, text="Top N words (optional)").grid(row=row, column=0, sticky="w", pady=4)
-        e = ttk.Entry(gen_frame, textvariable=self.top_n_var, width=12)
-        e.grid(row=row, column=1, sticky="w", pady=4)
-        add_context_menu(e)
+        make_validated_entry(gen_frame, self.top_n_var, validator="int", width=12).grid(row=row, column=1, sticky="w", pady=4)
         row += 1
 
         # Base word drill
         ttk.Separator(gen_frame, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
         row += 1
         ttk.Label(gen_frame, text="Base word (drill)").grid(row=row, column=0, sticky="w", pady=4)
-        e = ttk.Entry(gen_frame, textvariable=self.base_word_var, width=18)
-        e.grid(row=row, column=1, sticky="w", pady=4)
-        add_context_menu(e)
+        make_validated_entry(gen_frame, self.base_word_var, width=18).grid(row=row, column=1, sticky="w", pady=4)
         row += 1
         ttk.Label(gen_frame, text="Min count").grid(row=row, column=0, sticky="w", pady=4)
-        e = ttk.Entry(gen_frame, textvariable=self.base_word_count_var, width=8)
-        e.grid(row=row, column=1, sticky="w", pady=4)
-        add_context_menu(e)
+        make_validated_entry(gen_frame, self.base_word_count_var, validator="int", width=8).grid(row=row, column=1, sticky="w", pady=4)
         row += 1
 
         # Batch mode
@@ -2793,9 +3066,7 @@ class LanguageLearningWizard:
         self.vary_role_box.grid(row=row, column=1, sticky="w", pady=4)
         row += 1
         ttk.Label(gen_frame, text="Vary words (comma-separated)").grid(row=row, column=0, sticky="w", pady=4)
-        e = ttk.Entry(gen_frame, textvariable=self.vary_words_var, width=24)
-        e.grid(row=row, column=1, sticky="w", pady=4)
-        add_context_menu(e)
+        make_validated_entry(gen_frame, self.vary_words_var, width=24).grid(row=row, column=1, sticky="w", pady=4)
 
         # TTS Settings
         tts_frame = ttk.LabelFrame(settings_panels, text="TTS Settings", padding=10)
@@ -2829,9 +3100,7 @@ class LanguageLearningWizard:
         row += 1
 
         ttk.Label(tts_frame, text="Pair pause (ms)").grid(row=row, column=0, sticky="w", pady=4)
-        e = ttk.Entry(tts_frame, textvariable=self.pair_pause_var, width=8)
-        e.grid(row=row, column=1, sticky="w", pady=4)
-        add_context_menu(e)
+        make_validated_entry(tts_frame, self.pair_pause_var, validator="int", width=8).grid(row=row, column=1, sticky="w", pady=4)
         row += 1
 
         ttk.Checkbutton(tts_frame, text="Auto-speak after generate", variable=self.auto_speak_var).grid(row=row, column=0, columnspan=2, sticky="w", pady=4)
@@ -3010,10 +3279,17 @@ class LanguageLearningWizard:
 
     def _generate_pairs(self) -> list[tuple[str, str]]:
         """Call language-practice library to generate sentence pairs."""
-        # Import language-practice modules
-        import sys
-        lang_practice_root = Path(__file__).resolve().parent.parent / "language-practice"
-        sys.path.insert(0, str(lang_practice_root / "src"))
+        # Check if language-practice is available
+        try:
+            import importlib.util
+            if importlib.util.find_spec("language_practice") is None:
+                raise ImportError
+            from language_practice.generator import Generator
+        except ImportError as exc:
+            raise RuntimeError(
+                "language-practice package not found. "
+                "Install it with: pip install -e ../language-practice"
+            ) from exc
 
         lang_display = self.lang_var.get()
         lang_code = "pt" if lang_display == "Portuguese" else "es"
@@ -3023,11 +3299,8 @@ class LanguageLearningWizard:
         else:
             import language_practice.languages.es as lang_module
 
-        from language_practice.generator import GeneratedSentence
-        from language_practice.generator import Generator
-
         # Load wordlist
-        wordlist_path = lang_practice_root / "data" / lang_code / "wordlist.md"
+        wordlist_path = Path(__file__).resolve().parent.parent / "language-practice" / "data" / lang_code / "wordlist.md"
         raw_words = lang_module.parse_wordlist(wordlist_path)
         words = lang_module.enrich_words(raw_words)
         en_dict = lang_module.build_en_dict(words)
@@ -3043,12 +3316,17 @@ class LanguageLearningWizard:
             lang=lang_module,
         )
 
-        sentences: list[GeneratedSentence] = []
+        sentences: list = []
 
         if self.base_word_var.get().strip():
             # Base word drill
             base_word = self.base_word_var.get().strip().lower()
-            base_word_obj = next((w for w in words if w.pt.lower() == base_word), None)
+            # Normalize for comparison (strip accents, lower)
+            import unicodedata
+            def normalize(s: str) -> str:
+                return "".join(c for c in unicodedata.normalize("NFD", s.lower()) if unicodedata.category(c) != "Mn")
+            base_word_norm = normalize(base_word)
+            base_word_obj = next((w for w in words if normalize(getattr(w, "pt", getattr(w, "es", ""))) == base_word_norm), None)
             if not base_word_obj:
                 raise ValueError(f"Base word '{base_word}' not found in vocabulary")
             sentences = gen.generate_with_base_word(self.base_word_count_var.get(), base_word_obj, seed=int(self.seed_var.get()) if self.seed_var.get().strip() else None)
@@ -3112,6 +3390,7 @@ class LanguageLearningWizard:
                 import tempfile
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                     temp_path = Path(f.name)
+                self._temp_files.append(temp_path)
                 export_audio_segment(combined, temp_path)
                 self.window.after(0, lambda: self._play_audio(temp_path))
             except Exception as exc:
@@ -3184,9 +3463,18 @@ class LanguageLearningWizard:
         try:
             self.app.player.play_blocking(path, self.stop_event)
         finally:
-            # Clean up temp file after a delay
-            self.window.after(1000, lambda: path.unlink(missing_ok=True))
+            # Clean up temp file after playback completes
+            self._cleanup_temp_file(path)
         self.status_var.set("Playback complete")
+
+    def _cleanup_temp_file(self, path: Path) -> None:
+        """Remove temp file and remove from tracking list."""
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        if path in self._temp_files:
+            self._temp_files.remove(path)
 
     def _on_speak_error(self, exc: Exception) -> None:
         self.status_var.set("Playback failed")
@@ -3283,7 +3571,249 @@ class LanguageLearningWizard:
         if self.worker and self.worker.is_alive():
             self.stop_event.set()
             self.worker.join(timeout=1)
+        # Clean up any remaining temp files
+        for path in self._temp_files:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
         self.window.destroy()
+
+
+class SettingsDialog:
+    def __init__(self, app: "App") -> None:
+        self.app = app
+        self.window = Toplevel(app.root)
+        self.window.title("Settings")
+        self.window.geometry("640x520")
+        self.window.transient(app.root)
+        self.window.grab_set()
+
+        self.settings = app.settings.copy()
+
+        # Notebook with tabs
+        self.notebook = ttk.Notebook(self.window)
+        self.notebook.pack(fill="both", expand=True, padx=12, pady=12)
+
+        self._build_general_tab()
+        self._build_audio_tab()
+        self._build_appearance_tab()
+        self._build_advanced_tab()
+
+        # Button bar
+        btn_frame = ttk.Frame(self.window)
+        btn_frame.pack(fill="x", padx=12, pady=(0, 12))
+        ttk.Button(btn_frame, text="OK", command=self._on_ok).pack(side="right")
+        ttk.Button(btn_frame, text="Cancel", command=self._on_cancel).pack(side="right", padx=(0, 8))
+        ttk.Button(btn_frame, text="Apply", command=self._on_apply).pack(side="right", padx=(0, 8))
+        ttk.Button(btn_frame, text="Reset to Defaults", command=self._on_reset).pack(side="left")
+
+    def _build_general_tab(self) -> None:
+        frame = ttk.Frame(self.notebook, padding=12)
+        self.notebook.add(frame, text="General")
+        frame.columnconfigure(1, weight=1)
+
+        row = 0
+        ttk.Label(frame, text="Default Engine").grid(row=row, column=0, sticky="w", pady=6)
+        self.general_engine_var = StringVar(value=self.settings.get("general", {}).get("default_engine", ENGINE_AUTO))
+        ttk.Combobox(frame, textvariable=self.general_engine_var, values=[ENGINE_AUTO, ENGINE_PIPER, ENGINE_XTTS, ENGINE_POCKET], state="readonly", width=20).grid(row=row, column=1, sticky="w", pady=6)
+
+        row += 1
+        ttk.Label(frame, text="Default Language").grid(row=row, column=0, sticky="w", pady=6)
+        self.general_lang_var = StringVar(value=self.settings.get("general", {}).get("default_language", "hu"))
+        ttk.Combobox(frame, textvariable=self.general_lang_var, values=[language_display_name(c) for c in available_languages(self.app.piper_voice_options)], state="readonly", width=20).grid(row=row, column=1, sticky="w", pady=6)
+
+        row += 1
+        ttk.Label(frame, text="Default Output Folder").grid(row=row, column=0, sticky="w", pady=6)
+        self.general_output_var = StringVar(value=self.settings.get("paths", {}).get("output_folder", str(get_default_music_folder())))
+        out_frame = ttk.Frame(frame)
+        out_frame.grid(row=row, column=1, sticky="ew", pady=6)
+        out_frame.columnconfigure(0, weight=1)
+        ttk.Entry(out_frame, textvariable=self.general_output_var).grid(row=0, column=0, sticky="ew")
+        ttk.Button(out_frame, text="Browse…", command=self._pick_output_folder).grid(row=0, column=1, padx=(6, 0))
+
+        row += 1
+        self.general_autosave_var = BooleanVar(value=self.settings.get("general", {}).get("auto_save_output_folder", True))
+        ttk.Checkbutton(frame, text="Auto-save output folder", variable=self.general_autosave_var).grid(row=row, column=0, columnspan=2, sticky="w", pady=6)
+
+        row += 1
+        self.general_confirm_exit_var = BooleanVar(value=self.settings.get("general", {}).get("confirm_on_exit", True))
+        ttk.Checkbutton(frame, text="Confirm on exit", variable=self.general_confirm_exit_var).grid(row=row, column=0, columnspan=2, sticky="w", pady=6)
+
+    def _pick_output_folder(self) -> None:
+        folder = filedialog.askdirectory(parent=self.window, title="Choose Default Output Folder", initialdir=self.general_output_var.get())
+        if folder:
+            self.general_output_var.set(folder)
+
+    def _build_audio_tab(self) -> None:
+        frame = ttk.Frame(self.notebook, padding=12)
+        self.notebook.add(frame, text="Audio")
+        frame.columnconfigure(1, weight=1)
+
+        row = 0
+        ttk.Label(frame, text="Default Output Format").grid(row=row, column=0, sticky="w", pady=6)
+        self.audio_format_var = StringVar(value=self.settings.get("audio", {}).get("default_format", "MP3"))
+        ttk.Combobox(frame, textvariable=self.audio_format_var, values=list(SUPPORTED_OUTPUT_FORMATS.values()), state="readonly", width=20).grid(row=row, column=1, sticky="w", pady=6)
+
+        row += 1
+        ttk.Label(frame, text="MP3 Quality").grid(row=row, column=0, sticky="w", pady=6)
+        self.audio_mp3_var = StringVar(value=self.settings.get("audio", {}).get("mp3_quality", "192 kbps (recommended)"))
+        ttk.Combobox(frame, textvariable=self.audio_mp3_var, values=list(MP3_QUALITY_PRESETS.keys()), state="readonly", width=30).grid(row=row, column=1, sticky="w", pady=6)
+
+        row += 1
+        ttk.Label(frame, text="OGG Quality").grid(row=row, column=0, sticky="w", pady=6)
+        self.audio_ogg_var = StringVar(value=self.settings.get("audio", {}).get("ogg_quality", "High (q5)"))
+        ttk.Combobox(frame, textvariable=self.audio_ogg_var, values=list(OGG_QUALITY_PRESETS.keys()), state="readonly", width=30).grid(row=row, column=1, sticky="w", pady=6)
+
+        row += 1
+        ttk.Label(frame, text="Sample Rate").grid(row=row, column=0, sticky="w", pady=6)
+        self.audio_sr_var = IntVar(value=self.settings.get("audio", {}).get("sample_rate", 44100))
+        ttk.Combobox(frame, textvariable=self.audio_sr_var, values=[22050, 44100, 48000], state="readonly", width=20).grid(row=row, column=1, sticky="w", pady=6)
+
+        row += 1
+        ttk.Label(frame, text="Audio Output Device").grid(row=row, column=0, sticky="w", pady=6)
+        self.audio_device_var = StringVar(value=self.settings.get("audio", {}).get("output_device", ""))
+        device_frame = ttk.Frame(frame)
+        device_frame.grid(row=row, column=1, sticky="ew", pady=6)
+        ttk.Combobox(device_frame, textvariable=self.audio_device_var, state="readonly", width=30).grid(row=0, column=0, sticky="ew")
+        ttk.Button(device_frame, text="Refresh", command=self._refresh_audio_devices).grid(row=0, column=1, padx=(6, 0))
+        self._refresh_audio_devices()
+
+    def _refresh_audio_devices(self) -> None:
+        try:
+            import pygame
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+            # Note: pygame doesn't easily expose device list in older versions
+            # This is a placeholder for future enhancement
+        except Exception:
+            pass
+
+    def _build_appearance_tab(self) -> None:
+        frame = ttk.Frame(self.notebook, padding=12)
+        self.notebook.add(frame, text="Appearance")
+        frame.columnconfigure(1, weight=1)
+
+        row = 0
+        ttk.Label(frame, text="Theme").grid(row=row, column=0, sticky="w", pady=6)
+        self.appearance_theme_var = StringVar(value=self.settings.get("ui", {}).get("theme", "system"))
+        ttk.Combobox(frame, textvariable=self.appearance_theme_var, values=["system", "light", "dark", "high_contrast"], state="readonly", width=20).grid(row=row, column=1, sticky="w", pady=6)
+
+        row += 1
+        ttk.Label(frame, text="Font Size").grid(row=row, column=0, sticky="w", pady=6)
+        self.appearance_font_var = IntVar(value=self.settings.get("ui", {}).get("font_size", 11))
+        ttk.Spinbox(frame, from_=9, to=14, textvariable=self.appearance_font_var, width=8).grid(row=row, column=1, sticky="w", pady=6)
+
+        row += 1
+        self.appearance_compact_var = BooleanVar(value=self.settings.get("ui", {}).get("toolbar_compact", False))
+        ttk.Checkbutton(frame, text="Compact toolbar (icons only)", variable=self.appearance_compact_var).grid(row=row, column=0, columnspan=2, sticky="w", pady=6)
+
+        row += 1
+        self.appearance_sidebar_var = BooleanVar(value=self.settings.get("ui", {}).get("sidebar_collapsed", False))
+        ttk.Checkbutton(frame, text="Sidebar collapsed by default", variable=self.appearance_sidebar_var).grid(row=row, column=0, columnspan=2, sticky="w", pady=6)
+
+    def _build_advanced_tab(self) -> None:
+        frame = ttk.Frame(self.notebook, padding=12)
+        self.notebook.add(frame, text="Advanced")
+        frame.columnconfigure(1, weight=1)
+
+        row = 0
+        ttk.Label(frame, text="XTTS License Accepted").grid(row=row, column=0, sticky="w", pady=6)
+        self.advanced_xtts_var = BooleanVar(value=self.settings.get("general", {}).get("xtts_license_accepted", False))
+        ttk.Checkbutton(frame, text="I accept the Coqui CPML license for XTTS v2", variable=self.advanced_xtts_var).grid(row=row, column=1, sticky="w", pady=6)
+
+        row += 1
+        ttk.Label(frame, text="Piper Voice Directory").grid(row=row, column=0, sticky="w", pady=6)
+        self.advanced_piper_dir_var = StringVar(value=self.settings.get("paths", {}).get("piper_voice_dir", "voices/piper"))
+        dir_frame = ttk.Frame(frame)
+        dir_frame.grid(row=row, column=1, sticky="ew", pady=6)
+        ttk.Entry(dir_frame, textvariable=self.advanced_piper_dir_var).grid(row=0, column=0, sticky="ew")
+        ttk.Button(dir_frame, text="Browse…", command=lambda: self._pick_dir(self.advanced_piper_dir_var)).grid(row=0, column=1, padx=(6, 0))
+
+        row += 1
+        ttk.Label(frame, text="Pocket Voice Directory").grid(row=row, column=0, sticky="w", pady=6)
+        self.advanced_pocket_dir_var = StringVar(value=self.settings.get("paths", {}).get("pocket_voice_dir", "voices/pocket"))
+        dir_frame2 = ttk.Frame(frame)
+        dir_frame2.grid(row=row, column=1, sticky="ew", pady=6)
+        ttk.Entry(dir_frame2, textvariable=self.advanced_pocket_dir_var).grid(row=0, column=0, sticky="ew")
+        ttk.Button(dir_frame2, text="Browse…", command=lambda: self._pick_dir(self.advanced_pocket_dir_var)).grid(row=0, column=1, padx=(6, 0))
+
+        row += 1
+        ttk.Label(frame, text="Log Verbosity").grid(row=row, column=0, sticky="w", pady=6)
+        self.advanced_log_var = StringVar(value=self.settings.get("advanced", {}).get("log_level", "INFO"))
+        ttk.Combobox(frame, textvariable=self.advanced_log_var, values=["DEBUG", "INFO", "WARNING", "ERROR"], state="readonly", width=20).grid(row=row, column=1, sticky="w", pady=6)
+
+        row += 1
+        ttk.Button(frame, text="Reset All Settings to Defaults", command=self._on_reset).grid(row=row, column=0, columnspan=2, pady=(12, 0))
+
+    def _pick_dir(self, var: StringVar) -> None:
+        folder = filedialog.askdirectory(parent=self.window, title="Choose Directory", initialdir=var.get())
+        if folder:
+            var.set(folder)
+
+    def _collect_settings(self) -> dict:
+        return {
+            "general": {
+                "default_engine": self.general_engine_var.get(),
+                "default_language": language_code_from_display(self.general_lang_var.get()),
+                "output_folder": self.general_output_var.get(),
+                "auto_save_output_folder": self.general_autosave_var.get(),
+                "confirm_on_exit": self.general_confirm_exit_var.get(),
+                "xtts_license_accepted": self.advanced_xtts_var.get(),
+            },
+            "audio": {
+                "default_format": self.audio_format_var.get(),
+                "mp3_quality": self.audio_mp3_var.get(),
+                "ogg_quality": self.audio_ogg_var.get(),
+                "sample_rate": self.audio_sr_var.get(),
+                "output_device": self.audio_device_var.get(),
+            },
+            "ui": {
+                "theme": self.appearance_theme_var.get(),
+                "font_size": self.appearance_font_var.get(),
+                "toolbar_compact": self.appearance_compact_var.get(),
+                "sidebar_collapsed": self.appearance_sidebar_var.get(),
+            },
+            "paths": {
+                "piper_voice_dir": self.advanced_piper_dir_var.get(),
+                "pocket_voice_dir": self.advanced_pocket_dir_var.get(),
+                "output_folder": self.general_output_var.get(),
+            },
+            "advanced": {
+                "log_level": self.advanced_log_var.get(),
+            },
+        }
+
+    def _apply_settings(self, settings: dict) -> None:
+        self.app.settings.update(settings)
+        save_app_settings(self.app.settings)
+        # Apply theme immediately if changed
+        theme_name = settings.get("ui", {}).get("theme", "system")
+        resolved = resolve_theme(theme_name)
+        apply_theme(resolved, self.app.root)
+        # Refresh wizard dialogs if open
+        for wizard_attr in ("voice_wizard", "doc_wizard", "lang_learning_wizard"):
+            wizard = getattr(self.app, wizard_attr, None)
+            if wizard and wizard.window.winfo_exists():
+                wizard._rebuild_styles()
+
+    def _on_ok(self) -> None:
+        self._apply_settings(self._collect_settings())
+        self.window.destroy()
+
+    def _on_cancel(self) -> None:
+        self.window.destroy()
+
+    def _on_apply(self) -> None:
+        self._apply_settings(self._collect_settings())
+
+    def _on_reset(self) -> None:
+        if messagebox.askyesno("Reset Settings", "Reset all settings to defaults? This cannot be undone."):
+            self.app.settings = {}
+            save_app_settings(self.app.settings)
+            # Reopen with defaults
+            self.window.destroy()
+            SettingsDialog(self.app)
 
 
 class App:
@@ -3292,7 +3822,6 @@ class App:
         self.root.title("Local TTS Audio Generator")
         self.root.geometry("980x760")
         self.root.minsize(900, 650)
-        self.root.configure(bg=SURFACE_BG)
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.service = SynthesisCoordinator(self.enqueue_log)
@@ -3331,12 +3860,21 @@ class App:
         self.generation_open_file_button = None
         self.generation_open_folder_button = None
 
+        # Sidebar state
+        self.sidebar_collapsed = BooleanVar(value=self.settings.get("ui", {}).get("sidebar_collapsed", False))
+
+        # Apply theme from settings
+        theme_name = self.settings.get("ui", {}).get("theme", "system")
+        resolved_theme = resolve_theme(theme_name)
+        apply_theme(resolved_theme, self.root)
+
         self._build_ui()
         self.language_display.trace_add("write", self._on_language_display_changed)
         self.engine.trace_add("write", self.on_voice_settings_changed)
         self.piper_voice_label.trace_add("write", self.on_voice_settings_changed)
         self.speaker_wav.trace_add("write", self.on_voice_settings_changed)
         self.on_voice_settings_changed()
+        self._bind_shortcuts()
         self.root.after(150, self.flush_logs)
 
     def _on_language_display_changed(self, *_args) -> None:
@@ -3348,73 +3886,154 @@ class App:
         if "clam" in style.theme_names():
             style.theme_use("clam")
 
-        style.configure("TFrame", background=SURFACE_BG)
-        style.configure("HeaderPanel.TFrame", background=CARD_BG)
-        style.configure("Toolbar.TFrame", background=SURFACE_BG)
-        style.configure("TLabel", background=SURFACE_BG)
-        style.configure("Header.TLabel", background=CARD_BG, foreground="#101828", font=(FONT_BODY, 20, "bold"))
-        style.configure("HeroIcon.TLabel", background=CARD_BG, foreground=ACCENT, font=(FONT_BODY, 22))
-        style.configure("Subtle.TLabel", background=CARD_BG, foreground=MUTED_TEXT, font=(FONT_BODY, 10))
-        style.configure("Hint.TLabel", background=SURFACE_BG, foreground=MUTED_TEXT, font=(FONT_BODY, 9))
-        style.configure(
-            "TLabelframe",
-            background=CARD_BG,
-            bordercolor=TEXT_BORDER,
-            relief="solid",
-            borderwidth=1,
-        )
-        style.configure("TLabelframe.Label", background=CARD_BG, foreground="#0f172a", font=(FONT_BODY, 10, "bold"))
-        style.configure(
-            "TButton",
-            padding=(12, 8),
-            font=(FONT_BODY, 9, "bold"),
-            background=CARD_BG,
-            foreground="#0f172a",
-            bordercolor=TEXT_BORDER,
-            focusthickness=0,
-        )
-        style.map("TButton", background=[("active", "#eef2ff")], bordercolor=[("active", ACCENT)])
-        style.configure(
-            "Accent.TButton",
-            background=ACCENT,
-            foreground="#ffffff",
-            bordercolor=ACCENT,
-        )
-        style.map(
-            "Accent.TButton",
-            background=[("active", ACCENT_ACTIVE)],
-            bordercolor=[("active", ACCENT_ACTIVE)],
-            foreground=[("active", "#ffffff")],
-        )
-        style.configure("TEntry", fieldbackground=CARD_BG, bordercolor=TEXT_BORDER, padding=6)
-        style.configure("TCombobox", fieldbackground=CARD_BG, bordercolor=TEXT_BORDER, padding=6)
+    def _bind_shortcuts(self) -> None:
+        """Bind keyboard shortcuts."""
+        self.root.bind_all("<Control-n>", lambda e: self.new_document())
+        self.root.bind_all("<Control-o>", lambda e: self.load_text_file())
+        self.root.bind_all("<Control-s>", lambda e: self.save_audio_as())
+        self.root.bind_all("<Control-q>", lambda e: self.root.quit())
+        self.root.bind_all("<Control-comma>", lambda e: self.open_settings())
+        self.root.bind_all("<F5>", lambda e: self.start_generation())
+        self.root.bind_all("<F6>", lambda e: self.start_read_aloud())
+        self.root.bind_all("<Escape>", lambda e: self.stop_playback())
+        self.root.bind_all("<F1>", lambda e: self.show_about())
+
+        # Space: play/pause ONLY when text area does NOT have focus
+        def on_space(event):
+            if self.root.focus_get() is not self.text:
+                self.toggle_playback_pause()
+                return "break"
+        self.root.bind_all("<space>", on_space)
 
     def _build_ui(self) -> None:  # pragma: no cover
         self._configure_styles()
         main = ttk.Frame(self.root)
         main.pack(fill="both", expand=True)
+        main.columnconfigure(0, weight=1)
+        main.rowconfigure(2, weight=1)
 
-        header = ttk.Frame(main, style="HeaderPanel.TFrame", padding=16)
-        header.pack(fill="x", pady=(0, 12))
-        brand = ttk.Frame(header, style="HeaderPanel.TFrame")
-        brand.pack(fill="x")
-        ttk.Label(brand, text="♪", style="HeroIcon.TLabel").pack(side="left", padx=(0, 10))
-        header_text = ttk.Frame(brand, style="HeaderPanel.TFrame")
-        header_text.pack(side="left", fill="x", expand=True)
-        ttk.Label(header_text, text="Local TTS Audio Generator", style="Header.TLabel").pack(anchor="w")
-        ttk.Label(
-            header_text,
-            text="Pick a language, then an engine — Piper, XTTS, or Pocket TTS. Export to MP3, OGG, or WAV.",
-            style="Subtle.TLabel",
-        ).pack(anchor="w", pady=(2, 0))
+        # Row 0: Toolbar
+        self.toolbar = self._build_toolbar(main)
+        self.toolbar.grid(row=0, column=0, columnspan=2, sticky="ew")
 
-        controls = ttk.LabelFrame(main, text="Options", padding=12)
-        controls.pack(fill="x", pady=(12, 8))
+        # Row 1: Separator
+        ttk.Separator(main, orient="horizontal").grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+
+        # Row 2: Text area (left) + Sidebar (right)
+        self.text_area_frame = ttk.Frame(main)
+        self.text_area_frame.grid(row=2, column=0, sticky="nsew")
+        self.text_area_frame.columnconfigure(0, weight=1)
+        self.text_area_frame.rowconfigure(0, weight=1)
+
+        self.sidebar_frame = ttk.Frame(main, style="Sidebar.TFrame", width=320)
+        self.sidebar_frame.grid(row=2, column=1, sticky="ns")
+        self.sidebar_frame.grid_propagate(False)
+        self.sidebar_frame.columnconfigure(0, weight=1)
+
+        # Build sidebar content (Options)
+        self._build_sidebar()
+
+        # Text area
+        self._build_text_area()
+
+        # Row 3: Status/Log panel
+        log_frame = ttk.LabelFrame(main, text="Status", padding=10)
+        log_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        log_frame.columnconfigure(0, weight=1)
+        ttk.Label(log_frame, textvariable=self.status).grid(row=0, column=0, sticky="w")
+        self.log = Text(
+            log_frame,
+            height=10,
+            wrap="word",
+            font=(FONT_MONO, 10),
+            bg="#0f172a",
+            fg="#dbe4ff",
+            relief="flat",
+            insertbackground="#dbe4ff",
+        )
+        self.log.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.log.configure(state="disabled")
+
+        # Apply initial sidebar state
+        if self.sidebar_collapsed.get():
+            self._collapse_sidebar()
+        else:
+            self._expand_sidebar()
+
+    def _build_toolbar(self, parent) -> ttk.Frame:
+        toolbar = ttk.Frame(parent, style="Toolbar.TFrame", padding=(8, 6))
+        toolbar.columnconfigure(1, weight=1)  # spacer
+
+        # File menubutton (Start Menu)
+        file_menu = Menu(toolbar, tearoff=0)
+        file_menu.add_command(label="New\t\tCtrl+N", command=self.new_document)
+        file_menu.add_command(label="Open Text…\tCtrl+O", command=self.load_text_file)
+        file_menu.add_command(label="Save Audio As…\tCtrl+S", command=self.save_audio_as)
+        file_menu.add_separator()
+        file_menu.add_command(label="Export Log…", command=self.export_log)
+        file_menu.add_separator()
+        file_menu.add_command(label="Settings…\tCtrl+,", command=self.open_settings)
+        file_menu.add_separator()
+        file_menu.add_command(label="Voice Wizard…", command=self.open_voice_wizard)
+        file_menu.add_command(label="Language Learning…", command=self.open_language_learning)
+        file_menu.add_command(label="Document Converter…", command=self.open_document_wizard)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit\t\tCtrl+Q", command=self._confirm_exit)
+        file_mb = ttk.Menubutton(toolbar, text="☰ File", menu=file_menu, direction="below")
+        file_mb.grid(row=0, column=0, padx=(0, 8))
+
+        # Home actions
+        home_frame = ttk.Frame(toolbar)
+        home_frame.grid(row=0, column=1, sticky="w")
+        ttk.Button(home_frame, text="📄 Load Text", command=self.load_text_file).pack(side="left", padx=2)
+        ttk.Button(home_frame, text="▶ Generate Audio", style="Accent.TButton", command=self.start_generation).pack(side="left", padx=2)
+        ttk.Button(home_frame, text="🔊 Read Aloud", command=self.start_read_aloud).pack(side="left", padx=2)
+        ttk.Button(home_frame, text="⏯ Play/Pause", command=self.toggle_playback_pause).pack(side="left", padx=2)
+        ttk.Button(home_frame, text="■ Stop", command=self.stop_playback).pack(side="left", padx=2)
+        ttk.Button(home_frame, text="📚 Convert Docs", command=self.open_document_wizard).pack(side="left", padx=2)
+
+        # Voice menubutton
+        voice_menu = Menu(toolbar, tearoff=0)
+        engine_submenu = Menu(voice_menu, tearoff=0)
+        for eng in [ENGINE_AUTO, ENGINE_PIPER, ENGINE_XTTS, ENGINE_POCKET]:
+            engine_submenu.add_radiobutton(label=eng, variable=self.engine, value=eng, command=self.on_voice_settings_changed)
+        voice_menu.add_cascade(label="Engine", menu=engine_submenu)
+        voice_menu.add_separator()
+        voice_menu.add_command(label="Voice Wizard…", command=self.open_voice_wizard)
+        voice_menu.add_command(label="Piper Voice Manager…", command=self.open_voice_wizard)
+        voice_mb = ttk.Menubutton(toolbar, text="🎤 Voice ▼", menu=voice_menu, direction="below")
+        voice_mb.grid(row=0, column=2, padx=(8, 4))
+
+        # Tools menubutton
+        tools_menu = Menu(toolbar, tearoff=0)
+        tools_menu.add_command(label="Language Learning…", command=self.open_language_learning)
+        tools_menu.add_command(label="Document Converter…", command=self.open_document_wizard)
+        tools_mb = ttk.Menubutton(toolbar, text="🔧 Tools ▼", menu=tools_menu, direction="below")
+        tools_mb.grid(row=0, column=3, padx=4)
+
+        # Settings button
+        ttk.Button(toolbar, text="⚙ Settings", command=self.open_settings).grid(row=0, column=4, padx=(8, 4))
+
+        # Sidebar toggle button
+        self.sidebar_toggle_btn = ttk.Button(toolbar, text="◀", width=3, command=self._toggle_sidebar)
+        self.sidebar_toggle_btn.grid(row=0, column=5, padx=(4, 0))
+
+        return toolbar
+
+    def _build_sidebar(self) -> None:
+        """Build the collapsible sidebar with Options controls."""
+        sidebar = self.sidebar_frame
+        sidebar.columnconfigure(0, weight=1)
+
+        # Title
+        ttk.Label(sidebar, text="Options", style="Header.TLabel").grid(row=0, column=0, sticky="w", padx=12, pady=(12, 8))
+
+        controls = ttk.Frame(sidebar, padding=(12, 0, 12, 12))
+        controls.grid(row=1, column=0, sticky="nsew")
         controls.columnconfigure(1, weight=1)
-        controls.columnconfigure(3, weight=1)
 
-        # Language first: it is the entry point the user thinks in terms of.
-        ttk.Label(controls, text="Language").grid(row=0, column=0, sticky="w", padx=(0, 10), pady=6)
+        # Language
+        ttk.Label(controls, text="Language").grid(row=0, column=0, sticky="w", pady=6)
         self.lang_box = ttk.Combobox(
             controls,
             textvariable=self.language_display,
@@ -3422,10 +4041,10 @@ class App:
             state="readonly",
             width=16,
         )
-        self.lang_box.grid(row=0, column=1, sticky="w", pady=6)
+        self.lang_box.grid(row=0, column=1, sticky="ew", pady=6)
 
-        # Engine second: only engines that can speak the chosen language are offered.
-        ttk.Label(controls, text="Engine").grid(row=0, column=2, sticky="w", padx=(18, 10), pady=6)
+        # Engine
+        ttk.Label(controls, text="Engine").grid(row=1, column=0, sticky="w", pady=6)
         self.engine_box = ttk.Combobox(
             controls,
             textvariable=self.engine,
@@ -3433,16 +4052,13 @@ class App:
             state="readonly",
             width=18,
         )
-        self.engine_box.grid(row=0, column=3, sticky="w", pady=6)
+        self.engine_box.grid(row=1, column=1, sticky="ew", pady=6)
 
-        # Voice: one adaptive slot. Which control shows depends on the engine —
-        # a Piper voice list, a Pocket voice list, or an XTTS speaker name.
+        # Voice (adaptive)
         self.voice_label_var = StringVar(value="Voice")
-        ttk.Label(controls, textvariable=self.voice_label_var).grid(
-            row=1, column=0, sticky="w", padx=(0, 10), pady=6
-        )
-        voice_area = ttk.Frame(controls, style="HeaderPanel.TFrame")
-        voice_area.grid(row=1, column=1, columnspan=4, sticky="ew", pady=6)
+        ttk.Label(controls, textvariable=self.voice_label_var).grid(row=2, column=0, sticky="w", pady=6)
+        voice_area = ttk.Frame(controls)
+        voice_area.grid(row=2, column=1, sticky="ew", pady=6)
         voice_area.columnconfigure(0, weight=1)
 
         self.piper_voice_box = ttk.Combobox(
@@ -3463,23 +4079,24 @@ class App:
             widget.grid_remove()
         add_context_menu(self.speaker_name_entry)
 
-        ttk.Label(controls, text="Reference WAV").grid(
-            row=2, column=0, sticky="w", padx=(0, 10), pady=6
-        )
+        # Reference WAV
+        ttk.Label(controls, text="Reference WAV").grid(row=3, column=0, sticky="w", pady=6)
         self.speaker_wav_entry = ttk.Entry(controls, textvariable=self.speaker_wav)
-        self.speaker_wav_entry.grid(row=2, column=1, columnspan=3, sticky="ew", pady=6)
+        self.speaker_wav_entry.grid(row=3, column=1, sticky="ew", pady=6)
         add_context_menu(self.speaker_wav_entry)
         self.speaker_wav_button = ttk.Button(controls, text="Browse", command=self.pick_reference_wav)
-        self.speaker_wav_button.grid(row=2, column=4, sticky="e", pady=6)
+        self.speaker_wav_button.grid(row=3, column=2, sticky="e", pady=6, padx=(4, 0))
 
-        ttk.Label(controls, text="Output file").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
+        # Output file
+        ttk.Label(controls, text="Output file").grid(row=4, column=0, sticky="w", pady=6)
         output_file_entry = ttk.Entry(controls, textvariable=self.output_file)
-        output_file_entry.grid(row=3, column=1, columnspan=3, sticky="ew", pady=6)
+        output_file_entry.grid(row=4, column=1, sticky="ew", pady=6)
         add_context_menu(output_file_entry)
-        ttk.Button(controls, text="Save As", command=self.pick_output_file).grid(row=3, column=4, sticky="e", pady=6)
+        ttk.Button(controls, text="Save As", command=self.pick_output_file).grid(row=4, column=2, sticky="e", pady=6, padx=(4, 0))
 
+        # Speed
         self.speed_label = ttk.Label(controls, text="Speed: 1.0x")
-        self.speed_label.grid(row=4, column=0, sticky="w", padx=(0, 10), pady=6)
+        self.speed_label.grid(row=5, column=0, sticky="w", pady=6)
         self.speed_slider = ttk.Scale(
             controls,
             from_=0.5,
@@ -3488,32 +4105,21 @@ class App:
             orient="horizontal",
             command=self._on_speed_changed,
         )
-        self.speed_slider.grid(row=4, column=1, columnspan=4, sticky="ew", pady=6)
+        self.speed_slider.grid(row=5, column=1, columnspan=2, sticky="ew", pady=6)
 
+        # Engine hint
         self.engine_hint = StringVar(value="")
         ttk.Label(controls, textvariable=self.engine_hint, style="Hint.TLabel").grid(
-            row=5, column=0, columnspan=5, sticky="w", pady=(4, 0)
+            row=6, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
 
-        actions = ttk.Frame(main, style="Toolbar.TFrame")
-        actions.pack(fill="x", pady=(0, 8))
-        ttk.Button(actions, text="Load Text", command=self.load_text_file).pack(side="left")
-        ttk.Button(actions, text="Convert Docs", command=self.open_document_wizard).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Voice Wizard", command=self.open_voice_wizard).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="📚 Language Learning", command=self.open_language_learning).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="▶ Read Aloud", style="Accent.TButton", command=self.start_read_aloud).pack(side="left", padx=(8, 0))
-        self.playback_toggle_button = ttk.Button(
-            actions,
-            textvariable=self.playback_toggle_label,
-            command=self.toggle_playback_pause,
-        )
-        self.playback_toggle_button.pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="■ Stop", command=self.stop_playback).pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Generate Audio", style="Accent.TButton", command=self.start_generation).pack(side="right")
-
-        ttk.Label(main, text="Text").pack(anchor="w")
-        self.textbox = ttk.Frame(main)
-        self.textbox.pack(fill="both", expand=True)
+    def _build_text_area(self) -> None:
+        """Build the main text editing area."""
+        ttk.Label(self.text_area_frame, text="Text").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 0))
+        self.textbox = ttk.Frame(self.text_area_frame)
+        self.textbox.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self.textbox.columnconfigure(0, weight=1)
+        self.textbox.rowconfigure(0, weight=1)
 
         self.text = Text(
             self.textbox,
@@ -3531,31 +4137,87 @@ class App:
             highlightbackground=TEXT_BORDER,
             highlightcolor=ACCENT,
         )
-        self.text.pack(side="left", fill="both", expand=True)
+        self.text.grid(row=0, column=0, sticky="nsew")
         add_context_menu(self.text)
         text_scroll = ttk.Scrollbar(self.textbox, orient="vertical", command=self.text.yview)
-        text_scroll.pack(side="right", fill="y")
+        text_scroll.grid(row=0, column=1, sticky="ns")
         self.text.configure(yscrollcommand=text_scroll.set)
-        self.text.tag_configure(READ_ALOUD_LINE_TAG, background="#fff3bf")
+        self.text.tag_configure(READ_ALOUD_LINE_TAG, background=READ_ALOUD_HIGHLIGHT)
         self.text.bind("<ButtonRelease-1>", self.on_text_click)
         self.text.bind("<ButtonRelease-1>", self.update_selection_cache, add="+")
         self.text.bind("<KeyRelease>", self.update_selection_cache, add="+")
 
-        log_frame = ttk.LabelFrame(main, text="Status", padding=10)
-        log_frame.pack(fill="both", expand=False, pady=(8, 0))
-        ttk.Label(log_frame, textvariable=self.status).pack(anchor="w")
-        self.log = Text(
-            log_frame,
-            height=10,
-            wrap="word",
-            font=(FONT_MONO, 10),
-            bg="#0f172a",
-            fg="#dbe4ff",
-            relief="flat",
-            insertbackground="#dbe4ff",
+    def _toggle_sidebar(self) -> None:
+        if self.sidebar_collapsed.get():
+            self._expand_sidebar()
+        else:
+            self._collapse_sidebar()
+
+    def _collapse_sidebar(self) -> None:
+        self.sidebar_frame.grid_remove()
+        self.sidebar_toggle_btn.configure(text="▶")
+        self.sidebar_collapsed.set(True)
+        self.settings.setdefault("ui", {})["sidebar_collapsed"] = True
+        save_app_settings(self.settings)
+
+    def _expand_sidebar(self) -> None:
+        self.sidebar_frame.grid()
+        self.sidebar_toggle_btn.configure(text="◀")
+        self.sidebar_collapsed.set(False)
+        self.settings.setdefault("ui", {})["sidebar_collapsed"] = False
+        save_app_settings(self.settings)
+
+    def _confirm_exit(self) -> None:
+        """Confirm exit if setting is enabled."""
+        if self.settings.get("general", {}).get("confirm_on_exit", True):
+            if not messagebox.askyesno("Exit", "Are you sure you want to exit?"):
+                return
+        self.root.quit()
+
+    def new_document(self) -> None:
+        """Clear the text area for a new document."""
+        self.text.delete("1.0", "end")
+        self.last_selection_start_offset = None
+        self.clear_read_aloud_highlight()
+        self.enqueue_log("New document created.")
+
+    def save_audio_as(self) -> None:
+        """Pick output file and generate audio."""
+        self.pick_output_file()
+        self.start_generation()
+
+    def export_log(self) -> None:
+        """Export the status log to a file."""
+        path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Export Log",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
         )
-        self.log.pack(fill="both", expand=True, pady=(8, 0))
-        self.log.configure(state="disabled")
+        if not path:
+            return
+        try:
+            log_content = self.log.get("1.0", "end-1c")
+            Path(path).write_text(log_content, encoding="utf-8")
+            self.enqueue_log(f"Log exported to {path}")
+        except Exception as exc:
+            messagebox.showerror("Export Failed", str(exc))
+
+    def open_settings(self) -> None:
+        """Open the settings dialog."""
+        SettingsDialog(self)
+
+    def show_about(self) -> None:
+        """Show the about dialog."""
+        messagebox.showinfo(
+            "About Local TTS Audio Generator",
+            "Local TTS Audio Generator\n\n"
+            "A desktop text-to-speech application supporting:\n"
+            "• Piper TTS (fast, offline)\n"
+            "• XTTS v2 (high quality, voice cloning)\n"
+            "• Pocket TTS (lightweight neural voices)\n\n"
+            "Built with Python, tkinter, and Coqui TTS.",
+        )
 
     def resolved_engine(self) -> str:
         return select_engine(

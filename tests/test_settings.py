@@ -4,9 +4,21 @@ import json
 
 import pytest
 
+from app import DEFAULT_AUDIO_SETTINGS
+from app import DEFAULT_GENERAL_SETTINGS
 from app import DEFAULT_LANG_LEARNING_SETTINGS
+from app import DEFAULT_PATHS_SETTINGS
+from app import DEFAULT_UI_SETTINGS
 from app import load_app_settings
 from app import save_app_settings
+
+DEFAULT_SECTIONS = {
+    "language_learning": DEFAULT_LANG_LEARNING_SETTINGS,
+    "ui": DEFAULT_UI_SETTINGS,
+    "audio": DEFAULT_AUDIO_SETTINGS,
+    "general": DEFAULT_GENERAL_SETTINGS,
+    "paths": DEFAULT_PATHS_SETTINGS,
+}
 
 
 class TestLoadAppSettings:
@@ -16,7 +28,7 @@ class TestLoadAppSettings:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr("app.APP_SETTINGS_PATH", path)
             result = load_app_settings()
-        expected = {"default_piper_voice_label": "test", "language_learning": DEFAULT_LANG_LEARNING_SETTINGS}
+        expected = {"default_piper_voice_label": "test", **DEFAULT_SECTIONS}
         assert result == expected
 
     def test_file_does_not_exist_returns_empty_dict(self, temp_dir):
@@ -24,17 +36,16 @@ class TestLoadAppSettings:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr("app.APP_SETTINGS_PATH", path)
             result = load_app_settings()
-        assert result == {}
+        assert result == DEFAULT_SECTIONS
 
-    def test_file_has_invalid_json_returns_empty_dict(self, temp_dir):
+    def test_file_has_invalid_json_returns_defaults(self, temp_dir):
         path = temp_dir / "settings.json"
         path.write_text("not valid json{{{")
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr("app.APP_SETTINGS_PATH", path)
             result = load_app_settings()
         # Returns defaults even on invalid JSON
-        expected = {"language_learning": DEFAULT_LANG_LEARNING_SETTINGS}
-        assert result == expected
+        assert result == DEFAULT_SECTIONS
 
 
 class TestSaveAppSettings:
@@ -55,5 +66,5 @@ class TestSaveAppSettings:
             mp.setattr("app.APP_SETTINGS_PATH", path)
             save_app_settings(data)
             loaded = load_app_settings()
-        expected = {**data, "language_learning": DEFAULT_LANG_LEARNING_SETTINGS}
+        expected = {**data, **DEFAULT_SECTIONS}
         assert loaded == expected
