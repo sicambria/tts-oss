@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from app import DEFAULT_LANG_LEARNING_SETTINGS
 from app import load_app_settings
 from app import save_app_settings
 
@@ -15,7 +16,8 @@ class TestLoadAppSettings:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr("app.APP_SETTINGS_PATH", path)
             result = load_app_settings()
-        assert result == {"default_piper_voice_label": "test"}
+        expected = {"default_piper_voice_label": "test", "language_learning": DEFAULT_LANG_LEARNING_SETTINGS}
+        assert result == expected
 
     def test_file_does_not_exist_returns_empty_dict(self, temp_dir):
         path = temp_dir / "nonexistent.json"
@@ -30,7 +32,9 @@ class TestLoadAppSettings:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr("app.APP_SETTINGS_PATH", path)
             result = load_app_settings()
-        assert result == {}
+        # Returns defaults even on invalid JSON
+        expected = {"language_learning": DEFAULT_LANG_LEARNING_SETTINGS}
+        assert result == expected
 
 
 class TestSaveAppSettings:
@@ -51,4 +55,5 @@ class TestSaveAppSettings:
             mp.setattr("app.APP_SETTINGS_PATH", path)
             save_app_settings(data)
             loaded = load_app_settings()
-        assert loaded == data
+        expected = {**data, "language_learning": DEFAULT_LANG_LEARNING_SETTINGS}
+        assert loaded == expected

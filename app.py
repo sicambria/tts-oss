@@ -27,6 +27,8 @@ warnings.filterwarnings(
 from tkinter import END
 from tkinter import BooleanVar
 from tkinter import DoubleVar
+from tkinter import IntVar
+from tkinter import Menu
 from tkinter import StringVar
 from tkinter import Text
 from tkinter import Tk
@@ -169,6 +171,33 @@ OGG_QUALITY_PRESETS = {
 MAX_MERGE_CHUNKS = 500
 PREVIEW_FILE_GLOB = "read-aloud-preview-*.wav"
 MIN_CHAPTER_WORDS = 30
+
+CEFR_PRESETS: dict[str, dict[str, object]] = {
+    "A1": {"level": 0, "count": 10, "max_length": 60, "plural_chance": 0.0},
+    "A2": {"level": 1, "count": 15, "max_length": 80, "plural_chance": 0.3},
+    "B1": {"level": 2, "count": 20, "max_length": 100, "plural_chance": 0.4},
+    "B2": {"level": 3, "count": 25, "max_length": 120, "plural_chance": 0.5},
+}
+
+DEFAULT_LANG_LEARNING_SETTINGS: dict[str, object] = {
+    "preset": "A2",
+    "language": "pt",
+    "level": 1,
+    "count": 15,
+    "max_length": 80,
+    "plural_chance": 0.3,
+    "seed": None,
+    "top_n": None,
+    "base_word": None,
+    "base_word_count": 10,
+    "base_template": None,
+    "vary_role": None,
+    "vary_words": None,
+    "pair_pause_ms": 2000,
+    "auto_speak": False,
+    "show_translations": True,
+}
+
 HEADING_PATTERNS: list[tuple[str, int]] = [
     (r'(?m)^\s*(?:Chapter|CHAPTER)\s+(\d+|[IVXLCDM]+)\b', 1),
     (r'(?m)^\s*(\d+)\.\s+(?:[A-Z][\w\s]{3,})$', 1),
@@ -871,11 +900,36 @@ def load_app_settings() -> dict:
     if not APP_SETTINGS_PATH.exists():
         return {}
     try:
-        return json.loads(APP_SETTINGS_PATH.read_text(encoding="utf-8"))
+        settings = json.loads(APP_SETTINGS_PATH.read_text(encoding="utf-8"))
     except Exception:
-        return {}
+        settings = {}
+    # Ensure language_learning section exists with defaults
+    if "language_learning" not in settings:
+        settings["language_learning"] = {}
+    for key, default in DEFAULT_LANG_LEARNING_SETTINGS.items():
+        settings["language_learning"].setdefault(key, default)
+    return settings
 def save_app_settings(settings: dict) -> None:
     APP_SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+
+def add_context_menu(widget) -> None:
+    """Attach right-click context menu with Cut/Copy/Paste/Select All to a Text/Entry widget."""
+    menu = Menu(widget, tearoff=0)
+    menu.add_command(label="Cut", command=lambda: widget.event_generate("<<Cut>>"))
+    menu.add_command(label="Copy", command=lambda: widget.event_generate("<<Copy>>"))
+    menu.add_command(label="Paste", command=lambda: widget.event_generate("<<Paste>>"))
+    menu.add_separator()
+    menu.add_command(label="Select All", command=lambda: widget.event_generate("<<SelectAll>>"))
+
+    def show_menu(event):
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    widget.bind("<Button-3>", show_menu)
+    widget.bind("<Control-a>", lambda e: widget.event_generate("<<SelectAll>>"))
 
 
 def get_default_music_folder() -> Path:
@@ -2576,6 +2630,662 @@ class DocumentToAudioWizard:
         self.window.after(0, apply)
 
 
+class LanguageLearningWizard:
+    """Wizard for generating and practicing language learning sentence pairs."""
+
+    def __init__(self, app: "App") -> None:
+        self.app = app
+        self.window = Toplevel(app.root)
+        self.window.transient(app.root)
+        self.window.title("Language Learning Practice")
+        self.window.geometry("900x700")
+        self.window.minsize(800, 600)
+
+        # Load settings
+        self.settings = app.settings.get("language_learning", DEFAULT_LANG_LEARNING_SETTINGS.copy())
+
+        # State variables
+        self.preset_var = StringVar(value=self.settings.get("preset", "A2"))
+        self.lang_var = StringVar(value=language_display_name(self.settings.get("language", "pt")))
+        self.level_var = IntVar(value=self.settings.get("level", 1))
+        self.count_var = IntVar(value=self.settings.get("count", 15))
+        self.max_length_var = IntVar(value=self.settings.get("max_length", 80))
+        self.plural_chance_var = DoubleVar(value=self.settings.get("plural_chance", 0.3))
+        self.seed_var = StringVar(value=str(self.settings.get("seed") or ""))
+        self.top_n_var = StringVar(value=str(self.settings.get("top_n") or ""))
+        self.base_word_var = StringVar(value=self.settings.get("base_word") or "")
+        self.base_word_count_var = IntVar(value=self.settings.get("base_word_count", 10))
+        self.base_template_var = StringVar(value=self.settings.get("base_template") or "")
+        self.vary_role_var = StringVar(value=self.settings.get("vary_role") or "")
+        self.vary_words_var = StringVar(value=self.settings.get("vary_words") or "")
+
+        # TTS settings
+        self.engine_var = StringVar(value=app.engine.get())
+        self.pair_pause_var = IntVar(value=self.settings.get("pair_pause_ms", 2000))
+        self.auto_speak_var = BooleanVar(value=self.settings.get("auto_speak", False))
+        self.show_trans_var = BooleanVar(value=self.settings.get("show_translations", True))
+        self.speed_var = DoubleVar(value=app.speed.get())
+
+        # Voice selections (synced from main window)
+        self.piper_voice_label_var = StringVar(value=app.piper_voice_label.get())
+        self.pocket_voice_var = StringVar(value=app.pocket_voice.get())
+        self.speaker_name_var = StringVar(value=app.speaker_name.get())
+        self.speaker_wav_var = StringVar(value=app.speaker_wav.get())
+
+        # Generated content
+        self.generated_pairs: list[tuple[str, str]] = []
+
+        # Worker thread
+        self.worker: threading.Thread | None = None
+        self.stop_event = threading.Event()
+
+        self._build_ui()
+        self._validate_language()
+        self._apply_preset()
+        self._sync_voice_settings()
+
+        # Traces
+        self.preset_var.trace_add("write", self._on_preset_changed)
+        self.lang_var.trace_add("write", self._on_language_changed)
+        self.engine_var.trace_add("write", self._on_engine_changed)
+
+        self.window.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _build_ui(self) -> None:
+        main = ttk.Frame(self.window, padding=12)
+        main.pack(fill="both", expand=True)
+        main.columnconfigure(0, weight=1)
+        main.rowconfigure(3, weight=1)
+
+        # Header with preset and language
+        header = ttk.Frame(main)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.columnconfigure(2, weight=1)
+
+        ttk.Label(header, text="Preset").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.preset_box = ttk.Combobox(
+            header,
+            textvariable=self.preset_var,
+            values=["A1", "A2", "B1", "B2", "Custom"],
+            state="readonly",
+            width=8,
+        )
+        self.preset_box.grid(row=0, column=1, sticky="w", padx=(0, 18))
+
+        ttk.Label(header, text="Language").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        self.lang_box = ttk.Combobox(
+            header,
+            textvariable=self.lang_var,
+            values=["Portuguese", "Spanish"],
+            state="readonly",
+            width=12,
+        )
+        self.lang_box.grid(row=0, column=3, sticky="w", padx=(0, 18))
+
+        ttk.Button(header, text="Save as Preset", command=self._save_preset).grid(row=0, column=4, sticky="e")
+
+        # Settings panels
+        settings_panels = ttk.Frame(main)
+        settings_panels.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        settings_panels.columnconfigure(0, weight=1)
+        settings_panels.columnconfigure(1, weight=1)
+
+        # Generator Settings
+        gen_frame = ttk.LabelFrame(settings_panels, text="Generator Settings", padding=10)
+        gen_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        gen_frame.columnconfigure(1, weight=1)
+
+        row = 0
+        ttk.Label(gen_frame, text="Level").grid(row=row, column=0, sticky="w", pady=4)
+        self.level_box = ttk.Combobox(gen_frame, textvariable=self.level_var, values=[0, 1, 2, 3], state="readonly", width=5)
+        self.level_box.grid(row=row, column=1, sticky="w", pady=4)
+        row += 1
+
+        ttk.Label(gen_frame, text="Count").grid(row=row, column=0, sticky="w", pady=4)
+        ttk.Entry(gen_frame, textvariable=self.count_var, width=8).grid(row=row, column=1, sticky="w", pady=4)
+        row += 1
+
+        ttk.Label(gen_frame, text="Max words").grid(row=row, column=0, sticky="w", pady=4)
+        ttk.Entry(gen_frame, textvariable=self.max_length_var, width=8).grid(row=row, column=1, sticky="w", pady=4)
+        row += 1
+
+        ttk.Label(gen_frame, text="Plural %").grid(row=row, column=0, sticky="w", pady=4)
+        e = ttk.Entry(gen_frame, textvariable=self.plural_chance_var, width=8)
+        e.grid(row=row, column=1, sticky="w", pady=4)
+        add_context_menu(e)
+        row += 1
+
+        ttk.Label(gen_frame, text="Seed (optional)").grid(row=row, column=0, sticky="w", pady=4)
+        e = ttk.Entry(gen_frame, textvariable=self.seed_var, width=12)
+        e.grid(row=row, column=1, sticky="w", pady=4)
+        add_context_menu(e)
+        row += 1
+
+        ttk.Label(gen_frame, text="Top N words (optional)").grid(row=row, column=0, sticky="w", pady=4)
+        e = ttk.Entry(gen_frame, textvariable=self.top_n_var, width=12)
+        e.grid(row=row, column=1, sticky="w", pady=4)
+        add_context_menu(e)
+        row += 1
+
+        # Base word drill
+        ttk.Separator(gen_frame, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
+        row += 1
+        ttk.Label(gen_frame, text="Base word (drill)").grid(row=row, column=0, sticky="w", pady=4)
+        e = ttk.Entry(gen_frame, textvariable=self.base_word_var, width=18)
+        e.grid(row=row, column=1, sticky="w", pady=4)
+        add_context_menu(e)
+        row += 1
+        ttk.Label(gen_frame, text="Min count").grid(row=row, column=0, sticky="w", pady=4)
+        e = ttk.Entry(gen_frame, textvariable=self.base_word_count_var, width=8)
+        e.grid(row=row, column=1, sticky="w", pady=4)
+        add_context_menu(e)
+        row += 1
+
+        # Batch mode
+        ttk.Separator(gen_frame, orient="horizontal").grid(row=row, column=0, columnspan=2, sticky="ew", pady=8)
+        row += 1
+        ttk.Label(gen_frame, text="Template ID").grid(row=row, column=0, sticky="w", pady=4)
+        self.template_box = ttk.Combobox(gen_frame, textvariable=self.base_template_var, values=self._get_template_ids(), state="readonly", width=8)
+        self.template_box.grid(row=row, column=1, sticky="w", pady=4)
+        row += 1
+        ttk.Label(gen_frame, text="Vary role").grid(row=row, column=0, sticky="w", pady=4)
+        self.vary_role_box = ttk.Combobox(gen_frame, textvariable=self.vary_role_var, values=self._get_vary_roles(), state="readonly", width=10)
+        self.vary_role_box.grid(row=row, column=1, sticky="w", pady=4)
+        row += 1
+        ttk.Label(gen_frame, text="Vary words (comma-separated)").grid(row=row, column=0, sticky="w", pady=4)
+        e = ttk.Entry(gen_frame, textvariable=self.vary_words_var, width=24)
+        e.grid(row=row, column=1, sticky="w", pady=4)
+        add_context_menu(e)
+
+        # TTS Settings
+        tts_frame = ttk.LabelFrame(settings_panels, text="TTS Settings", padding=10)
+        tts_frame.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        tts_frame.columnconfigure(1, weight=1)
+
+        row = 0
+        ttk.Label(tts_frame, text="Engine").grid(row=row, column=0, sticky="w", pady=4)
+        self.engine_box = ttk.Combobox(tts_frame, textvariable=self.engine_var, values=[ENGINE_AUTO, ENGINE_PIPER, ENGINE_XTTS, ENGINE_POCKET], state="readonly", width=14)
+        self.engine_box.grid(row=row, column=1, sticky="w", pady=4)
+        row += 1
+
+        ttk.Label(tts_frame, text="Voice").grid(row=row, column=0, sticky="w", pady=4)
+        self.voice_area = ttk.Frame(tts_frame)
+        self.voice_area.grid(row=row, column=1, sticky="ew", pady=4)
+        self.voice_area.columnconfigure(0, weight=1)
+        self.piper_voice_box = ttk.Combobox(self.voice_area, textvariable=self.piper_voice_label_var, values=list(self.app.piper_voice_options.keys()), state="readonly")
+        self.pocket_voice_box = ttk.Combobox(self.voice_area, textvariable=self.pocket_voice_var, values=POCKET_PREDEFINED_VOICES, state="readonly")
+        self.speaker_name_entry = ttk.Entry(self.voice_area, textvariable=self.speaker_name_var)
+        add_context_menu(self.speaker_name_entry)
+        for w in (self.piper_voice_box, self.pocket_voice_box, self.speaker_name_entry):
+            w.grid(row=0, column=0, sticky="ew")
+            w.grid_remove()
+        row += 1
+
+        ttk.Label(tts_frame, text="Speed").grid(row=row, column=0, sticky="w", pady=4)
+        self.speed_label = ttk.Label(tts_frame, text=f"Speed: {self.speed_var.get():.1f}x")
+        self.speed_label.grid(row=row, column=1, sticky="w", pady=4)
+        self.speed_slider = ttk.Scale(tts_frame, from_=0.5, to=2.0, variable=self.speed_var, orient="horizontal", command=self._on_speed_changed)
+        self.speed_slider.grid(row=row, column=2, sticky="ew", pady=4, padx=(8, 0))
+        row += 1
+
+        ttk.Label(tts_frame, text="Pair pause (ms)").grid(row=row, column=0, sticky="w", pady=4)
+        e = ttk.Entry(tts_frame, textvariable=self.pair_pause_var, width=8)
+        e.grid(row=row, column=1, sticky="w", pady=4)
+        add_context_menu(e)
+        row += 1
+
+        ttk.Checkbutton(tts_frame, text="Auto-speak after generate", variable=self.auto_speak_var).grid(row=row, column=0, columnspan=2, sticky="w", pady=4)
+        row += 1
+        ttk.Checkbutton(tts_frame, text="Show translations in output", variable=self.show_trans_var).grid(row=row, column=0, columnspan=2, sticky="w", pady=4)
+
+        # Action buttons
+        actions = ttk.Frame(main)
+        actions.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        ttk.Button(actions, text="Generate", style="Accent.TButton", command=self._generate).pack(side="left")
+        ttk.Button(actions, text="Speak", command=self._speak).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Send to Main", command=self._send_to_main).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Export", command=self._export).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Clear", command=self._clear).pack(side="right")
+
+        # Output text area
+        ttk.Label(main, text="Generated Sentences (editable)").grid(row=3, column=0, sticky="w", pady=(0, 4))
+        text_frame = ttk.Frame(main)
+        text_frame.grid(row=4, column=0, sticky="nsew")
+        text_frame.columnconfigure(0, weight=1)
+        text_frame.rowconfigure(0, weight=1)
+
+        self.output_text = Text(
+            text_frame,
+            wrap="word",
+            font=(FONT_MONO, 10),
+            padx=12,
+            pady=12,
+            undo=True,
+            bg=TEXT_BG,
+            fg="#0f172a",
+            relief="flat",
+            insertbackground=ACCENT,
+            highlightthickness=1,
+            highlightbackground=TEXT_BORDER,
+            highlightcolor=ACCENT,
+        )
+        self.output_text.grid(row=0, column=0, sticky="nsew")
+        add_context_menu(self.output_text)
+
+        scroll = ttk.Scrollbar(text_frame, orient="vertical", command=self.output_text.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.output_text.configure(yscrollcommand=scroll.set)
+
+        # Status bar
+        self.status_var = StringVar(value="Ready")
+        ttk.Label(main, textvariable=self.status_var, style="Hint.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 0))
+
+    def _get_template_ids(self) -> list[str]:
+        lang = self.lang_var.get()
+        if lang == "Portuguese":
+            import language_practice.languages.pt as lang_module
+        else:
+            import language_practice.languages.es as lang_module
+        return [t.id for t in lang_module.TEMPLATES]
+
+    def _get_vary_roles(self) -> list[str]:
+        return ["N_SUBJ", "N_OBJ", "N_PLACE", "N_SUBJ2", "V_intr", "V_trans", "V_loc", "V_intr2", "PRON_SUBJ", "ADV", "ADJ"]
+
+    def _validate_language(self) -> bool:
+        lang = self.lang_var.get()
+        if lang not in ("Portuguese", "Spanish"):
+            messagebox.showerror(
+                "Unsupported Language",
+                f"Language Learning supports Portuguese and Spanish only.\nCurrent: {lang}\nPlease select a supported language."
+            )
+            self.window.destroy()
+            return False
+        return True
+
+    def _on_preset_changed(self, *_args) -> None:
+        if self.preset_var.get() != "Custom":
+            self._apply_preset()
+
+    def _apply_preset(self) -> None:
+        preset = self.preset_var.get()
+        if preset in CEFR_PRESETS:
+            p = CEFR_PRESETS[preset]
+            self.level_var.set(p["level"])
+            self.count_var.set(p["count"])
+            self.max_length_var.set(p["max_length"])
+            self.plural_chance_var.set(p["plural_chance"])
+            self.settings.update(p)
+
+    def _on_language_changed(self, *_args) -> None:
+        self._sync_voice_settings()
+        # Update template IDs for new language
+        self.template_box.configure(values=self._get_template_ids())
+        if self.base_template_var.get() not in self._get_template_ids():
+            self.base_template_var.set("")
+
+    def _on_engine_changed(self, *_args) -> None:
+        self._sync_voice_settings()
+
+    def _on_speed_changed(self, *_args) -> None:
+        self.speed_label.configure(text=f"Speed: {self.speed_var.get():.1f}x")
+
+    def _sync_voice_settings(self) -> None:
+        """Sync voice controls based on selected engine and language."""
+        engine = self.engine_var.get()
+        lang_code = "pt" if self.lang_var.get() == "Portuguese" else "es"
+
+        # Filter engines that support this language
+        supported = engines_supporting_language(lang_code, self.app.piper_voice_options)
+        engine_values = [ENGINE_AUTO] + supported
+        self.engine_box.configure(values=engine_values)
+        if engine not in engine_values:
+            engine = ENGINE_AUTO
+            self.engine_var.set(engine)
+
+        # Show appropriate voice control
+        for w in (self.piper_voice_box, self.pocket_voice_box, self.speaker_name_entry):
+            w.grid_remove()
+
+        if engine == ENGINE_PIPER:
+            labels = piper_voices_for_language(self.app.piper_voice_options, lang_code) or list(self.app.piper_voice_options.keys())
+            self.piper_voice_box.configure(values=labels)
+            if self.piper_voice_label_var.get() not in labels and labels:
+                self.piper_voice_label_var.set(labels[0])
+            self.piper_voice_box.grid()
+        elif engine == ENGINE_POCKET:
+            if self.pocket_voice_var.get() not in POCKET_PREDEFINED_VOICES:
+                self.pocket_voice_var.set(pocket_default_voice(lang_code))
+            self.pocket_voice_box.grid()
+        else:  # XTTS or Auto
+            self.speaker_name_entry.grid()
+
+    def _save_preset(self) -> None:
+        """Save current settings as a custom preset."""
+        self.settings.update(self._collect_settings())
+        save_app_settings(self.app.settings)
+        self.status_var.set("Preset saved")
+        self.window.after(2000, lambda: self.status_var.set("Ready"))
+
+    def _collect_settings(self) -> dict:
+        return {
+            "preset": self.preset_var.get(),
+            "language": self.lang_var.get(),
+            "level": self.level_var.get(),
+            "count": self.count_var.get(),
+            "max_length": self.max_length_var.get(),
+            "plural_chance": self.plural_chance_var.get(),
+            "seed": int(self.seed_var.get()) if self.seed_var.get().strip() else None,
+            "top_n": int(self.top_n_var.get()) if self.top_n_var.get().strip() else None,
+            "base_word": self.base_word_var.get().strip() or None,
+            "base_word_count": self.base_word_count_var.get(),
+            "base_template": self.base_template_var.get().strip() or None,
+            "vary_role": self.vary_role_var.get().strip() or None,
+            "vary_words": self.vary_words_var.get().strip() or None,
+            "pair_pause_ms": self.pair_pause_var.get(),
+            "auto_speak": self.auto_speak_var.get(),
+            "show_translations": self.show_trans_var.get(),
+        }
+
+    def _generate(self) -> None:
+        """Generate sentence pairs using language-practice library."""
+        if self.worker and self.worker.is_alive():
+            return
+
+        lang = self.lang_var.get()
+        if lang not in ("Portuguese", "Spanish"):
+            return
+
+        self.status_var.set("Generating...")
+        self.stop_event.clear()
+
+        def worker():
+            try:
+                pairs = self._generate_pairs()
+                self.window.after(0, lambda: self._display_pairs(pairs))
+            except Exception as exc:
+                self.window.after(0, lambda e=exc: self._on_generate_error(e))
+
+        self.worker = threading.Thread(target=worker, daemon=True)
+        self.worker.start()
+
+    def _generate_pairs(self) -> list[tuple[str, str]]:
+        """Call language-practice library to generate sentence pairs."""
+        # Import language-practice modules
+        import sys
+        lang_practice_root = Path(__file__).resolve().parent.parent / "language-practice"
+        sys.path.insert(0, str(lang_practice_root / "src"))
+
+        lang_display = self.lang_var.get()
+        lang_code = "pt" if lang_display == "Portuguese" else "es"
+
+        if lang_display == "Portuguese":
+            import language_practice.languages.pt as lang_module
+        else:
+            import language_practice.languages.es as lang_module
+
+        from language_practice.generator import GeneratedSentence
+        from language_practice.generator import Generator
+
+        # Load wordlist
+        wordlist_path = lang_practice_root / "data" / lang_code / "wordlist.md"
+        raw_words = lang_module.parse_wordlist(wordlist_path)
+        words = lang_module.enrich_words(raw_words)
+        en_dict = lang_module.build_en_dict(words)
+
+        # Create generator
+        gen = Generator(
+            words,
+            level=self.level_var.get(),
+            max_length=self.max_length_var.get(),
+            plural_chance=self.plural_chance_var.get(),
+            seed=int(self.seed_var.get()) if self.seed_var.get().strip() else None,
+            top_n=int(self.top_n_var.get()) if self.top_n_var.get().strip() else None,
+            lang=lang_module,
+        )
+
+        sentences: list[GeneratedSentence] = []
+
+        if self.base_word_var.get().strip():
+            # Base word drill
+            base_word = self.base_word_var.get().strip().lower()
+            base_word_obj = next((w for w in words if w.pt.lower() == base_word), None)
+            if not base_word_obj:
+                raise ValueError(f"Base word '{base_word}' not found in vocabulary")
+            sentences = gen.generate_with_base_word(self.base_word_count_var.get(), base_word_obj, seed=int(self.seed_var.get()) if self.seed_var.get().strip() else None)
+        elif self.base_template_var.get().strip():
+            # Batch mode
+            tpl = next((t for t in lang_module.TEMPLATES if t.id == self.base_template_var.get().strip()), None)
+            if not tpl:
+                raise ValueError(f"Template '{self.base_template_var.get()}' not found")
+            vary_words = [w.strip() for w in self.vary_words_var.get().split(",")] if self.vary_words_var.get().strip() else None
+            sentences = gen.generate_batch(
+                self.count_var.get(), tpl, self.vary_role_var.get().strip(), vary_words, seed=int(self.seed_var.get()) if self.seed_var.get().strip() else None
+            )
+        else:
+            # Normal generation
+            sentences = list(gen.generate(self.count_var.get()))
+
+        # Format as pairs
+        pairs = []
+        for s in sentences:
+            target = " ".join(s.words)
+            translation = lang_module.translate(s.words, en_dict)
+            pairs.append((target, translation))
+
+        self.generated_pairs = pairs
+        return pairs
+
+    def _display_pairs(self, pairs: list[tuple[str, str]]) -> None:
+        self.output_text.delete("1.0", "end")
+        show_trans = self.show_trans_var.get()
+        lines = []
+        for i, (target, trans) in enumerate(pairs, 1):
+            lines.append(f"{i}. {target}")
+            if show_trans:
+                lines.append(f"   {trans}")
+            lines.append("")
+        self.output_text.insert("1.0", "\n".join(lines))
+        self.status_var.set(f"Generated {len(pairs)} sentence pairs")
+
+        if self.auto_speak_var.get():
+            self._speak()
+
+    def _on_generate_error(self, exc: Exception) -> None:
+        self.status_var.set("Generation failed")
+        messagebox.showerror("Generation Error", str(exc))
+
+    def _speak(self) -> None:
+        """Synthesize and play the generated pairs with pair pauses."""
+        if not self.generated_pairs:
+            messagebox.showinfo("Nothing to speak", "Generate sentences first.")
+            return
+        if self.worker and self.worker.is_alive():
+            return
+
+        self.status_var.set("Synthesizing...")
+        self.stop_event.clear()
+
+        def worker():
+            try:
+                combined = self._synthesize_pairs()
+                # Save to temp file and play
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                    temp_path = Path(f.name)
+                export_audio_segment(combined, temp_path)
+                self.window.after(0, lambda: self._play_audio(temp_path))
+            except Exception as exc:
+                self.window.after(0, lambda e=exc: self._on_speak_error(e))
+
+        self.worker = threading.Thread(target=worker, daemon=True)
+        self.worker.start()
+
+    def _synthesize_pairs(self) -> AudioSegment:
+        """Synthesize all pairs with pair_pause_ms between pairs."""
+        combined = AudioSegment.silent(duration=0)
+        pair_pause = self.pair_pause_var.get()
+
+        for i, (target, translation) in enumerate(self.generated_pairs):
+            # Synthesize target
+            req_target = self._build_request(target)
+            for _chunk, segment in self.app.service.iter_segments(req_target):
+                combined += segment
+
+            # Synthesize translation if enabled
+            if self.show_trans_var.get():
+                req_trans = self._build_request(translation)
+                for _chunk, segment in self.app.service.iter_segments(req_trans):
+                    combined += segment
+
+            # Add pair pause (except after last)
+            if i < len(self.generated_pairs) - 1:
+                combined += AudioSegment.silent(duration=pair_pause)
+
+        return combined
+
+    def _build_request(self, text: str) -> SynthesisRequest:
+        """Build synthesis request using current TTS settings."""
+        engine = self.engine_var.get()
+        lang_code = "pt" if self.lang_var.get() == "Portuguese" else "es"
+
+        # Resolve voice
+        if engine == ENGINE_PIPER:
+            piper_label = self.piper_voice_label_var.get().strip() or DEFAULT_PIPER_VOICE_LABEL
+            voice_metadata = self.app.piper_voice_options.get(piper_label, get_piper_voice_metadata(piper_label))
+            piper_code = voice_metadata["code"]
+            speaker_name = DEFAULT_SPEAKER
+        elif engine == ENGINE_POCKET:
+            piper_label = DEFAULT_PIPER_VOICE_LABEL
+            voice_metadata = get_piper_voice_metadata(piper_label)
+            piper_code = voice_metadata["code"]
+            speaker_name = self.pocket_voice_var.get().strip() or pocket_default_voice(lang_code)
+        else:
+            piper_label = DEFAULT_PIPER_VOICE_LABEL
+            voice_metadata = get_piper_voice_metadata(piper_label)
+            piper_code = voice_metadata["code"]
+            speaker_name = self.speaker_name_var.get().strip() or DEFAULT_SPEAKER
+
+        speaker_wav = self.speaker_wav_var.get().strip()
+
+        return SynthesisRequest(
+            text=text,
+            language=lang_code,
+            output_file=Path("temp.mp3"),
+            engine=engine,
+            piper_voice_label=piper_label,
+            piper_voice_code=piper_code,
+            speaker_name=speaker_name,
+            speaker_wav=speaker_wav,
+            speed=round(self.speed_var.get(), 1),
+        )
+
+    def _play_audio(self, path: Path) -> None:
+        """Play audio file."""
+        try:
+            self.app.player.play_blocking(path, self.stop_event)
+        finally:
+            # Clean up temp file after a delay
+            self.window.after(1000, lambda: path.unlink(missing_ok=True))
+        self.status_var.set("Playback complete")
+
+    def _on_speak_error(self, exc: Exception) -> None:
+        self.status_var.set("Playback failed")
+        messagebox.showerror("Playback Error", str(exc))
+
+    def _send_to_main(self) -> None:
+        """Send generated text to main window."""
+        if not self.generated_pairs:
+            return
+        show_trans = self.show_trans_var.get()
+        lines = []
+        for target, trans in self.generated_pairs:
+            lines.append(target)
+            if show_trans:
+                lines.append(trans)
+            lines.append("")
+        text = "\n".join(lines)
+        self.app.text.delete("1.0", "end")
+        self.app.text.insert("1.0", text)
+        self.app.root.lift()
+        self.app.root.focus_force()
+        self.status_var.set("Sent to main window")
+
+    def _export(self) -> None:
+        """Export generated pairs to file."""
+        if not self.generated_pairs:
+            messagebox.showinfo("Nothing to export", "Generate sentences first.")
+            return
+
+        format_var = StringVar(value="Text")
+        dialog = Toplevel(self.window)
+        dialog.transient(self.window)
+        dialog.title("Export Format")
+        dialog.geometry("300x150")
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="Choose export format:").pack(pady=12)
+        fmt_box = ttk.Combobox(dialog, textvariable=format_var, values=["Text", "Anki CSV", "JSON"], state="readonly")
+        fmt_box.pack(pady=6)
+
+        def do_export():
+            fmt = format_var.get()
+            dialog.destroy()
+            self._do_export(fmt)
+
+        ttk.Button(dialog, text="Export", command=do_export).pack(pady=12)
+
+    def _do_export(self, fmt: str) -> None:
+        path = filedialog.asksaveasfilename(
+            parent=self.window,
+            title="Save export",
+            defaultextension=".txt" if fmt == "Text" else ".csv" if fmt == "Anki CSV" else ".json",
+            filetypes=[
+                ("Text files", "*.txt") if fmt == "Text" else ("CSV files", "*.csv") if fmt == "Anki CSV" else ("JSON files", "*.json"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+
+        try:
+            if fmt == "Text":
+                show_trans = self.show_trans_var.get()
+                lines = []
+                for target, trans in self.generated_pairs:
+                    lines.append(target)
+                    if show_trans:
+                        lines.append(trans)
+                    lines.append("")
+                Path(path).write_text("\n".join(lines), encoding="utf-8")
+            elif fmt == "Anki CSV":
+                rows = ["Front,Back,Tags"]
+                for target, trans in self.generated_pairs:
+                    rows.append(f'"{target}","{trans}","language-learning"')
+                Path(path).write_text("\n".join(rows), encoding="utf-8")
+            else:  # JSON
+                import json
+                data = [{"front": t, "back": tr, "tags": ["language-learning"]} for t, tr in self.generated_pairs]
+                Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            self.status_var.set(f"Exported to {Path(path).name}")
+        except Exception as exc:
+            messagebox.showerror("Export Error", str(exc))
+
+    def _clear(self) -> None:
+        self.output_text.delete("1.0", "end")
+        self.generated_pairs.clear()
+        self.status_var.set("Cleared")
+
+    def _on_close(self) -> None:
+        # Save settings
+        self.app.settings["language_learning"] = self._collect_settings()
+        save_app_settings(self.app.settings)
+        if self.worker and self.worker.is_alive():
+            self.stop_event.set()
+            self.worker.join(timeout=1)
+        self.window.destroy()
+
+
 class App:
     def __init__(self, root: Tk) -> None:
         self.root = root
@@ -2595,6 +3305,7 @@ class App:
         self.settings = load_app_settings()
         self.voice_wizard: PiperVoiceWizard | None = None
         self.doc_wizard: DocumentToAudioWizard | None = None
+        self.lang_learning_wizard: LanguageLearningWizard | None = None
         self.piper_voice_options = discover_local_piper_voices()
 
         self.language = StringVar(value="hu")
@@ -2750,17 +3461,21 @@ class App:
         for widget in (self.piper_voice_box, self.pocket_voice_box, self.speaker_name_entry):
             widget.grid(row=0, column=0, sticky="ew")
             widget.grid_remove()
+        add_context_menu(self.speaker_name_entry)
 
         ttk.Label(controls, text="Reference WAV").grid(
             row=2, column=0, sticky="w", padx=(0, 10), pady=6
         )
         self.speaker_wav_entry = ttk.Entry(controls, textvariable=self.speaker_wav)
         self.speaker_wav_entry.grid(row=2, column=1, columnspan=3, sticky="ew", pady=6)
+        add_context_menu(self.speaker_wav_entry)
         self.speaker_wav_button = ttk.Button(controls, text="Browse", command=self.pick_reference_wav)
         self.speaker_wav_button.grid(row=2, column=4, sticky="e", pady=6)
 
         ttk.Label(controls, text="Output file").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
-        ttk.Entry(controls, textvariable=self.output_file).grid(row=3, column=1, columnspan=3, sticky="ew", pady=6)
+        output_file_entry = ttk.Entry(controls, textvariable=self.output_file)
+        output_file_entry.grid(row=3, column=1, columnspan=3, sticky="ew", pady=6)
+        add_context_menu(output_file_entry)
         ttk.Button(controls, text="Save As", command=self.pick_output_file).grid(row=3, column=4, sticky="e", pady=6)
 
         self.speed_label = ttk.Label(controls, text="Speed: 1.0x")
@@ -2785,6 +3500,7 @@ class App:
         ttk.Button(actions, text="Load Text", command=self.load_text_file).pack(side="left")
         ttk.Button(actions, text="Convert Docs", command=self.open_document_wizard).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="Voice Wizard", command=self.open_voice_wizard).pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="📚 Language Learning", command=self.open_language_learning).pack(side="left", padx=(8, 0))
         ttk.Button(actions, text="▶ Read Aloud", style="Accent.TButton", command=self.start_read_aloud).pack(side="left", padx=(8, 0))
         self.playback_toggle_button = ttk.Button(
             actions,
@@ -2816,6 +3532,7 @@ class App:
             highlightcolor=ACCENT,
         )
         self.text.pack(side="left", fill="both", expand=True)
+        add_context_menu(self.text)
         text_scroll = ttk.Scrollbar(self.textbox, orient="vertical", command=self.text.yview)
         text_scroll.pack(side="right", fill="y")
         self.text.configure(yscrollcommand=text_scroll.set)
@@ -3016,6 +3733,12 @@ class App:
             self.doc_wizard.window.focus_force()
             return
         self.doc_wizard = DocumentToAudioWizard(self)
+
+    def open_language_learning(self) -> None:
+        if self.lang_learning_wizard is not None and self.lang_learning_wizard.window.winfo_exists():
+            self.lang_learning_wizard.window.lift()
+            return
+        self.lang_learning_wizard = LanguageLearningWizard(self)
 
     def open_path_in_system(self, path: Path) -> None:  # pragma: no cover
         if sys.platform.startswith("win"):
