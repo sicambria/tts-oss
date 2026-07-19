@@ -3,6 +3,6 @@
     "confirm_on_exit": true
   },
   "ui": {
-    "sidebar_collapsed": false
+    "sidebar_collapsed": true
   }
 }
