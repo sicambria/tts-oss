@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import warnings
+import webbrowser
 from dataclasses import dataclass
 from dataclasses import replace
 from enum import Enum
@@ -44,6 +45,7 @@ from pydub import AudioSegment
 
 MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
 DEFAULT_SPEAKER = "Ana Florence"
+REPOSITORY_URL = "https://github.com/sicambria/tts-oss"
 ENGINE_AUTO = "Auto"
 ENGINE_PIPER = "Piper"
 ENGINE_XTTS = "XTTS v2"
@@ -1380,6 +1382,14 @@ def normalize_learning_language(value: object) -> str:
     return normalized if normalized in {"pt", "es"} else "pt"
 
 
+def normalize_general_language(value: object) -> str:
+    """Return a supported language code for the main generator settings."""
+    if not isinstance(value, str):
+        return str(DEFAULT_GENERAL_SETTINGS["default_language"])
+    normalized = language_code_from_display(value.strip())
+    return normalized if normalized in LANGUAGE_NAMES else str(DEFAULT_GENERAL_SETTINGS["default_language"])
+
+
 def normalize_app_settings(raw_settings: object) -> dict:
     """Merge untrusted persisted JSON with defaults and migrate old values."""
     raw = raw_settings if isinstance(raw_settings, dict) else {}
@@ -1404,8 +1414,8 @@ def normalize_app_settings(raw_settings: object) -> dict:
     settings["language_learning"]["language"] = normalize_learning_language(
         settings["language_learning"].get("language")
     )
-    settings["general"]["default_language"] = language_code_from_display(
-        str(settings["general"].get("default_language", "hu"))
+    settings["general"]["default_language"] = normalize_general_language(
+        settings["general"].get("default_language")
     )
     return settings
 
@@ -3863,7 +3873,10 @@ class SettingsDialog:
 
         row += 1
         ttk.Label(frame, text="Default Language").grid(row=row, column=0, sticky="w", pady=6)
-        self.general_lang_var = StringVar(value=self.settings.get("general", {}).get("default_language", "hu"))
+        default_language = normalize_general_language(
+            self.settings.get("general", {}).get("default_language")
+        )
+        self.general_lang_var = StringVar(value=language_display_name(default_language))
         ttk.Combobox(frame, textvariable=self.general_lang_var, values=[language_display_name(c) for c in available_languages(self.app.piper_voice_options)], state="readonly", width=20).grid(row=row, column=1, sticky="w", pady=6)
 
         row += 1
@@ -4345,13 +4358,20 @@ class App:
         tools_mb = ttk.Menubutton(toolbar, text="Tools", menu=tools_menu, direction="below")
         tools_mb.grid(row=0, column=3, padx=4)
 
+        # Help menubutton
+        help_menu = Menu(toolbar, tearoff=0)
+        help_menu.add_command(label="About…\tF1", command=self.show_about)
+        help_menu.add_command(label="GitHub Repository", command=self.open_repository)
+        help_mb = ttk.Menubutton(toolbar, text="Help", menu=help_menu, direction="below")
+        help_mb.grid(row=0, column=4, padx=4)
+
         # Settings button
-        ttk.Button(toolbar, text="Settings", command=self.open_settings).grid(row=0, column=4, padx=(8, 4))
+        ttk.Button(toolbar, text="Settings", command=self.open_settings).grid(row=0, column=5, padx=(8, 4))
 
         # Sidebar toggle button
         self.sidebar_icon = make_playback_icon(self.root, "options")
         self.sidebar_toggle_btn = ttk.Button(toolbar, image=self.sidebar_icon, width=3, command=self._toggle_sidebar)
-        self.sidebar_toggle_btn.grid(row=0, column=5, padx=(4, 0))
+        self.sidebar_toggle_btn.grid(row=0, column=6, padx=(4, 0))
         add_tooltip(self.sidebar_toggle_btn, "Show or hide options")
 
         return toolbar
@@ -4680,8 +4700,16 @@ class App:
             "• Piper TTS (fast, offline)\n"
             "• XTTS v2 (high quality, voice cloning)\n"
             "• Pocket TTS (lightweight neural voices)\n\n"
-            "Built with Python, tkinter, and Coqui TTS.",
+            "Built with Python, tkinter, and Coqui TTS.\n\n"
+            f"GitHub: {REPOSITORY_URL}",
         )
+
+    def open_repository(self) -> None:
+        """Open the project's GitHub repository in the default browser."""
+        try:
+            webbrowser.open_new_tab(REPOSITORY_URL)
+        except Exception as exc:
+            show_error(self.root, "Unable to Open GitHub", str(exc))
 
     def resolved_engine(self) -> str:
         return select_engine(

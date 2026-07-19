@@ -11,6 +11,7 @@ from app import DEFAULT_PATHS_SETTINGS
 from app import DEFAULT_UI_SETTINGS
 from app import load_app_settings
 from app import normalize_app_settings
+from app import normalize_general_language
 from app import normalize_learning_language
 from app import save_app_settings
 
@@ -88,6 +89,14 @@ class TestSettingsMigration:
     def test_unknown_language_learning_value_falls_back_to_portuguese(self):
         assert normalize_learning_language("Hungarian") == "pt"
         assert normalize_learning_language(None) == "pt"
+
+    def test_general_language_display_name_migrates_to_code(self):
+        settings = normalize_app_settings({"general": {"default_language": "English"}})
+        assert settings["general"]["default_language"] == "en"
+
+    def test_unknown_general_language_falls_back_to_default(self):
+        assert normalize_general_language("Klingon") == DEFAULT_GENERAL_SETTINGS["default_language"]
+        assert normalize_general_language(None) == DEFAULT_GENERAL_SETTINGS["default_language"]
 
     def test_target_sentence_repetition_defaults_to_enabled(self):
         settings = normalize_app_settings({"language_learning": {}})

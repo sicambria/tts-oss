@@ -95,6 +95,9 @@ Linux or macOS:
 
 This opens a native desktop window on the same machine.
 
+The **Help** menu includes an About dialog and a link to the project's
+[GitHub repository](https://github.com/sicambria/tts-oss).
+
 ## Usage notes
 
 - `Engine = Auto` prefers Piper for normal local synthesis and switches to XTTS if you provide a `Reference WAV`.
