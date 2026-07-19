@@ -52,6 +52,7 @@ ENGINE_XTTS = "XTTS v2"
 ENGINE_POCKET = "Pocket TTS"
 POCKET_DEFAULT_VOICE = "alba"
 POCKET_VOICE_DIR = Path.cwd() / "voices" / "pocket"
+LANGUAGE_PRACTICE_MODULE_DIR = Path(__file__).resolve().parent / "modules" / "language-practice"
 POCKET_LANG_MAP: dict[str, str] = {
     "en": "english",
     "fr": "french",
@@ -1214,6 +1215,11 @@ def language_practice_pairs(text: str) -> list[tuple[str, str]]:
         if lines:
             pairs.append((lines[0], lines[1] if len(lines) > 1 else ""))
     return pairs
+
+
+def language_practice_module_exists() -> bool:
+    """Return whether the optional language-practice module is checked out."""
+    return LANGUAGE_PRACTICE_MODULE_DIR.is_dir()
 
 
 def language_learning_availability() -> LanguageLearningAvailability:
@@ -4264,7 +4270,8 @@ class App:
         file_menu.add_command(label="Settings…\tCtrl+,", command=self.open_settings)
         file_menu.add_separator()
         file_menu.add_command(label="Voice Wizard…", command=self.open_voice_wizard)
-        file_menu.add_command(label="Language Learning…", command=self.open_language_learning)
+        if language_practice_module_exists():
+            file_menu.add_command(label="Language Learning…", command=self.open_language_learning)
         file_menu.add_command(label="Document Converter…", command=self.open_document_wizard)
         file_menu.add_separator()
         file_menu.add_command(label="Exit\t\tCtrl+Q", command=self._confirm_exit)
@@ -4352,8 +4359,9 @@ class App:
 
         # Tools menubutton
         tools_menu = Menu(toolbar, tearoff=0)
-        tools_menu.add_command(label="Language Learning…", command=self.open_language_learning)
-        tools_menu.add_command(label="Export Language Pairs…", command=self.export_language_pairs)
+        if language_practice_module_exists():
+            tools_menu.add_command(label="Language Learning…", command=self.open_language_learning)
+            tools_menu.add_command(label="Export Language Pairs…", command=self.export_language_pairs)
         tools_menu.add_command(label="Document Converter…", command=self.open_document_wizard)
         tools_mb = ttk.Menubutton(toolbar, text="Tools", menu=tools_menu, direction="below")
         tools_mb.grid(row=0, column=3, padx=4)

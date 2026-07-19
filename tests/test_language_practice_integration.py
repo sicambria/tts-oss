@@ -10,6 +10,7 @@ from app import ENGINE_PIPER
 from app import App
 from app import LanguagePracticeSession
 from app import SynthesisRequest
+from app import language_practice_module_exists
 
 
 class _Var:
@@ -35,6 +36,17 @@ class _Text:
 
     def insert(self, _index, content):
         self.content = content
+
+
+def test_language_practice_menu_availability_requires_module_directory(tmp_path, monkeypatch):
+    module_dir = tmp_path / "modules" / "language-practice"
+    monkeypatch.setattr("app.LANGUAGE_PRACTICE_MODULE_DIR", module_dir)
+
+    assert not language_practice_module_exists()
+
+    module_dir.mkdir(parents=True)
+
+    assert language_practice_module_exists()
 
 
 def _app(text: str, voices: dict[str, dict[str, str]]) -> App:
