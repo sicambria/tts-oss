@@ -1,0 +1,48 @@
+{
+  "ui": {
+    "theme": "light",
+    "sidebar_collapsed": true,
+    "toolbar_compact": false,
+    "font_size": 11
+  },
+  "language_learning": {
+    "preset": "B1",
+    "language": "pt",
+    "level": 2,
+    "count": 20,
+    "max_length": 100,
+    "plural_chance": 0.4,
+    "seed": null,
+    "top_n": null,
+    "base_word": null,
+    "base_word_count": 10,
+    "base_template": null,
+    "vary_role": "ADV",
+    "vary_words": null,
+    "pair_pause_ms": 2000,
+    "repeat_target_sentence": true
+  },
+  "audio": {
+    "default_format": "MP3",
+    "mp3_quality": "64 kbps",
+    "ogg_quality": "High (q5)",
+    "sample_rate": 44100,
+    "output_device": ""
+  },
+  "general": {
+    "default_engine": "Piper",
+    "default_language": "en",
+    "auto_save_output_folder": true,
+    "confirm_on_exit": true,
+    "xtts_license_accepted": false,
+    "output_folder": "/home/arsvivendi/Zen\u00e9k"
+  },
+  "paths": {
+    "piper_voice_dir": "voices/piper",
+    "pocket_voice_dir": "voices/pocket",
+    "output_folder": "/home/arsvivendi/Zen\u00e9k"
+  },
+  "advanced": {
+    "log_level": "INFO"
+  }
+}
