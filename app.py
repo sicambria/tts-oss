@@ -197,6 +197,7 @@ DEFAULT_LANG_LEARNING_SETTINGS: dict[str, object] = {
     "vary_role": None,
     "vary_words": None,
     "pair_pause_ms": 2000,
+    "repeat_target_sentence": True,
 }
 
 HEADING_PATTERNS: list[tuple[str, int]] = [
@@ -229,6 +230,10 @@ def make_playback_icon(master, kind: str) -> PhotoImage:
     elif kind == "generate":
         for x, height in ((3, 5), (6, 10), (9, 7), (12, 12)):
             image.put(color, to=(x, 14 - height, x + 2, 14))
+    elif kind == "options":
+        for x, knob_y in ((4, 5), (8, 10), (12, 7)):
+            image.put(color, to=(x, 2, x + 1, 14))
+            image.put(color, to=(x - 2, knob_y - 1, x + 3, knob_y + 1))
     return image
 
 
@@ -253,6 +258,61 @@ def add_tooltip(widget, text: str) -> None:
 
     widget.bind("<Enter>", show, add="+")
     widget.bind("<Leave>", hide, add="+")
+
+
+def set_initial_window_geometry(
+    window: Tk | Toplevel,
+    *,
+    width_fraction: float,
+    height_fraction: float,
+    min_width: int,
+    min_height: int,
+) -> None:
+    """Size a window generously while keeping it within the current display."""
+    screen_width = window.winfo_screenwidth()
+    screen_height = window.winfo_screenheight()
+    max_width = max(1, screen_width - 32)
+    max_height = max(1, screen_height - 64)
+    width = min(max_width, max(min_width, round(screen_width * width_fraction)))
+    height = min(max_height, max(min_height, round(screen_height * height_fraction)))
+    x = max(0, (screen_width - width) // 2)
+    y = max(0, (screen_height - height) // 2)
+    window.geometry(f"{width}x{height}+{x}+{y}")
+    window.minsize(min(min_width, width), min(min_height, height))
+
+
+def _prepare_message_parent(parent: Tk | Toplevel) -> Tk | Toplevel:
+    """Make a message box's owner visible and temporarily frontmost."""
+    parent.deiconify()
+    parent.lift()
+    parent.attributes("-topmost", True)
+    parent.update_idletasks()
+    return parent
+
+
+def show_info(parent: Tk | Toplevel, title: str, message: str) -> str:
+    owner = _prepare_message_parent(parent)
+    try:
+        return messagebox.showinfo(title, message, parent=owner)
+    finally:
+        owner.attributes("-topmost", False)
+
+
+def show_error(parent: Tk | Toplevel, title: str, message: str) -> str:
+    owner = _prepare_message_parent(parent)
+    try:
+        return messagebox.showerror(title, message, parent=owner)
+    finally:
+        owner.attributes("-topmost", False)
+
+
+def ask_yes_no(parent: Tk | Toplevel, title: str, message: str) -> bool:
+    owner = _prepare_message_parent(parent)
+    try:
+        return bool(messagebox.askyesno(title, message, parent=owner))
+    finally:
+        owner.attributes("-topmost", False)
+
 
 def sanitize_filename(name: str) -> str:
     return re.sub(r'[<>:"/\\|?*]', '_', name).strip().rstrip('.')
@@ -1088,6 +1148,7 @@ class LanguageSessionConfig:
     speed: float
     pair_pause_ms: int
     show_translations: bool
+    repeat_target_sentence: bool = True
 
 
 @dataclass(frozen=True)
@@ -1096,6 +1157,7 @@ class LanguagePracticeSession:
 
     target_language: str
     pair_pause_ms: int
+    repeat_target_sentence: bool = True
 
 
 @dataclass(frozen=True)
@@ -2036,7 +2098,7 @@ class PiperVoiceWizard:
     def selected_voice_code(self) -> str | None:
         selection = self.tree.selection()
         if not selection:
-            messagebox.showinfo("No selection", "Select a Piper voice first.")
+            show_info(self.window, "No selection", "Select a Piper voice first.")
             return None
         return selection[0]
 
@@ -2088,7 +2150,7 @@ class PiperVoiceWizard:
 
         label = self.app.find_piper_label_by_code(voice_code)
         if label is None:
-            messagebox.showinfo("Voice not available", "Download the voice first, then set it as default.")
+            show_info(self.window, "Voice not available", "Download the voice first, then set it as default.")
             return
 
         self.app.set_default_piper_voice(label)
@@ -2592,7 +2654,7 @@ class DocumentToAudioWizard:
         if self.worker and self.worker.is_alive():
             return
         if not self.documents:
-            messagebox.showinfo("No documents", "Add at least one document first.")
+            show_info(self.window, "No documents", "Add at least one document first.")
             return
 
         output_folder = Path(self.output_folder.get())
@@ -2998,7 +3060,8 @@ class DocumentToAudioWizard:
 
     def _on_close(self) -> None:
         if self.worker and self.worker.is_alive():
-            if not messagebox.askyesno(
+            if not ask_yes_no(
+                self.window,
                 "Processing in progress",
                 "A conversion job is running. Stop it and close?",
             ):
@@ -3055,8 +3118,13 @@ class LanguageLearningWizard:
         self.window = Toplevel(app.root)
         self.window.transient(app.root)
         self.window.title("Language Learning Practice")
-        self.window.geometry("760x540")
-        self.window.minsize(700, 500)
+        set_initial_window_geometry(
+            self.window,
+            width_fraction=0.90,
+            height_fraction=0.94,
+            min_width=900,
+            min_height=720,
+        )
 
         # Load only normalized, canonical language settings.
         self.settings = normalize_app_settings(app.settings)["language_learning"]
@@ -3080,6 +3148,9 @@ class LanguageLearningWizard:
         # Practice pacing remains specific to generated pairs. Voice settings
         # live in the main window so there is one source of truth.
         self.pair_pause_var = IntVar(value=self.settings.get("pair_pause_ms", 2000))
+        self.repeat_target_sentence_var = BooleanVar(
+            value=self.settings.get("repeat_target_sentence", True)
+        )
 
         # Worker thread
         self.worker: threading.Thread | None = None
@@ -3165,9 +3236,19 @@ class LanguageLearningWizard:
 
         ttk.Button(header, text="Save as Defaults", command=self._save_preset).grid(row=0, column=4, sticky="e")
 
+        # Keep the primary actions visible even when the generator settings
+        # need more vertical space.
+        actions = ttk.Frame(main)
+        actions.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        self.generate_button = ttk.Button(actions, text="Generate", style="Accent.TButton", command=self._generate)
+        self.generate_button.pack(side="left")
+        self.speak_button = ttk.Button(actions, text="Speak", command=self._speak)
+        self.speak_button.pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="Close", command=self._on_close).pack(side="right")
+
         # Settings panels
         settings_panels = ttk.Frame(main)
-        settings_panels.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        settings_panels.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         settings_panels.columnconfigure(0, weight=1)
 
         # Generator Settings
@@ -3226,23 +3307,19 @@ class LanguageLearningWizard:
         make_validated_entry(gen_frame, self.vary_words_var, width=24).grid(row=row, column=1, sticky="w", pady=4)
 
         practice_frame = ttk.LabelFrame(main, text="Practice", padding=10)
-        practice_frame.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        practice_frame.grid(row=3, column=0, sticky="ew", pady=(0, 12))
         ttk.Label(practice_frame, text="Pause between pairs (ms)").pack(side="left")
         make_validated_entry(practice_frame, self.pair_pause_var, validator="int", width=8).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(
+            practice_frame,
+            text="Repeat target sentence before English translation",
+            variable=self.repeat_target_sentence_var,
+        ).pack(side="left", padx=(20, 0))
         ttk.Label(
             practice_frame,
             text="Voice, speed, and English playback are controlled in the main window.",
             style="Hint.TLabel",
-        ).pack(side="left", padx=(16, 0))
-
-        # Action buttons
-        actions = ttk.Frame(main)
-        actions.grid(row=3, column=0, sticky="ew", pady=(0, 12))
-        self.generate_button = ttk.Button(actions, text="Generate", style="Accent.TButton", command=self._generate)
-        self.generate_button.pack(side="left")
-        self.speak_button = ttk.Button(actions, text="Speak", command=self._speak)
-        self.speak_button.pack(side="left", padx=(8, 0))
-        ttk.Button(actions, text="Close", command=self._on_close).pack(side="right")
+        ).pack(side="left", padx=(20, 0))
 
         # Status bar
         self.status_var = StringVar(value="Ready")
@@ -3316,6 +3393,7 @@ class LanguageLearningWizard:
             "vary_role": self.vary_role_var.get().strip() or None,
             "vary_words": self.vary_words_var.get().strip() or None,
             "pair_pause_ms": self.pair_pause_var.get(),
+            "repeat_target_sentence": self.repeat_target_sentence_var.get(),
         }
 
     def _generate(self) -> None:
@@ -3442,6 +3520,7 @@ class LanguageLearningWizard:
             pairs,
             normalize_learning_language(self.lang_var.get()),
             max(0, self.pair_pause_var.get()),
+            repeat_target_sentence=self.repeat_target_sentence_var.get(),
             speak=speak,
         )
         self.app.settings["language_learning"] = self._collect_settings()
@@ -3450,7 +3529,7 @@ class LanguageLearningWizard:
 
     def _on_generate_error(self, exc: Exception) -> None:
         self._set_session_state(SessionState.FAILED, "Generation failed")
-        messagebox.showerror("Generation Error", str(exc))
+        show_error(self.window, "Generation Error", str(exc))
 
     def _wait_for_session(self) -> bool:
         """Pause at a safe boundary and return False once the session is stopped."""
@@ -3484,6 +3563,12 @@ class LanguageLearningWizard:
                 if not self._wait_for_session():
                     return combined
                 combined += segment
+
+            if config.repeat_target_sentence:
+                for _chunk, segment in self.app.service.iter_segments(req_target):
+                    if not self._wait_for_session():
+                        return combined
+                    combined += segment
 
             # Synthesize translation if enabled
             if config.show_translations and translation:
@@ -3612,12 +3697,12 @@ class LanguageLearningWizard:
 
     def _on_speak_error(self, exc: Exception) -> None:
         self._set_session_state(SessionState.FAILED, "Playback failed")
-        messagebox.showerror("Playback Error", str(exc))
+        show_error(self.window, "Playback Error", str(exc))
 
     def _export(self) -> None:
         """Export generated pairs to file."""
         if not self._pairs_from_output():
-            messagebox.showinfo("Nothing to export", "Generate sentences first.")
+            show_info(self.window, "Nothing to export", "Generate sentences first.")
             return
 
         format_var = StringVar(value="Text")
@@ -3673,7 +3758,7 @@ class LanguageLearningWizard:
 
             self.status_var.set(f"Exported to {Path(path).name}")
         except Exception as exc:
-            messagebox.showerror("Export Error", str(exc))
+            show_error(self.window, "Export Error", str(exc))
 
     def _clear(self) -> None:
         self.output_text.delete("1.0", "end")
@@ -3933,7 +4018,7 @@ class SettingsDialog:
         self._apply_settings(self._collect_settings())
 
     def _on_reset(self) -> None:
-        if messagebox.askyesno("Reset Settings", "Reset all settings to defaults? This cannot be undone."):
+        if ask_yes_no(self.window, "Reset Settings", "Reset all settings to defaults? This cannot be undone."):
             self.app.settings = {}
             save_app_settings(self.app.settings)
             # Reopen with defaults
@@ -3945,8 +4030,13 @@ class App:
     def __init__(self, root: Tk) -> None:
         self.root = root
         self.root.title("Local TTS Audio Generator")
-        self.root.geometry("980x760")
-        self.root.minsize(900, 650)
+        set_initial_window_geometry(
+            self.root,
+            width_fraction=0.96,
+            height_fraction=0.95,
+            min_width=900,
+            min_height=650,
+        )
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.service = SynthesisCoordinator(self.enqueue_log)
@@ -4174,15 +4264,24 @@ class App:
             "resume": make_playback_icon(self.root, "resume"),
             "stop": make_playback_icon(self.root, "stop"),
         }
-        self.playback_button = ttk.Button(
+        self.pause_playback_button = ttk.Button(
             home_frame,
             image=self.playback_icons["pause"],
-            command=self.toggle_playback_pause,
+            command=self.pause_playback,
             state="disabled",
             width=3,
         )
-        self.playback_button.pack(side="left", padx=2)
-        add_tooltip(self.playback_button, "Pause or resume read aloud")
+        self.pause_playback_button.pack(side="left", padx=2)
+        add_tooltip(self.pause_playback_button, "Pause read aloud")
+        self.resume_playback_button = ttk.Button(
+            home_frame,
+            image=self.playback_icons["resume"],
+            command=self.resume_playback,
+            state="disabled",
+            width=3,
+        )
+        self.resume_playback_button.pack(side="left", padx=2)
+        add_tooltip(self.resume_playback_button, "Resume read aloud")
         self.stop_playback_button = ttk.Button(
             home_frame,
             image=self.playback_icons["stop"],
@@ -4201,7 +4300,6 @@ class App:
         voice_menu.add_cascade(label="Engine", menu=engine_submenu)
         voice_menu.add_separator()
         voice_menu.add_command(label="Voice Wizard…", command=self.open_voice_wizard)
-        voice_menu.add_command(label="Piper Voice Manager…", command=self.open_voice_wizard)
         voice_mb = ttk.Menubutton(toolbar, text="Voice", menu=voice_menu, direction="below")
         voice_mb.grid(row=0, column=2, padx=(8, 4))
 
@@ -4217,8 +4315,10 @@ class App:
         ttk.Button(toolbar, text="Settings", command=self.open_settings).grid(row=0, column=4, padx=(8, 4))
 
         # Sidebar toggle button
-        self.sidebar_toggle_btn = ttk.Button(toolbar, text="◀", width=3, command=self._toggle_sidebar)
+        self.sidebar_icon = make_playback_icon(self.root, "options")
+        self.sidebar_toggle_btn = ttk.Button(toolbar, image=self.sidebar_icon, width=3, command=self._toggle_sidebar)
         self.sidebar_toggle_btn.grid(row=0, column=5, padx=(4, 0))
+        add_tooltip(self.sidebar_toggle_btn, "Show or hide options")
 
         return toolbar
 
@@ -4374,14 +4474,12 @@ class App:
 
     def _collapse_sidebar(self) -> None:
         self.sidebar_frame.grid_remove()
-        self.sidebar_toggle_btn.configure(text="▶")
         self.sidebar_collapsed.set(True)
         self.settings.setdefault("ui", {})["sidebar_collapsed"] = True
         save_app_settings(self.settings)
 
     def _expand_sidebar(self) -> None:
         self.sidebar_frame.grid()
-        self.sidebar_toggle_btn.configure(text="◀")
         self.sidebar_collapsed.set(False)
         self.settings.setdefault("ui", {})["sidebar_collapsed"] = False
         save_app_settings(self.settings)
@@ -4389,7 +4487,7 @@ class App:
     def _confirm_exit(self) -> None:
         """Confirm exit if setting is enabled."""
         if self.settings.get("general", {}).get("confirm_on_exit", True):
-            if not messagebox.askyesno("Exit", "Are you sure you want to exit?"):
+            if not ask_yes_no(self.root, "Exit", "Are you sure you want to exit?"):
                 return
         self.root.quit()
 
@@ -4407,6 +4505,7 @@ class App:
         target_language: str,
         pair_pause_ms: int,
         *,
+        repeat_target_sentence: bool = True,
         speak: bool,
     ) -> None:
         """Move generated PT/ES pairs into the editable main speech workflow."""
@@ -4418,7 +4517,11 @@ class App:
             lines.extend((target.strip(), translation.strip(), ""))
         self.text.delete("1.0", END)
         self.text.insert("1.0", "\n".join(lines).rstrip())
-        self.practice_session = LanguagePracticeSession(language, max(0, pair_pause_ms))
+        self.practice_session = LanguagePracticeSession(
+            language,
+            max(0, pair_pause_ms),
+            repeat_target_sentence,
+        )
         self.read_translations.set(True)
         self.language_display.set(language_display_name(language))
         self.read_translations_check.configure(state="normal")
@@ -4450,7 +4553,7 @@ class App:
     def export_language_pairs(self) -> None:
         pairs = self.current_language_pairs()
         if not pairs:
-            messagebox.showinfo("No language pairs", "Generate a language-learning batch first.")
+            show_info(self.root, "No language pairs", "Generate a language-learning batch first.")
             return
         format_var = StringVar(value="Text")
         dialog = Toplevel(self.root)
@@ -4501,7 +4604,7 @@ class App:
                 data = [{"front": target, "back": translation, "tags": ["language-learning"]} for target, translation in pairs]
                 Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as exc:
-            messagebox.showerror("Export Error", str(exc))
+            show_error(self.root, "Export Error", str(exc))
             return
         if dialog is not None and dialog.winfo_exists():
             dialog.destroy()
@@ -4527,7 +4630,7 @@ class App:
             Path(path).write_text(log_content, encoding="utf-8")
             self.enqueue_log(f"Log exported to {path}")
         except Exception as exc:
-            messagebox.showerror("Export Failed", str(exc))
+            show_error(self.root, "Export Failed", str(exc))
 
     def open_settings(self) -> None:
         """Open the settings dialog."""
@@ -4535,7 +4638,8 @@ class App:
 
     def show_about(self) -> None:
         """Show the about dialog."""
-        messagebox.showinfo(
+        show_info(
+            self.root,
             "About Local TTS Audio Generator",
             "Local TTS Audio Generator\n\n"
             "A desktop text-to-speech application supporting:\n"
@@ -4855,23 +4959,23 @@ class App:
     def collect_request(self, require_output: bool = True) -> SynthesisRequest | None:
         text = self.get_text_content()
         if not text.strip():
-            messagebox.showerror("Missing text", "Paste or load some text first.")
+            show_error(self.root, "Missing text", "Paste or load some text first.")
             return None
 
         output = self.output_file.get().strip()
         if require_output:
             if not output:
-                messagebox.showerror("Missing output", "Choose an output audio file.")
+                show_error(self.root, "Missing output", "Choose an output audio file.")
                 return None
             try:
                 output_format_for_path(Path(output))
             except ValueError as exc:
-                messagebox.showerror("Invalid output format", str(exc))
+                show_error(self.root, "Invalid output format", str(exc))
                 return None
 
         speaker_wav = self.speaker_wav.get().strip()
         if speaker_wav and not Path(speaker_wav).exists():
-            messagebox.showerror("Missing file", "The selected reference voice file does not exist.")
+            show_error(self.root, "Missing file", "The selected reference voice file does not exist.")
             return None
 
         # Pocket draws its built-in voice from its own dropdown; XTTS uses the
@@ -4951,8 +5055,11 @@ class App:
                 continue
             target = target_match.group().strip()
             target_start = block.start() + lines[0].start() + target_match.start()
+            pair_items: list[SpeechItem] = []
             if starts_at_or_after_selected_line(target_start, target):
-                items.append(SpeechItem(target, session.target_language, target_start))
+                pair_items.append(SpeechItem(target, session.target_language, target_start))
+                if session.repeat_target_sentence:
+                    pair_items.append(SpeechItem(target, session.target_language, target_start))
             if include_english and len(lines) > 1:
                 translation_match = re.search(r"\S.*", lines[1].group())
                 if translation_match is None:
@@ -4960,23 +5067,18 @@ class App:
                 translation = translation_match.group().strip()
                 translation_start = block.start() + lines[1].start() + translation_match.start()
                 if starts_at_or_after_selected_line(translation_start, translation):
-                    items.append(SpeechItem(translation, "en", translation_start))
+                    pair_items.append(SpeechItem(translation, "en", translation_start))
+
+            for index, item in enumerate(pair_items):
+                pause = PAUSE_MS if index < len(pair_items) - 1 else session.pair_pause_ms
+                items.append(replace(item, pause_after_ms=pause))
 
         if not items:
             return []
-        planned: list[SpeechItem] = []
-        for index, item in enumerate(items):
-            next_is_same_pair_translation = (
-                include_english
-                and item.language == session.target_language
-                and index + 1 < len(items)
-                and items[index + 1].language == "en"
-            )
-            pause = PAUSE_MS if next_is_same_pair_translation else session.pair_pause_ms
-            if index == len(items) - 1:
-                pause = 0
-            planned.append(replace(item, pause_after_ms=pause))
-        return planned
+        return [
+            replace(item, pause_after_ms=0) if index == len(items) - 1 else item
+            for index, item in enumerate(items)
+        ]
 
     def practice_requests(
         self,
@@ -4995,7 +5097,7 @@ class App:
 
     def start_generation(self) -> None:
         if self.worker and self.worker.is_alive():
-            messagebox.showinfo("Busy", "Generation is already running.")
+            show_info(self.root, "Busy", "Generation is already running.")
             return
 
         request = self.collect_request(require_output=True)
@@ -5005,7 +5107,7 @@ class App:
         if getattr(self, "practice_session", None) is not None:
             requests = self.practice_requests(request)
             if not requests:
-                messagebox.showinfo("No speech content", "The language-learning pairs are empty.")
+                show_info(self.root, "No speech content", "The language-learning pairs are empty.")
                 return
             if any(self.service.resolve_engine(item_request) == ENGINE_XTTS for _item, item_request in requests):
                 if not self.ensure_xtts_license_acceptance():
@@ -5033,7 +5135,7 @@ class App:
 
     def start_read_aloud_from(self, start_offset: int | None, reason: str = "button") -> None:
         if self.worker and self.worker.is_alive():
-            messagebox.showinfo("Busy", "Audio generation is already running.")
+            show_info(self.root, "Busy", "Audio generation is already running.")
             return
 
         request = self.collect_request(require_output=False)
@@ -5044,13 +5146,13 @@ class App:
         if resolved_start_offset is None:
             resolved_start_offset = self.get_read_aloud_start_offset()
         if resolved_start_offset is None:
-            messagebox.showinfo("No speech content", "Enter some text first.")
+            show_info(self.root, "No speech content", "Enter some text first.")
             return
 
         if getattr(self, "practice_session", None) is not None:
             requests = self.practice_requests(request, resolved_start_offset)
             if not requests:
-                messagebox.showinfo("No speech content", "There are no practice lines after this position.")
+                show_info(self.root, "No speech content", "There are no practice lines after this position.")
                 return
             if any(self.service.resolve_engine(item_request) == ENGINE_XTTS for _item, item_request in requests):
                 if not self.ensure_xtts_license_acceptance():
@@ -5117,7 +5219,7 @@ class App:
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
             error_message = str(exc)
-            self.root.after(0, lambda message=error_message: messagebox.showerror("Read aloud failed", message))
+            self.root.after(0, lambda message=error_message: show_error(self.root, "Read aloud failed", message))
         finally:
             if preview_paths:
                 self.root.after(750, lambda paths=tuple(preview_paths): self.cleanup_preview_files(paths))
@@ -5156,7 +5258,7 @@ class App:
                         time.sleep(min(0.05, deadline - time.monotonic()))
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
-            self.root.after(0, lambda message=str(exc): messagebox.showerror("Read aloud failed", message))
+            self.root.after(0, lambda message=str(exc): show_error(self.root, "Read aloud failed", message))
         finally:
             if preview_paths:
                 self.root.after(750, lambda paths=tuple(preview_paths): self.cleanup_preview_files(paths))
@@ -5199,21 +5301,20 @@ class App:
             self.playback_toggle_label.set("Resume")
         else:
             self.playback_toggle_label.set("Pause")
-        if not hasattr(self, "playback_button"):
+        if not hasattr(self, "pause_playback_button"):
             return
         active = bool(self.player.is_active())
         paused = bool(self.player.is_paused())
-        self.playback_button.configure(
-            image=self.playback_icons["resume" if paused else "pause"],
-            state="normal" if active else "disabled",
-        )
+        self.pause_playback_button.configure(state="normal" if active and not paused else "disabled")
+        self.resume_playback_button.configure(state="normal" if active and paused else "disabled")
         worker_running = self.preview_worker and self.preview_worker.is_alive() and not self.preview_stop_event.is_set()
         self.stop_playback_button.configure(state="normal" if active or worker_running else "disabled")
 
     def set_playback_controls_active(self, active: bool) -> None:
-        if not hasattr(self, "playback_button"):
+        if not hasattr(self, "pause_playback_button"):
             return
-        self.playback_button.configure(state="normal" if active else "disabled")
+        self.pause_playback_button.configure(state="normal" if active else "disabled")
+        self.resume_playback_button.configure(state="disabled")
         self.stop_playback_button.configure(state="normal" if active else "disabled")
 
     def get_text_content(self) -> str:
@@ -5291,7 +5392,8 @@ class App:
         if os.environ.get("COQUI_TOS_AGREED") == "1":
             return True
 
-        accepted = messagebox.askyesno(
+        accepted = ask_yes_no(
+            self.root,
             "XTTS License Confirmation",
             (
                 "XTTS v2 requires you to confirm Coqui's license terms on first download.\n\n"

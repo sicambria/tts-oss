@@ -102,11 +102,12 @@ This opens a native desktop window on the same machine.
 - `Read Aloud` starts from the selected text if there is a selection; otherwise it starts from the beginning.
 - The current read-aloud line is highlighted in the editor while playback advances.
 - Clicking a word during read aloud restarts playback from that word to the end.
-- Icon buttons in the main toolbar pause/resume and stop the current read-aloud preview.
+- Dedicated icon buttons in the main toolbar pause, resume, and stop the current read-aloud preview.
 - Language Learning supports Portuguese and Spanish. `Generate` closes the learner and
   copies editable target/English pairs into the main editor with the target language selected.
   `Speak` performs the same handoff and immediately starts playback.
-- Language-learning pairs are read with a target-language voice followed by an English voice.
+- Language-learning pairs repeat the target-language sentence by default, then read its English voice translation.
+  Uncheck `Repeat target sentence before English translation` in the learning window to read it once.
   Uncheck `Read English translations` in the main options to practice only the target lines.
   If the selected target setup cannot speak English, the app selects an available English voice
   and reports the fallback in Status.

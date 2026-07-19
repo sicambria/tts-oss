@@ -88,3 +88,7 @@ class TestSettingsMigration:
     def test_unknown_language_learning_value_falls_back_to_portuguese(self):
         assert normalize_learning_language("Hungarian") == "pt"
         assert normalize_learning_language(None) == "pt"
+
+    def test_target_sentence_repetition_defaults_to_enabled(self):
+        settings = normalize_app_settings({"language_learning": {}})
+        assert settings["language_learning"]["repeat_target_sentence"] is True
