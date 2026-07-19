@@ -95,6 +95,8 @@ venv.bak/
 output/
 voices/
 settings.json
+settings.json.bak
+settings.json.tmp
 
 # Tool caches
 .mypy_cache/

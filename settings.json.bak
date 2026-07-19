@@ -1,8 +1,0 @@
-{
-  "general": {
-    "confirm_on_exit": true
-  },
-  "ui": {
-    "sidebar_collapsed": true
-  }
-}
