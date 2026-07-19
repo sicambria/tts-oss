@@ -186,8 +186,8 @@ class TestQualityPresets:
             assert isinstance(params, list)
             assert "-q:a" in params
 
-    def test_mp3_five_presets(self) -> None:
-        assert len(MP3_QUALITY_PRESETS) == 5
+    def test_mp3_includes_low_bitrate_presets(self) -> None:
+        assert {"8 kbps (smallest)", "16 kbps", "24 kbps", "32 kbps", "64 kbps"} <= set(MP3_QUALITY_PRESETS)
 
     def test_ogg_five_presets(self) -> None:
         assert len(OGG_QUALITY_PRESETS) == 5

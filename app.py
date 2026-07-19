@@ -158,6 +158,11 @@ SUPPORTED_OUTPUT_FORMATS = {
     ".wav": "WAV",
 }
 MP3_QUALITY_PRESETS = {
+    "8 kbps (smallest)": {"bitrate": "8k"},
+    "16 kbps": {"bitrate": "16k"},
+    "24 kbps": {"bitrate": "24k"},
+    "32 kbps": {"bitrate": "32k"},
+    "48 kbps": {"bitrate": "48k"},
     "64 kbps": {"bitrate": "64k"},
     "128 kbps": {"bitrate": "128k"},
     "192 kbps (recommended)": {"bitrate": "192k"},
@@ -627,14 +632,43 @@ def export_audio_segment(
         export_kwargs["parameters"] = ["-ar", "44100"] + quality_params
     elif bitrate is not None:
         export_kwargs["bitrate"] = bitrate
-        export_kwargs["parameters"] = ["-ar", "44100"]
+        export_kwargs["parameters"] = ["-ar", str(mp3_sample_rate_for_bitrate(bitrate))]
     elif output_format in {"mp3", "ogg"}:
-        export_kwargs["bitrate"] = "192k"
+        export_kwargs["bitrate"] = "64k" if output_format == "mp3" else "192k"
         export_kwargs["parameters"] = ["-ar", "44100"]
     else:
         export_kwargs["parameters"] = ["-ar", "44100"]
 
     audio.export(output_file, **export_kwargs)
+
+
+def mp3_sample_rate_for_bitrate(bitrate: str) -> int:
+    """Use a supported low sample rate so low MP3 presets encode faithfully."""
+    try:
+        kbps = int(bitrate.removesuffix("k"))
+    except ValueError:
+        return 44100
+    if kbps <= 8:
+        return 8000
+    if kbps <= 24:
+        return 12000
+    if kbps <= 32:
+        return 16000
+    return 44100
+
+
+def audio_export_options(settings: dict, output_file: Path) -> dict[str, list[str] | str]:
+    """Return the saved quality preset appropriate for an output file."""
+    audio_settings = settings.get("audio", {}) if isinstance(settings, dict) else {}
+    if output_file.suffix.lower() == ".mp3":
+        label = audio_settings.get("mp3_quality", DEFAULT_AUDIO_SETTINGS["mp3_quality"])
+        preset = MP3_QUALITY_PRESETS.get(str(label), MP3_QUALITY_PRESETS["64 kbps"])
+        return {"bitrate": preset["bitrate"]}
+    if output_file.suffix.lower() == ".ogg":
+        label = audio_settings.get("ogg_quality", DEFAULT_AUDIO_SETTINGS["ogg_quality"])
+        preset = OGG_QUALITY_PRESETS.get(str(label), OGG_QUALITY_PRESETS["High (q5)"])
+        return {"quality_params": preset["quality_params"]}
+    return {}
 
 
 class DocumentExtractor:
@@ -1263,7 +1297,7 @@ DEFAULT_UI_SETTINGS: dict[str, object] = {
 
 DEFAULT_AUDIO_SETTINGS: dict[str, object] = {
     "default_format": "MP3",
-    "mp3_quality": "192 kbps (recommended)",
+    "mp3_quality": "64 kbps",
     "ogg_quality": "High (q5)",
     "sample_rate": 44100,
 }
@@ -2191,7 +2225,7 @@ class DocumentToAudioWizard:
         self.stop_event = threading.Event()
 
         self.output_format = StringVar(value="MP3")
-        default_quality = list(self.MP3_PRESETS.keys())[0]
+        default_quality = str(DEFAULT_AUDIO_SETTINGS["mp3_quality"])
         self.quality_preset = StringVar(value=default_quality)
         self.merge_files = BooleanVar(value=False)
         self.output_folder = StringVar(value=str(get_default_music_folder().resolve()))
@@ -3866,7 +3900,7 @@ class SettingsDialog:
 
         row += 1
         ttk.Label(frame, text="MP3 Quality").grid(row=row, column=0, sticky="w", pady=6)
-        self.audio_mp3_var = StringVar(value=self.settings.get("audio", {}).get("mp3_quality", "192 kbps (recommended)"))
+        self.audio_mp3_var = StringVar(value=self.settings.get("audio", {}).get("mp3_quality", "64 kbps"))
         ttk.Combobox(frame, textvariable=self.audio_mp3_var, values=list(MP3_QUALITY_PRESETS.keys()), state="readonly", width=30).grid(row=row, column=1, sticky="w", pady=6)
 
         row += 1
@@ -5432,7 +5466,11 @@ class App:
 
             self.root.after(0, lambda: self.generation_status.set("Saving audio file..."))
             self.enqueue_log(f"Exporting audio to {request.output_file}")
-            export_audio_segment(combined, request.output_file)
+            export_audio_segment(
+                combined,
+                request.output_file,
+                **audio_export_options(self.settings, request.output_file),
+            )
             self.enqueue_log("Finished.")
             result = request.output_file
         except Exception as exc:
@@ -5470,7 +5508,11 @@ class App:
                     ),
                 )
             self.root.after(0, lambda: self.generation_status.set("Saving audio file..."))
-            export_audio_segment(combined, output_file)
+            export_audio_segment(
+                combined,
+                output_file,
+                **audio_export_options(self.settings, output_file),
+            )
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
             self.root.after(0, lambda message=str(exc): self.finish_generation_modal(None, error=message))
