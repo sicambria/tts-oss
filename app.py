@@ -4496,9 +4496,8 @@ class App:
 
     def _build_text_area(self) -> None:
         """Build the main text editing area."""
-        ttk.Label(self.text_area_frame, text="Text").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 0))
         self.textbox = ttk.Frame(self.text_area_frame)
-        self.textbox.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self.textbox.grid(row=0, column=0, sticky="nsew", padx=8, pady=(0, 8))
         self.textbox.columnconfigure(0, weight=1)
         self.textbox.rowconfigure(0, weight=1)
 
