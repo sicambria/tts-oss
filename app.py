@@ -333,6 +333,7 @@ ACCENT_ACTIVE = "#1d4ed8"
 MUTED_TEXT = "#52607a"
 TEXT_BG = "#fbfcfe"
 TEXT_BORDER = "#d7deea"
+TEXT_PLACEHOLDER = "Type or paste text here, then click Generate Audio."
 READ_ALOUD_HIGHLIGHT = "#fff3bf"
 
 THEMES: dict[str, dict[str, str]] = {
@@ -4167,7 +4168,7 @@ class App:
         if hasattr(self, "text"):
             self.text.configure(
                 bg=TEXT_BG,
-                fg=THEMES[CURRENT_THEME]["label_fg"],
+                fg=(MUTED_TEXT if getattr(self, "_text_placeholder_visible", False) else THEMES[CURRENT_THEME]["label_fg"]),
                 insertbackground=ACCENT,
                 highlightbackground=TEXT_BORDER,
                 highlightcolor=ACCENT,
@@ -4523,9 +4524,33 @@ class App:
         text_scroll.grid(row=0, column=1, sticky="ns")
         self.text.configure(yscrollcommand=text_scroll.set)
         self.text.tag_configure(READ_ALOUD_LINE_TAG, background=READ_ALOUD_HIGHLIGHT)
+        self.text.bind("<FocusIn>", self._on_text_focus_in)
+        self.text.bind("<FocusOut>", self._on_text_focus_out)
         self.text.bind("<ButtonRelease-1>", self.on_text_click)
         self.text.bind("<ButtonRelease-1>", self.update_selection_cache, add="+")
         self.text.bind("<KeyRelease>", self.update_selection_cache, add="+")
+        self._show_text_placeholder()
+
+    def _show_text_placeholder(self) -> None:
+        """Show the text editor's usage hint when it is empty and unfocused."""
+        if self.text.get("1.0", "end-1c") or self.text.focus_get() == self.text:
+            return
+        self.text.insert("1.0", TEXT_PLACEHOLDER)
+        self.text.configure(fg=MUTED_TEXT)
+        self._text_placeholder_visible = True
+
+    def _hide_text_placeholder(self) -> None:
+        if not getattr(self, "_text_placeholder_visible", False):
+            return
+        self.text.delete("1.0", "end")
+        self.text.configure(fg=THEMES[CURRENT_THEME]["label_fg"])
+        self._text_placeholder_visible = False
+
+    def _on_text_focus_in(self, _event=None):
+        self._hide_text_placeholder()
+
+    def _on_text_focus_out(self, _event=None):
+        self._show_text_placeholder()
 
     def _toggle_sidebar(self) -> None:
         if self.sidebar_collapsed.get():
@@ -4554,6 +4579,7 @@ class App:
 
     def new_document(self) -> None:
         """Clear the text area for a new document."""
+        self._hide_text_placeholder()
         self.text.delete("1.0", "end")
         self.clear_language_practice()
         self.last_selection_start_offset = None
@@ -4576,6 +4602,7 @@ class App:
         lines: list[str] = []
         for target, translation in pairs:
             lines.extend((target.strip(), translation.strip(), ""))
+        self._hide_text_placeholder()
         self.text.delete("1.0", END)
         self.text.insert("1.0", "\n".join(lines).rstrip())
         self.practice_session = LanguagePracticeSession(
@@ -5018,6 +5045,7 @@ class App:
         if not path:
             return
         content = Path(path).read_text(encoding="utf-8")
+        self._hide_text_placeholder()
         self.text.delete("1.0", END)
         self.text.insert("1.0", content)
         self.clear_language_practice()
@@ -5387,6 +5415,8 @@ class App:
         self.stop_playback_button.configure(state="normal" if active else "disabled")
 
     def get_text_content(self) -> str:
+        if getattr(self, "_text_placeholder_visible", False):
+            return ""
         return self.text.get("1.0", "end-1c")
 
     def text_index_to_offset(self, index: str) -> int:
