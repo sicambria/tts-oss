@@ -205,7 +205,7 @@ DEFAULT_LANG_LEARNING_SETTINGS: dict[str, object] = {
     "vary_role": None,
     "vary_words": None,
     "pair_pause_ms": 2000,
-    "repeat_target_sentence": True,
+    "repeat_target_sentence": False,
 }
 
 HEADING_PATTERNS: list[tuple[str, int]] = [
@@ -1186,7 +1186,7 @@ class LanguageSessionConfig:
     speed: float
     pair_pause_ms: int
     show_translations: bool
-    repeat_target_sentence: bool = True
+    repeat_target_sentence: bool = False
 
 
 @dataclass(frozen=True)
@@ -1195,7 +1195,7 @@ class LanguagePracticeSession:
 
     target_language: str
     pair_pause_ms: int
-    repeat_target_sentence: bool = True
+    repeat_target_sentence: bool = False
 
 
 @dataclass(frozen=True)
@@ -3200,7 +3200,7 @@ class LanguageLearningWizard:
         # live in the main window so there is one source of truth.
         self.pair_pause_var = IntVar(value=self.settings.get("pair_pause_ms", 2000))
         self.repeat_target_sentence_var = BooleanVar(
-            value=self.settings.get("repeat_target_sentence", True)
+            value=self.settings.get("repeat_target_sentence", False)
         )
 
         # Worker thread
@@ -4592,7 +4592,7 @@ class App:
         target_language: str,
         pair_pause_ms: int,
         *,
-        repeat_target_sentence: bool = True,
+        repeat_target_sentence: bool = False,
         speak: bool,
     ) -> None:
         """Move generated PT/ES pairs into the editable main speech workflow."""

@@ -11,6 +11,7 @@ from app import App
 from app import LanguagePracticeSession
 from app import SynthesisRequest
 from app import language_practice_module_exists
+from app import normalize_app_settings
 
 
 class _Var:
@@ -95,12 +96,12 @@ class TestLanguagePracticeMainFlow:
         app.activate_language_practice([("Hola.", "Hello.")], "es", 1000, speak=False)
 
         assert app.text.content == "Hola.\nHello."
-        assert app.practice_session == LanguagePracticeSession("es", 1000, True)
+        assert app.practice_session == LanguagePracticeSession("es", 1000, False)
         assert app.language_display.get() == "Spanish"
         assert app.read_translations.get() is True
         app.root.lift.assert_called_once()
 
-    def test_pairs_become_target_then_english_requests(self):
+    def test_default_session_emits_target_then_translation_once(self):
         app = _app(
             "Hola mundo.\nHello world.\n\nBuenos días.\nGood morning.",
             {
@@ -111,16 +112,14 @@ class TestLanguagePracticeMainFlow:
 
         requests = app.practice_requests(_base_request())
 
-        assert [request.language for _item, request in requests] == ["es", "es", "en", "es", "es", "en"]
+        assert [request.language for _item, request in requests] == ["es", "en", "es", "en"]
         assert [request.piper_voice_code for _item, request in requests] == [
             "es_ES-alba-medium",
-            "es_ES-alba-medium",
             "en_US-lessac-medium",
-            "es_ES-alba-medium",
             "es_ES-alba-medium",
             "en_US-lessac-medium",
         ]
-        assert [item.pause_after_ms for item, _request in requests] == [300, 300, 1250, 300, 300, 0]
+        assert [item.pause_after_ms for item, _request in requests] == [300, 1250, 300, 0]
 
     def test_target_only_mode_omits_english_lines(self):
         app = _app(
@@ -135,10 +134,10 @@ class TestLanguagePracticeMainFlow:
 
         requests = app.practice_requests(_base_request())
 
-        assert [request.language for _item, request in requests] == ["pt", "pt", "pt", "pt"]
-        assert [item.pause_after_ms for item, _request in requests] == [300, 800, 300, 0]
+        assert [request.language for _item, request in requests] == ["pt", "pt"]
+        assert [item.pause_after_ms for item, _request in requests] == [800, 0]
 
-    def test_repeat_target_sentence_can_be_disabled(self):
+    def test_repeat_target_sentence_can_be_enabled(self):
         app = _app(
             "Hola.\nHello.",
             {
@@ -146,12 +145,42 @@ class TestLanguagePracticeMainFlow:
                 "English US | Lessac | medium": {"code": "en_US-lessac-medium", "xtts_language": "en"},
             },
         )
-        app.practice_session = LanguagePracticeSession("es", 800, False)
+        app.practice_session = LanguagePracticeSession("es", 800, True)
+
+        requests = app.practice_requests(_base_request())
+
+        assert [request.language for _item, request in requests] == ["es", "es", "en"]
+        assert [item.pause_after_ms for item, _request in requests] == [300, 300, 0]
+
+    def test_normalized_default_handoff_emits_target_once(self):
+        app = _app(
+            "Hola.\nHello.",
+            {
+                "Spanish | Alba | medium": {"code": "es_ES-alba-medium", "xtts_language": "es"},
+                "English US | Lessac | medium": {"code": "en_US-lessac-medium", "xtts_language": "en"},
+            },
+        )
+        settings = normalize_app_settings({"language_learning": {}})
+        app.practice_session = LanguagePracticeSession("es", 800, settings["language_learning"]["repeat_target_sentence"])
 
         requests = app.practice_requests(_base_request())
 
         assert [request.language for _item, request in requests] == ["es", "en"]
-        assert [item.pause_after_ms for item, _request in requests] == [300, 0]
+
+    def test_persisted_target_repetition_remains_enabled(self):
+        app = _app(
+            "Hola.\nHello.",
+            {
+                "Spanish | Alba | medium": {"code": "es_ES-alba-medium", "xtts_language": "es"},
+                "English US | Lessac | medium": {"code": "en_US-lessac-medium", "xtts_language": "en"},
+            },
+        )
+        settings = normalize_app_settings({"language_learning": {"repeat_target_sentence": True}})
+        app.practice_session = LanguagePracticeSession("es", 800, settings["language_learning"]["repeat_target_sentence"])
+
+        requests = app.practice_requests(_base_request())
+
+        assert [request.language for _item, request in requests] == ["es", "es", "en"]
 
     def test_missing_english_piper_voice_uses_automatic_english_fallback(self):
         app = _app(
@@ -162,6 +191,6 @@ class TestLanguagePracticeMainFlow:
         requests = app.practice_requests(_base_request())
 
         assert requests[0][1].engine == ENGINE_PIPER
-        assert requests[2][1].language == "en"
-        assert requests[2][1].engine == ENGINE_AUTO
+        assert requests[1][1].language == "en"
+        assert requests[1][1].engine == ENGINE_AUTO
         app.enqueue_log.assert_called_once()
