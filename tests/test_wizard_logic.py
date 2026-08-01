@@ -15,6 +15,7 @@ from app import MAX_MERGE_CHUNKS
 from app import MP3_QUALITY_PRESETS
 from app import OGG_QUALITY_PRESETS
 from app import ChapterEntry
+from app import DocumentConversionRun
 from app import DocumentToAudioWizard
 
 
@@ -352,6 +353,29 @@ class TestDoExtraction:
         entry = list(wizard.extracted_texts.keys())[0]
         assert isinstance(entry, ChapterEntry)
         assert wizard.extracted_texts[entry] == "Hello world."
+
+    def test_worker_uses_captured_page_range(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard._update_doc_status = MagicMock()
+        wizard._set_overall = MagicMock()
+        wizard.documents = [Path("/tmp/test.pdf")]
+        wizard.extracted_texts = {}
+        wizard._chapter_entries = {}
+        wizard.stop_event = MagicMock()
+        wizard.stop_event.is_set.return_value = False
+        wizard.window.after = MagicMock()
+        run = DocumentConversionRun(
+            documents=(Path("/tmp/test.pdf"),), output_folder=Path("/tmp/out"), from_page=61, to_page=70,
+            merge_files=False, split_chapters=False, chapter_level="all", output_format="MP3", quality_preset="64 kbps",
+            piper_voice_label="Hungarian | Anna | medium", language="hu", engine=ENGINE_AUTO,
+            speaker_name=DEFAULT_SPEAKER, pocket_voice="alba", speaker_wav="", speed=1.0,
+        )
+
+        with patch("app.DocumentExtractor.extract_text", return_value="Selected pages only.") as extract:
+            wizard._do_extraction(run)
+
+        extract.assert_called_once_with(Path("/tmp/test.pdf"), from_page=61, to_page=70)
 
 
 class TestDoPreparation:

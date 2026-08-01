@@ -4,8 +4,10 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import warnings
@@ -741,6 +743,38 @@ class DocumentExtractor:
     }
 
     @staticmethod
+    def _render_to_pdf(filepath: Path, output_dir: Path) -> Path:
+        suffix = filepath.suffix.lower()
+        if suffix in {".docx", ".odt"}:
+            executable = shutil.which("libreoffice") or shutil.which("soffice")
+            command = [executable or "libreoffice", "--headless", "--convert-to", "pdf", "--outdir", str(output_dir), str(filepath)]
+            expected = output_dir / f"{filepath.stem}.pdf"
+        elif suffix in {".epub", ".mobi"}:
+            executable = shutil.which("ebook-convert")
+            expected = output_dir / f"{filepath.stem}.pdf"
+            command = [executable or "ebook-convert", str(filepath), str(expected)]
+        else:
+            raise ValueError(f"Page ranges are unsupported for {suffix or 'this file type'}.")
+        if executable is None:
+            raise RuntimeError(f"Cannot apply page ranges to {suffix.upper()}: required converter is not installed.")
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Converting {filepath.name} to PDF timed out.") from exc
+        if result.returncode != 0 or not expected.is_file():
+            detail = (result.stderr or result.stdout).strip()
+            raise RuntimeError(f"Could not convert {filepath.name} to PDF for page selection.{f' {detail}' if detail else ''}")
+        return expected
+
+    @staticmethod
+    def _extract_rendered_pdf(filepath: Path, from_page: int | None, to_page: int | None, chapters: bool, min_level: str = "all"):
+        with tempfile.TemporaryDirectory(prefix="tts-oss-pages-") as temp_dir:
+            pdf_path = DocumentExtractor._render_to_pdf(filepath, Path(temp_dir))
+            if chapters:
+                return DocumentExtractor._extract_pdf_chapters(pdf_path, min_level, from_page, to_page)
+            return DocumentExtractor._extract_pdf(pdf_path, from_page, to_page)
+
+    @staticmethod
     def _pdf_page_slice(
         total_pages: int, from_page: int | None, to_page: int | None
     ) -> tuple[int, int]:
@@ -766,6 +800,8 @@ class DocumentExtractor:
     @staticmethod
     def extract_text(filepath: Path, from_page: int | None = None, to_page: int | None = None) -> str:
         suffix = filepath.suffix.lower()
+        if (from_page is not None or to_page is not None) and suffix != ".pdf":
+            return DocumentExtractor._extract_rendered_pdf(filepath, from_page, to_page, chapters=False)
         if suffix == ".docx":
             return DocumentExtractor._extract_docx(filepath)
         if suffix == ".odt":
@@ -892,6 +928,8 @@ class DocumentExtractor:
         to_page: int | None = None,
     ) -> list[tuple[str, str]]:
         suffix = filepath.suffix.lower()
+        if (from_page is not None or to_page is not None) and suffix != ".pdf":
+            return DocumentExtractor._extract_rendered_pdf(filepath, from_page, to_page, chapters=True, min_level=min_level)
         if suffix == ".docx":
             return DocumentExtractor._extract_docx_chapters(filepath, min_level)
         if suffix == ".odt":
@@ -1340,6 +1378,26 @@ class ChapterEntry:
     word_count: int
 
 
+@dataclass(frozen=True)
+class DocumentConversionRun:
+    documents: tuple[Path, ...]
+    output_folder: Path
+    from_page: int | None
+    to_page: int | None
+    merge_files: bool
+    split_chapters: bool
+    chapter_level: str
+    output_format: str
+    quality_preset: str
+    piper_voice_label: str
+    language: str
+    engine: str
+    speaker_name: str
+    pocket_voice: str
+    speaker_wav: str
+    speed: float
+
+
 def get_piper_voice_metadata(label: str) -> dict[str, str]:
     metadata = PIPER_VOICE_OPTIONS.get(label)
     if metadata is None:
@@ -1423,6 +1481,9 @@ DEFAULT_PATHS_SETTINGS: dict[str, object] = {
     "pocket_voice_dir": "voices/pocket",
     "output_folder": str(get_default_music_folder()),
 }
+DEFAULT_DOCUMENT_CONVERSION_SETTINGS: dict[str, object] = {
+    "skip_page_range_conversion_warning": False,
+}
 
 
 def load_app_settings() -> dict:
@@ -1451,6 +1512,7 @@ def _default_settings_dict() -> dict:
         "audio": DEFAULT_AUDIO_SETTINGS.copy(),
         "general": DEFAULT_GENERAL_SETTINGS.copy(),
         "paths": DEFAULT_PATHS_SETTINGS.copy(),
+        "document_conversion": DEFAULT_DOCUMENT_CONVERSION_SETTINGS.copy(),
     }
 
 
@@ -1480,6 +1542,7 @@ def normalize_app_settings(raw_settings: object) -> dict:
         "audio": DEFAULT_AUDIO_SETTINGS,
         "general": DEFAULT_GENERAL_SETTINGS,
         "paths": DEFAULT_PATHS_SETTINGS,
+        "document_conversion": DEFAULT_DOCUMENT_CONVERSION_SETTINGS,
     }
     for name, defaults in sections.items():
         current = raw.get(name)
@@ -2327,6 +2390,10 @@ class DocumentToAudioWizard:
         self.from_page = StringVar(value="")
         self.to_page = StringVar(value="")
         self.page_range_error = StringVar(value="")
+        document_settings = getattr(app, "settings", {}).get("document_conversion", {})
+        self.skip_page_range_conversion_warning = BooleanVar(
+            value=bool(document_settings.get("skip_page_range_conversion_warning", False))
+        )
 
         initial_lang = app.language.get().strip() or "hu"
         self.wizard_language = StringVar(value=initial_lang)
@@ -2551,7 +2618,7 @@ class DocumentToAudioWizard:
             row=6, column=5, sticky="e", pady=4, padx=(8, 0)
         )
 
-        ttk.Label(settings_frame, text="Pages (PDF)").grid(row=7, column=0, sticky="w", pady=4)
+        ttk.Label(settings_frame, text="Pages (all formats)").grid(row=7, column=0, sticky="w", pady=4)
         page_row = ttk.Frame(settings_frame)
         page_row.grid(row=7, column=1, columnspan=5, sticky="w", pady=4)
         ttk.Label(page_row, text="From:").pack(side="left")
@@ -2563,6 +2630,9 @@ class DocumentToAudioWizard:
         ttk.Label(page_row, textvariable=self.page_range_error, style="ValidationError.TLabel").pack(
             side="left", padx=(12, 0)
         )
+        ttk.Checkbutton(
+            page_row, text="Skip this warning next time", variable=self.skip_page_range_conversion_warning
+        ).pack(side="left", padx=(12, 0))
 
         progress_frame = ttk.LabelFrame(bottom, text="Progress", padding=10)
         progress_frame.pack(fill="x", pady=(10, 0))
@@ -2851,6 +2921,29 @@ class DocumentToAudioWizard:
             return
 
         output_folder = Path(self.output_folder.get())
+        from_page, to_page = self._parse_page_range()
+        run = DocumentConversionRun(
+            documents=tuple(self.documents), output_folder=output_folder, from_page=from_page, to_page=to_page,
+            merge_files=self.merge_files.get(), split_chapters=self.split_chapters.get(), chapter_level=self.chapter_level.get(),
+            output_format=self.output_format.get(), quality_preset=self.quality_preset.get(),
+            piper_voice_label=self.wizard_piper_voice_label.get(), language=self.wizard_language.get(),
+            engine=self.wizard_engine.get(), speaker_name=self.wizard_speaker_name.get(),
+            pocket_voice=self.wizard_pocket_voice.get(), speaker_wav=self.wizard_speaker_wav.get(), speed=round(self.wizard_speed.get(), 1),
+        )
+        non_pdf_documents = [path.name for path in run.documents if path.suffix.lower() != ".pdf"]
+        if (run.from_page is not None or run.to_page is not None) and non_pdf_documents and not self.skip_page_range_conversion_warning.get():
+            names = "\n".join(non_pdf_documents)
+            if not ask_yes_no(
+                self.window,
+                "Page range conversion",
+                f"These files will be rendered to temporary PDFs so the selected pages can be used:\n{names}\n\nContinue?",
+            ):
+                return
+        if hasattr(self.app, "settings"):
+            self.app.settings.setdefault("document_conversion", {})[
+                "skip_page_range_conversion_warning"
+            ] = self.skip_page_range_conversion_warning.get()
+            save_app_settings(self.app.settings)
         output_folder.mkdir(parents=True, exist_ok=True)
 
         self.doc_status = {p: "Queued" for p in self.documents}
@@ -2863,12 +2956,12 @@ class DocumentToAudioWizard:
         self.stop_event.clear()
         self.pause_event.set()
 
-        self.worker = threading.Thread(target=self._run_processing, args=(output_folder,), daemon=True)
+        self.worker = threading.Thread(target=self._run_processing, args=(run,), daemon=True)
         self.worker.start()
 
-    def _run_processing(self, output_folder: Path) -> None:
+    def _run_processing(self, run: DocumentConversionRun) -> None:
         try:
-            self._do_extraction()
+            self._do_extraction(run)
             if self.stop_event.is_set():
                 return self._finish("Stopped.")
 
@@ -2876,19 +2969,22 @@ class DocumentToAudioWizard:
             if self.stop_event.is_set():
                 return self._finish("Stopped.")
 
-            if self.merge_files.get():
-                self._do_synthesis_merged(output_folder)
+            if run.merge_files:
+                self._do_synthesis_merged(run)
             else:
-                self._do_synthesis_per_file(output_folder)
+                self._do_synthesis_per_file(run)
         except Exception as exc:
             self.app.enqueue_log(f"Document wizard error: {exc}")
             self.window.after(0, lambda e=str(exc): self._finish(f"Error: {e}"))
 
-    def _do_extraction(self) -> None:
-        docs = list(self.documents)
+    def _do_extraction(self, run: DocumentConversionRun | None = None) -> None:
+        if run is None:
+            from_page, to_page = self._parse_page_range()
+            run = DocumentConversionRun(tuple(self.documents), Path(self.output_folder.get()), from_page, to_page, self.merge_files.get(), self.split_chapters.get(), self.chapter_level.get(), self.output_format.get(), self.quality_preset.get(), self.wizard_piper_voice_label.get(), self.wizard_language.get(), self.wizard_engine.get(), self.wizard_speaker_name.get(), self.wizard_pocket_voice.get(), self.wizard_speaker_wav.get(), round(self.wizard_speed.get(), 1))
+        docs = list(run.documents)
         total = len(docs)
         chapter_formats = {".docx", ".odt", ".pdf", ".epub"}
-        from_page, to_page = self._parse_page_range()
+        from_page, to_page = run.from_page, run.to_page
         for i, doc_path in enumerate(docs):
             if self.stop_event.is_set():
                 return
@@ -2907,9 +3003,9 @@ class DocumentToAudioWizard:
                 ),
             )
             try:
-                if self.split_chapters.get() and doc_path.suffix.lower() in chapter_formats:
+                if run.split_chapters and doc_path.suffix.lower() in chapter_formats:
                     raw_chapters = DocumentExtractor.extract_chapters(
-                        doc_path, self.chapter_level.get(),
+                        doc_path, run.chapter_level,
                         from_page=from_page, to_page=to_page,
                     )
                     entries = []
@@ -2994,37 +3090,41 @@ class DocumentToAudioWizard:
 
         self._total_chunks = max(total_chunks, 1)
 
-    def _build_request(self, text: str, output_path: Path) -> SynthesisRequest:
-        piper_label = self.wizard_piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL
+    def _build_request(self, text: str, output_path: Path, run: DocumentConversionRun | None = None) -> SynthesisRequest:
+        if run is None:
+            piper_label = self.wizard_piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL
+            language, engine, speaker_wav = self.wizard_language.get().strip() or "hu", self.wizard_engine.get().strip() or ENGINE_AUTO, self.wizard_speaker_wav.get().strip()
+            speaker_name = self.wizard_pocket_voice.get().strip() if self._resolved_wizard_engine() == ENGINE_POCKET else self.wizard_speaker_name.get().strip()
+            speed = round(self.wizard_speed.get(), 1)
+        else:
+            piper_label, language, engine, speaker_wav, speed = run.piper_voice_label.strip() or DEFAULT_PIPER_VOICE_LABEL, run.language.strip() or "hu", run.engine.strip() or ENGINE_AUTO, run.speaker_wav.strip(), run.speed
+            speaker_name = run.pocket_voice.strip() if select_engine(engine, language, bool(speaker_wav), self.app.piper_voice_options) == ENGINE_POCKET else run.speaker_name.strip()
         voice_metadata = self.app.piper_voice_options.get(
             piper_label, get_piper_voice_metadata(piper_label)
         )
-        language = self.wizard_language.get().strip() or "hu"
-        if self._resolved_wizard_engine() == ENGINE_POCKET:
-            speaker_name = self.wizard_pocket_voice.get().strip() or pocket_default_voice(language)
-        else:
-            speaker_name = self.wizard_speaker_name.get().strip() or DEFAULT_SPEAKER
+        speaker_name = speaker_name or (pocket_default_voice(language) if select_engine(engine, language, bool(speaker_wav), self.app.piper_voice_options) == ENGINE_POCKET else DEFAULT_SPEAKER)
         return SynthesisRequest(
             text=text,
             language=language,
             output_file=output_path,
-            engine=self.wizard_engine.get().strip() or ENGINE_AUTO,
+            engine=engine,
             piper_voice_label=piper_label,
             piper_voice_code=voice_metadata["code"],
             speaker_name=speaker_name,
-            speaker_wav=self.wizard_speaker_wav.get().strip(),
-            speed=round(self.wizard_speed.get(), 1),
+            speaker_wav=speaker_wav,
+            speed=speed,
         )
 
-    def _do_synthesis_per_file(self, output_folder: Path) -> None:
+    def _do_synthesis_per_file(self, run: DocumentConversionRun | Path) -> None:
         entries = list(self.extracted_texts.keys())
         if not entries:
             raise RuntimeError("No documents with valid extracted text.")
 
         total_entries = len(entries)
         cumul_chunks = 0
-        suffix = f".{self.output_format.get().lower()}"
-        split_active = self.split_chapters.get()
+        legacy_output_folder = run if isinstance(run, Path) else None
+        suffix = f".{(self.output_format.get() if legacy_output_folder else run.output_format).lower()}"
+        split_active = self.split_chapters.get() if legacy_output_folder else run.split_chapters
         seen_docs: set[Path] = set()
 
         for i, entry in enumerate(entries):
@@ -3056,7 +3156,7 @@ class DocumentToAudioWizard:
                     ),
                 )
 
-            output_path = self._chapter_output_path(entry, output_folder, suffix, split_active)
+            output_path = self._chapter_output_path(entry, legacy_output_folder or run.output_folder, suffix, split_active)
 
             text = self.extracted_texts[entry]
             expected = self.chunk_counts.get(entry, 1)
@@ -3067,6 +3167,7 @@ class DocumentToAudioWizard:
                 doc_index=i,
                 total_docs=total_entries,
                 cumul_chunks_start=cumul_chunks,
+                run=None if legacy_output_folder else run,
             )
             cumul_chunks += expected
 
@@ -3084,7 +3185,7 @@ class DocumentToAudioWizard:
 
         self._finish(None)
 
-    def _do_synthesis_merged(self, output_folder: Path) -> None:
+    def _do_synthesis_merged(self, run: DocumentConversionRun | Path) -> None:
         entries = list(self.extracted_texts.keys())
         if not entries:
             raise RuntimeError("No documents with valid extracted text.")
@@ -3101,8 +3202,9 @@ class DocumentToAudioWizard:
         total_expected = sum(self.chunk_counts.get(e, 1) for e in entries)
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        suffix = f".{self.output_format.get().lower()}"
-        output_path = output_folder / f"merged_{timestamp}{suffix}"
+        legacy_output_folder = run if isinstance(run, Path) else None
+        suffix = f".{(self.output_format.get() if legacy_output_folder else run.output_format).lower()}"
+        output_path = (legacy_output_folder or run.output_folder) / f"merged_{timestamp}{suffix}"
 
         self.window.after(0, lambda: self.phase_text.set("Synthesizing merged output..."))
 
@@ -3113,6 +3215,7 @@ class DocumentToAudioWizard:
             doc_index=0,
             total_docs=1,
             cumul_chunks_start=0,
+            run=None if legacy_output_folder else run,
         )
 
         if not self.stop_event.is_set():
@@ -3181,8 +3284,9 @@ class DocumentToAudioWizard:
         doc_index: int,
         total_docs: int,
         cumul_chunks_start: int,
+        run: DocumentConversionRun | None = None,
     ) -> None:
-        request = self._build_request(text, output_path)
+        request = self._build_request(text, output_path, run)
         combined = AudioSegment.silent(duration=0)
         chunk_count = 0
 
@@ -3222,11 +3326,12 @@ class DocumentToAudioWizard:
         if self.stop_event.is_set():
             return
 
-        quality = self.quality_preset.get()
+        quality = run.quality_preset if run else self.quality_preset.get()
         preset: dict = {}
-        if self.output_format.get() == "OGG":
+        output_format = run.output_format if run else self.output_format.get()
+        if output_format == "OGG":
             preset = self.OGG_PRESETS.get(quality, {})
-        elif self.output_format.get() == "MP3":
+        elif output_format == "MP3":
             preset = self.MP3_PRESETS.get(quality, {})
 
         self.window.after(0, lambda: self.phase_text.set("Exporting audio file..."))

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from app import DEFAULT_AUDIO_SETTINGS
+from app import DEFAULT_DOCUMENT_CONVERSION_SETTINGS
 from app import DEFAULT_GENERAL_SETTINGS
 from app import DEFAULT_LANG_LEARNING_SETTINGS
 from app import DEFAULT_PATHS_SETTINGS
@@ -21,6 +22,7 @@ DEFAULT_SECTIONS = {
     "audio": DEFAULT_AUDIO_SETTINGS,
     "general": DEFAULT_GENERAL_SETTINGS,
     "paths": DEFAULT_PATHS_SETTINGS,
+    "document_conversion": DEFAULT_DOCUMENT_CONVERSION_SETTINGS,
 }
 
 
