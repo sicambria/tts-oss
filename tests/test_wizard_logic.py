@@ -447,6 +447,46 @@ class TestWizardBuildRequestSpeed:
         assert req.speed == 1.7
 
 
+class TestDocumentSynthesisAssembly:
+    def test_appends_each_yielded_segment_once(self) -> None:
+        class RecordingAudio:
+            def __init__(self) -> None:
+                self.parts: list[object] = []
+
+            def __iadd__(self, other: object):
+                self.parts.append(other)
+                return self
+
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard.stop_event = MagicMock()
+        wizard.stop_event.is_set.return_value = False
+        wizard.pause_event = MagicMock()
+        wizard._total_chunks = 2
+        wizard.phase_text = MagicMock()
+        wizard.quality_preset = _MockVar("Standard")
+        wizard.output_format = _MockVar("MP3")
+        wizard._build_request = MagicMock()
+        first_segment = object()
+        second_segment = object()
+        pause = object()
+        combined = RecordingAudio()
+        app.service.iter_segments.return_value = [(MagicMock(), first_segment), (MagicMock(), second_segment)]
+
+        with patch("app.export_audio_segment"):
+            with patch("app.AudioSegment.silent", side_effect=lambda duration: combined if duration == 0 else pause):
+                wizard._synthesize_text(
+                    "Sentence one. Sentence two.",
+                    Path("/tmp/out.mp3"),
+                    expected_chunks=2,
+                    doc_index=0,
+                    total_docs=1,
+                    cumul_chunks_start=0,
+                )
+
+        assert combined.parts == [first_segment, pause, second_segment]
+
+
 class TestDoSynthesisPerFile:
     def test_single_entry_synthesizes_and_finishes(self) -> None:
         app = MockApp()

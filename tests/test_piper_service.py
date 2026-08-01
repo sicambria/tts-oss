@@ -9,6 +9,7 @@ from piper.config import SynthesisConfig
 
 from app import PiperService
 from app import SynthesisRequest
+from app import chunk_text_with_offsets
 
 
 def _make_request(text: str = "Hello world.", **overrides) -> SynthesisRequest:
@@ -85,6 +86,25 @@ class TestPiperServiceIterSegments:
             with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
                 results = list(svc.iter_segments(_make_request(text=long_text)))
         assert len(results) > 1
+
+    def test_chapter_chunks_are_sent_once_at_sentence_boundaries(self):
+        source = Path(__file__).with_name("fixtures").joinpath("chapter_boundary_regression.txt").read_text(encoding="utf-8").strip()
+        expected_chunks = [chunk.text for chunk in chunk_text_with_offsets(source)]
+        svc = PiperService(log=MagicMock())
+        mock_voice = MagicMock()
+        mock_audio = MagicMock()
+        mock_audio.audio_int16_bytes = b"\x00\x00"
+        mock_audio.sample_width = 2
+        mock_audio.sample_rate = 22050
+        mock_audio.sample_channels = 1
+        mock_voice.synthesize.return_value = [mock_audio]
+
+        with patch.object(svc, "ensure_loaded", return_value=mock_voice):
+            with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
+                results = list(svc.iter_segments(_make_request(text=source)))
+
+        assert [chunk.text for chunk, _segment in results] == expected_chunks
+        assert [call.args[0] for call in mock_voice.synthesize.call_args_list] == expected_chunks
 
 
 @pytest.mark.unit

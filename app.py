@@ -205,7 +205,7 @@ DEFAULT_LANG_LEARNING_SETTINGS: dict[str, object] = {
     "vary_role": None,
     "vary_words": None,
     "pair_pause_ms": 2000,
-    "repeat_target_sentence": False,
+    "repeat_target_sentence": True,
 }
 
 HEADING_PATTERNS: list[tuple[str, int]] = [
@@ -566,6 +566,10 @@ class TextChunk:
     end: int
 
 
+_ABBREVIATIONS = frozenset({"mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.", "st.", "vs.", "etc.", "e.g.", "i.e."})
+_CLOSING_QUOTES_OR_BRACKETS = "\"'”’)]}"
+
+
 def find_word_start_offset(text: str, offset: int) -> int | None:
     clamped = max(0, min(offset, len(text)))
     for match in re.finditer(r"\S+", text):
@@ -574,6 +578,46 @@ def find_word_start_offset(text: str, offset: int) -> int | None:
         if match.start() > clamped:
             return match.start()
     return None
+
+
+def _ends_at_terminal_boundary(text: str, match: re.Match[str]) -> bool:
+    if match.end() < len(text) and not text[match.end()].isspace():
+        return False
+
+    token = match.group().rstrip(_CLOSING_QUOTES_OR_BRACKETS)
+    if not token or token[-1] not in ".!?;:":
+        return False
+    if token[-1] != ".":
+        return True
+
+    lowered = token.lower()
+    return lowered not in _ABBREVIATIONS and re.fullmatch(r"(?:[A-Za-z]\.){2,}", token) is None
+
+
+def _ends_at_paragraph_boundary(text: str, match: re.Match[str]) -> bool:
+    return re.match(r"[ \t]*\n[ \t]*\n", text[match.end() :]) is not None
+
+
+def _ends_at_clause_boundary(text: str, match: re.Match[str]) -> bool:
+    if match.end() < len(text) and not text[match.end()].isspace():
+        return False
+    return match.group().rstrip("\"'”’]}").endswith((",", ")"))
+
+
+def _preferred_chunk_end(
+    text: str,
+    matches: list[re.Match[str]],
+    start_index: int,
+    fitting_end_index: int,
+) -> int:
+    for index in range(fitting_end_index, start_index - 1, -1):
+        match = matches[index]
+        if _ends_at_terminal_boundary(text, match) or _ends_at_paragraph_boundary(text, match):
+            return index
+    for index in range(fitting_end_index, start_index - 1, -1):
+        if _ends_at_clause_boundary(text, matches[index]):
+            return index
+    return fitting_end_index
 
 
 def chunk_text_with_offsets(
@@ -596,21 +640,31 @@ def chunk_text_with_offsets(
             break
 
     chunks: list[TextChunk] = []
-    chunk_start = matches[start_index].start()
-    chunk_end = matches[start_index].end()
+    chunk_start_index = start_index
+    while chunk_start_index < len(matches):
+        chunk_start = matches[chunk_start_index].start()
+        fitting_end_index = chunk_start_index - 1
 
-    for match in matches[start_index + 1:]:
-        candidate = text[chunk_start:match.end()].strip()
-        if candidate and len(candidate) > max_chars:
-            chunk_text_value = text[chunk_start:chunk_end].strip()
-            if chunk_text_value:
-                chunks.append(TextChunk(text=chunk_text_value, start=chunk_start, end=chunk_end))
-            chunk_start = match.start()
-        chunk_end = match.end()
+        for index in range(chunk_start_index, len(matches)):
+            candidate = text[chunk_start : matches[index].end()].strip()
+            if candidate and len(candidate) > max_chars:
+                break
+            fitting_end_index = index
+        else:
+            fitting_end_index = len(matches) - 1
 
-    chunk_text_value = text[chunk_start:chunk_end].strip()
-    if chunk_text_value:
-        chunks.append(TextChunk(text=chunk_text_value, start=chunk_start, end=chunk_end))
+        if fitting_end_index < chunk_start_index:
+            chunk_end_index = chunk_start_index
+        elif fitting_end_index == len(matches) - 1:
+            chunk_end_index = fitting_end_index
+        else:
+            chunk_end_index = _preferred_chunk_end(text, matches, chunk_start_index, fitting_end_index)
+
+        chunk_end = matches[chunk_end_index].end()
+        chunk_text_value = text[chunk_start:chunk_end].strip()
+        if chunk_text_value:
+            chunks.append(TextChunk(text=chunk_text_value, start=chunk_start, end=chunk_end))
+        chunk_start_index = chunk_end_index + 1
     return chunks
 
 
@@ -1186,7 +1240,7 @@ class LanguageSessionConfig:
     speed: float
     pair_pause_ms: int
     show_translations: bool
-    repeat_target_sentence: bool = False
+    repeat_target_sentence: bool = True
 
 
 @dataclass(frozen=True)
@@ -1195,7 +1249,7 @@ class LanguagePracticeSession:
 
     target_language: str
     pair_pause_ms: int
-    repeat_target_sentence: bool = False
+    repeat_target_sentence: bool = True
 
 
 @dataclass(frozen=True)
@@ -3200,7 +3254,7 @@ class LanguageLearningWizard:
         # live in the main window so there is one source of truth.
         self.pair_pause_var = IntVar(value=self.settings.get("pair_pause_ms", 2000))
         self.repeat_target_sentence_var = BooleanVar(
-            value=self.settings.get("repeat_target_sentence", False)
+            value=self.settings.get("repeat_target_sentence", True)
         )
 
         # Worker thread
@@ -4592,7 +4646,7 @@ class App:
         target_language: str,
         pair_pause_ms: int,
         *,
-        repeat_target_sentence: bool = False,
+        repeat_target_sentence: bool = True,
         speak: bool,
     ) -> None:
         """Move generated PT/ES pairs into the editable main speech workflow."""

@@ -9,6 +9,7 @@ import pytest
 
 from app import SynthesisRequest
 from app import XTTSService
+from app import chunk_text_with_offsets
 
 
 def _make_request(text: str = "Hello world.", **overrides) -> SynthesisRequest:
@@ -134,6 +135,19 @@ class TestXTTSServiceIterSegments:
             list(svc.iter_segments(_make_request(text="Hello.", speaker_name="Custom Speaker")))
         call_kwargs = mock_tts.tts.call_args[1]
         assert call_kwargs.get("speaker") == "Custom Speaker"
+
+    def test_chapter_chunks_are_sent_once_at_sentence_boundaries(self):
+        source = Path(__file__).with_name("fixtures").joinpath("chapter_boundary_regression.txt").read_text(encoding="utf-8").strip()
+        expected_chunks = [chunk.text for chunk in chunk_text_with_offsets(source)]
+        svc = XTTSService(log=MagicMock())
+        svc._tts = MagicMock()
+        svc._tts.tts.return_value = [0.0, 1.0, -1.0]
+
+        with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
+            results = list(svc.iter_segments(_make_request(text=source)))
+
+        assert [chunk.text for chunk, _segment in results] == expected_chunks
+        assert [call.kwargs["text"] for call in svc._tts.tts.call_args_list] == expected_chunks
 
 
 @pytest.mark.unit

@@ -68,7 +68,7 @@ def wizard() -> LanguageLearningWizard:
     instance.vary_role_var = Var("")
     instance.vary_words_var = Var("")
     instance.pair_pause_var = Var(1200)
-    instance.repeat_target_sentence_var = Var(False)
+    instance.repeat_target_sentence_var = Var(True)
     instance.piper_voice_label_var = Var("Portuguese | Tugão | medium")
     instance.pocket_voice_var = Var("alba")
     instance.speaker_name_var = Var("Speaker")
@@ -135,7 +135,7 @@ class TestLanguageLearningWizardSettings:
             "vary_role": "N_SUBJ",
             "vary_words": "casa, carro",
             "pair_pause_ms": 1200,
-            "repeat_target_sentence": False,
+            "repeat_target_sentence": True,
         }
 
     def test_language_change_refreshes_templates_and_clears_unknown_template(self):

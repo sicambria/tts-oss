@@ -10,6 +10,7 @@ import torch
 from app import POCKET_VOICE_DIR
 from app import PocketTTSService
 from app import SynthesisRequest
+from app import chunk_text_with_offsets
 
 
 def _make_request(text: str = "Hello world.", **overrides) -> SynthesisRequest:
@@ -194,6 +195,24 @@ class TestPocketServiceIterSegments:
                 results = list(svc.iter_segments(_make_request(text=long_text)))
 
         assert len(results) > 1
+
+    def test_chapter_chunks_are_sent_once_at_sentence_boundaries(self):
+        source = Path(__file__).with_name("fixtures").joinpath("chapter_boundary_regression.txt").read_text(encoding="utf-8").strip()
+        expected_chunks = [chunk.text for chunk in chunk_text_with_offsets(source)]
+        svc = PocketTTSService(log=MagicMock())
+        mock_model = MagicMock()
+        mock_model.sample_rate = 24000
+        mock_model.generate_audio.return_value = torch.tensor([0.0, 0.5], dtype=torch.float32)
+        svc._model = mock_model
+        svc._sample_rate = 24000
+        svc._loaded_language = "english"
+
+        with patch.object(svc, "_get_voice_state", return_value={"state": "mock"}):
+            with patch("app.AudioSegment.converter", "/fake/ffmpeg"):
+                results = list(svc.iter_segments(_make_request(text=source)))
+
+        assert [chunk.text for chunk, _segment in results] == expected_chunks
+        assert [call.args[1] for call in mock_model.generate_audio.call_args_list] == expected_chunks
 
     def test_speaker_wav_takes_priority(self):
         svc = PocketTTSService(log=MagicMock())

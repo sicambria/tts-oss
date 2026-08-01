@@ -770,6 +770,34 @@ class TestRunGeneration:
                     app.run_generation(req)
         assert app.finish_generation_modal.called
 
+    def test_run_generation_appends_each_yielded_segment_once(self):
+        class RecordingAudio:
+            def __init__(self) -> None:
+                self.parts: list[object] = []
+
+            def __iadd__(self, other: object):
+                self.parts.append(other)
+                return self
+
+        app = _make_app()
+        app.update_generation_progress = MagicMock()
+        app.finish_generation_modal = MagicMock()
+        app.generation_status = MagicMock()
+        app.root.after.side_effect = lambda _ms, callback: callback()
+        request = MagicMock(text="Sentence one. Sentence two.", output_file=Path("/tmp/out.mp3"))
+        first_segment = object()
+        second_segment = object()
+        pause = object()
+        combined = RecordingAudio()
+        app.service.iter_segments.return_value = [(MagicMock(), first_segment), (MagicMock(), second_segment)]
+
+        with patch("app.export_audio_segment"):
+            with patch("app.AudioSegment.silent", side_effect=lambda duration: combined if duration == 0 else pause):
+                with patch("app.chunk_text_with_offsets", return_value=[MagicMock(), MagicMock()]):
+                    app.run_generation(request)
+
+        assert combined.parts == [first_segment, pause, second_segment]
+
 
 class TestGetDefaultMusicFolder:
     def test_linux_xdg_music_dir(self, temp_dir):

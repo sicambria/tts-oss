@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from app import MAX_CHARS_PER_CHUNK
 from app import chunk_text
 from app import chunk_text_with_offsets
 from app import find_word_start_offset
 from app import sentence_split
 from app import split_long_piece
+
+FIXTURES_DIR = Path(__file__).with_name("fixtures")
 
 
 class TestSentenceSplit:
@@ -175,6 +179,68 @@ class TestChunkTextWithOffsets:
         text = "hello world here we go"
         result = chunk_text_with_offsets(text, 200, start_offset=6)
         assert result[0].text.startswith("world")
+
+    def test_chapter_fixture_prefers_complete_sentence_boundaries(self):
+        source = (FIXTURES_DIR / "chapter_boundary_regression.txt").read_text(encoding="utf-8").strip()
+
+        result = chunk_text_with_offsets(source, MAX_CHARS_PER_CHUNK)
+
+        assert [(chunk.start, chunk.end) for chunk in result] == [(0, 254), (255, 503), (504, 670)]
+        assert [chunk.text for chunk in result] == [
+            source[0:254],
+            source[255:503],
+            source[504:670],
+        ]
+
+    def test_chunks_have_exact_source_ranges_and_whitespace_only_gaps(self):
+        source = (FIXTURES_DIR / "chapter_boundary_regression.txt").read_text(encoding="utf-8").strip()
+
+        result = chunk_text_with_offsets(source, MAX_CHARS_PER_CHUNK)
+
+        assert all(chunk.text == source[chunk.start : chunk.end].strip() for chunk in result)
+        assert all(current.start >= previous.end for previous, current in zip(result, result[1:]))
+        assert all(source[previous.end : current.start].isspace() for previous, current in zip(result, result[1:]))
+        assert " ".join(chunk.text for chunk in result).split() == source.split()
+
+    def test_prefers_clause_before_word_fallback(self):
+        source = "Alpha beta, gamma delta epsilon"
+
+        result = chunk_text_with_offsets(source, max_chars=16)
+
+        assert [chunk.text for chunk in result] == ["Alpha beta,", "gamma delta", "epsilon"]
+
+    def test_ignores_abbreviation_as_terminal_boundary(self):
+        source = "Dr. Ada said hello to everyone. Next sentence."
+
+        result = chunk_text_with_offsets(source, max_chars=11)
+
+        assert result[0].text == "Dr. Ada"
+
+    def test_terminal_quote_and_paragraph_boundaries_are_preserved(self):
+        quoted = 'Ada said "Enough." Then she left.'
+        paragraphs = "Alpha ends.\n\nBeta ends. Gamma ends."
+
+        quoted_chunks = chunk_text_with_offsets(quoted, max_chars=20)
+        paragraph_chunks = chunk_text_with_offsets(paragraphs, max_chars=20)
+
+        assert quoted_chunks[0].text == 'Ada said "Enough."'
+        assert [chunk.text for chunk in paragraph_chunks] == ["Alpha ends.", "Beta ends.", "Gamma ends."]
+
+    def test_start_offset_never_expands_backward_to_prior_sentence(self):
+        source = "First sentence. Second sentence has several words. Third sentence."
+        start_offset = source.index("sentence has")
+
+        result = chunk_text_with_offsets(source, max_chars=25, start_offset=start_offset)
+
+        assert result[0].start == source.index("sentence has")
+        assert result[0].text.startswith("sentence has")
+
+    def test_individual_over_limit_token_is_emitted_once(self):
+        token = "supercalifragilisticexpialidocious"
+
+        result = chunk_text_with_offsets(f"Start {token} end.", max_chars=10)
+
+        assert [chunk.text for chunk in result] == ["Start", token, "end."]
 
 
 class TestFindWordStartOffset:
