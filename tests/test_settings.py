@@ -98,8 +98,12 @@ class TestSettingsMigration:
         assert normalize_general_language("Klingon") == DEFAULT_GENERAL_SETTINGS["default_language"]
         assert normalize_general_language(None) == DEFAULT_GENERAL_SETTINGS["default_language"]
 
-    def test_target_sentence_repetition_defaults_to_enabled(self):
+    def test_target_sentence_repetition_defaults_to_disabled(self):
         settings = normalize_app_settings({"language_learning": {}})
+        assert settings["language_learning"]["repeat_target_sentence"] is False
+
+    def test_explicit_target_sentence_repetition_is_preserved(self):
+        settings = normalize_app_settings({"language_learning": {"repeat_target_sentence": True}})
         assert settings["language_learning"]["repeat_target_sentence"] is True
 
     def test_mp3_quality_defaults_to_64_kbps(self):
