@@ -1660,6 +1660,139 @@ def discover_local_piper_voices() -> dict[str, dict[str, str]]:
     return dict(sorted(options.items()))
 
 
+@dataclass(frozen=True)
+class PiperDownloadFile:
+    rel_path: str
+    local_path: Path
+    size_bytes: int
+
+
+PIPER_SAMPLE_URL_PREFIX = "https://rhasspy.github.io/piper-samples/samples"
+PIPER_DOWNLOAD_CHUNK_SIZE = 131072
+PROGRESS_UPDATE_INTERVAL = 0.25
+
+PIPER_PREVIEW_TEXTS: dict[str, str] = {
+    "en": "The quick brown fox jumps over the lazy dog. Piper speaks clearly and quickly.",
+    "hu": "A gyors barna róka átugrik a lusta kutyán. A Piper hangja tiszta és gyors.",
+    "pt": "A rápida raposa marrom salta sobre o cão preguiçoso. Piper fala de forma clara e rápida.",
+    "de": "Der schnelle braune Fuchs springt über den faulen Hund. Piper spricht klar und schnell.",
+    "es": "El rápido zorro marrón salta sobre el perro perezoso. Piper habla de forma clara y rápida.",
+    "fr": "Le rapide renard brun saute par-dessus le chien paresseux. Piper parle clairement et rapidement.",
+}
+
+
+def piper_download_files(voice_info: dict, voice_dir: Path) -> list[PiperDownloadFile]:
+    """Resolve the .onnx/.onnx.json catalog files that are still missing on disk."""
+    result: list[PiperDownloadFile] = []
+    for rel_path in voice_info.get("files", {}):
+        if not rel_path.endswith((".onnx", ".onnx.json")):
+            continue
+        local_path = voice_dir / Path(rel_path).name
+        if local_path.exists() and local_path.stat().st_size > 0:
+            continue
+        entry = voice_info["files"][rel_path]
+        size = int(entry.get("size_bytes", 0)) if isinstance(entry, dict) else 0
+        result.append(PiperDownloadFile(rel_path, local_path, size))
+    return result
+
+
+def piper_download_url(rel_path: str) -> str:
+    return f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{quote(rel_path)}?download=true"
+
+
+def stream_download(
+    url: str,
+    dest: Path,
+    on_progress: Callable[[int, int], None],
+    chunk_size: int = PIPER_DOWNLOAD_CHUNK_SIZE,
+) -> None:
+    """Stream `url` to `dest`, calling ``on_progress(done_bytes, total_bytes)`` per chunk.
+
+    A ``total_bytes`` of 0 signals that the total length is unknown. On failure the
+    partial destination file is removed so a later retry does not mistake it for a
+    complete download.
+    """
+    try:
+        with urlopen(url, timeout=60) as response:
+            total_bytes = 0
+            length_header = response.headers.get("Content-Length")
+            if length_header:
+                try:
+                    total_bytes = int(length_header)
+                except ValueError:
+                    total_bytes = 0
+            done_bytes = 0
+            with open(dest, "wb") as out_file:
+                while True:
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    out_file.write(chunk)
+                    done_bytes += len(chunk)
+                    on_progress(done_bytes, total_bytes)
+    except Exception:
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def piper_voice_files(voice_code: str, voice_dir: Path) -> list[Path]:
+    """The .onnx/.onnx.json files that currently exist for a Piper voice code."""
+    paths = [
+        voice_dir / f"{voice_code}.onnx",
+        voice_dir / f"{voice_code}.onnx.json",
+    ]
+    return [path for path in paths if path.is_file()]
+
+
+def is_bundled_piper_voice(voice_code: str) -> bool:
+    """True when the voice ships with the app rather than being wizard-downloaded."""
+    return any(metadata["code"] == voice_code for metadata in PIPER_VOICE_OPTIONS.values())
+
+
+def delete_piper_voice(voice_code: str, voice_dir: Path) -> list[Path]:
+    """Remove the installed files of a Piper voice; returns the removed paths."""
+    removed: list[Path] = []
+    for path in piper_voice_files(voice_code, voice_dir):
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        removed.append(path)
+    return removed
+
+
+def piper_sample_url(voice_code: str, voice_info: dict | None = None) -> str:
+    """Official piper-samples sample page URL for a voice.
+
+    Prefers catalog metadata (language code, name, quality); falls back to
+    splitting the voice code on '-'.
+    """
+    if voice_info:
+        language = voice_info.get("language", {}) or {}
+        lang = language.get("code") or voice_code.split("-", 1)[0]
+        parts = voice_code.split("-")
+        fallback_name = parts[1] if len(parts) > 1 else "voice"
+        fallback_quality = parts[2] if len(parts) > 2 else "medium"
+        name = str(voice_info.get("name", "")).strip() or fallback_name
+        quality = str(voice_info.get("quality", "")).strip() or fallback_quality
+    else:
+        parts = voice_code.split("-")
+        lang = parts[0]
+        name = parts[1] if len(parts) > 1 else "voice"
+        quality = parts[2] if len(parts) > 2 else "medium"
+    family = lang.split("_", 1)[0]
+    segments = [family, lang, name, quality, "speaker_0.mp3"]
+    return f"{PIPER_SAMPLE_URL_PREFIX}/{'/'.join(quote(segment) for segment in segments)}"
+
+
+def piper_preview_text(language: str) -> str:
+    """A short demo sentence for a Piper preview, falling back to English."""
+    return PIPER_PREVIEW_TEXTS.get(language, PIPER_PREVIEW_TEXTS["en"])
+
+
 def piper_model_path(voice_code: str) -> Path:
     return PIPER_VOICE_DIR / f"{voice_code}.onnx"
 
@@ -2196,6 +2329,11 @@ class PiperVoiceWizard:
         self.catalog: dict[str, dict] = {}
         self.filtered_codes: list[str] = []
         self.downloading = False
+        self.previewing = False
+        self.preview_stop_event = threading.Event()
+        self.progress_text = StringVar(value="")
+        self._progress_update_queued = False
+        self._last_progress_update = 0.0
 
         self._build_ui()
         self.search.trace_add("write", self.apply_filters)
@@ -2244,10 +2382,24 @@ class PiperVoiceWizard:
         actions = ttk.Frame(frame)
         actions.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         ttk.Button(actions, text="↻ Refresh Catalog", command=self.refresh_catalog).pack(side="left")
-        ttk.Button(actions, text="↓ Download Selected", style="Accent.TButton", command=self.download_selected).pack(side="right")
+        self.delete_button = ttk.Button(actions, text="🗑 Delete Installed", command=self.delete_selected)
+        self.delete_button.pack(side="left", padx=(8, 0))
+        self.play_sample_button = ttk.Button(actions, text="▶ Play Sample", command=self.play_sample)
+        self.play_sample_button.pack(side="left", padx=(8, 0))
+        ttk.Button(actions, text="🔗 Open Sample Page", command=self.open_sample_page).pack(side="left", padx=(8, 0))
+        self.download_button = ttk.Button(actions, text="↓ Download Selected", style="Accent.TButton", command=self.download_selected)
+        self.download_button.pack(side="right")
         ttk.Button(actions, text="★ Set As Default", command=self.set_selected_default).pack(side="right", padx=(0, 8))
 
         ttk.Label(frame, textvariable=self.status).grid(row=3, column=0, sticky="w", pady=(10, 0))
+
+        self.progress_row = ttk.Frame(frame)
+        self.progress_row.grid(row=4, column=0, sticky="ew", pady=(4, 0))
+        self.progress_row.columnconfigure(0, weight=1)
+        self.download_progress = ttk.Progressbar(self.progress_row, orient="horizontal", mode="determinate", maximum=100)
+        self.download_progress.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ttk.Label(self.progress_row, textvariable=self.progress_text, width=6).grid(row=0, column=1, sticky="e")
+        self.progress_row.grid_remove()
 
     def refresh_catalog(self) -> None:
         if self.downloading:
@@ -2319,40 +2471,197 @@ class PiperVoiceWizard:
             return
 
         self.downloading = True
+        self.download_button.configure(state="disabled")
         self.status.set(f"Downloading {voice_code}...")
         threading.Thread(target=self._download_voice_worker, args=(voice_code,), daemon=True).start()
 
     def _download_voice_worker(self, voice_code: str) -> None:
         try:
-            import shutil
-
             PIPER_VOICE_DIR.mkdir(parents=True, exist_ok=True)
             info = self.catalog.get(voice_code, {})
-            files = info.get("files", {})
+            files = piper_download_files(info, PIPER_VOICE_DIR)
 
-            for rel_path in files:
-                if not rel_path.endswith((".onnx", ".onnx.json")):
-                    continue
+            if not files:
+                def on_already_installed() -> None:
+                    self.app.reload_piper_voices(preferred_code=voice_code)
+                    self.apply_filters()
+                    self.status.set(f"{voice_code} is already installed.")
+                self.window.after(0, on_already_installed)
+                return
 
-                local_path = PIPER_VOICE_DIR / Path(rel_path).name
-                if local_path.exists() and local_path.stat().st_size > 0:
-                    continue
+            total_bytes = sum(file.size_bytes for file in files)
+            completed_bytes = 0
+            self.window.after(0, self._show_download_progress)
 
-                url = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{quote(rel_path)}?download=true"
-                with urlopen(url, timeout=60) as resp:
-                    with open(local_path, "wb") as f:
-                        shutil.copyfileobj(resp, f)
+            def on_progress(done: int, _total: int) -> None:
+                self._schedule_progress_update(completed_bytes + done, total_bytes)
+
+            for index, file in enumerate(files, start=1):
+                self._schedule_download_status(
+                    f"Downloading {voice_code} — {file.local_path.name} ({index}/{len(files)})"
+                )
+                stream_download(piper_download_url(file.rel_path), file.local_path, on_progress)
+                completed_bytes += file.size_bytes
+            self.window.after(0, lambda: self._apply_download_progress(total_bytes, total_bytes))
         except Exception as exc:
             error_message = f"Download failed: {exc}"
             self.window.after(0, lambda message=error_message: self.status.set(message))
         else:
             def on_done() -> None:
-                self.status.set(f"Downloaded {voice_code}.")
                 self.app.reload_piper_voices(preferred_code=voice_code)
                 self.apply_filters()
+                self.status.set(f"Downloaded {voice_code}.")
             self.window.after(0, on_done)
         finally:
-            self.downloading = False
+            def on_finish() -> None:
+                self.downloading = False
+                self.download_button.configure(state="normal")
+                self._hide_download_progress()
+            self.window.after(0, on_finish)
+
+    def _schedule_download_status(self, message: str) -> None:
+        self.window.after(0, lambda message=message: self.status.set(message))
+
+    def _show_download_progress(self) -> None:
+        self.download_progress["value"] = 0
+        self.progress_text.set("0%")
+        self.progress_row.grid()
+
+    def _hide_download_progress(self) -> None:
+        self.progress_row.grid_remove()
+        self.progress_text.set("")
+        self.download_progress["value"] = 0
+
+    def _schedule_progress_update(self, done: int, total: int) -> None:
+        if self._progress_update_queued:
+            return
+        now = time.monotonic()
+        if now - self._last_progress_update < PROGRESS_UPDATE_INTERVAL:
+            return
+        self._progress_update_queued = True
+        self._last_progress_update = now
+        self.window.after(0, lambda: self._apply_download_progress(done, total))
+
+    def _apply_download_progress(self, done: int, total: int) -> None:
+        self._progress_update_queued = False
+        if total <= 0:
+            self.progress_text.set("…")
+            return
+        percent = min(100.0, done * 100.0 / total)
+        self.download_progress["value"] = percent
+        self.progress_text.set(f"{percent:.0f}%")
+
+    def delete_selected(self) -> None:
+        if self.downloading:
+            show_info(self.window, "Busy", "Wait for the current download to finish first.")
+            return
+        voice_code = self.selected_voice_code()
+        if not voice_code:
+            return
+        if not piper_voice_files(voice_code, PIPER_VOICE_DIR):
+            show_info(self.window, "Not installed", f"'{voice_code}' is not installed, so there is nothing to delete.")
+            return
+        if is_bundled_piper_voice(voice_code):
+            show_info(
+                self.window,
+                "Bundled voice",
+                f"'{voice_code}' ships with the app and is restored by the setup script, "
+                "so it cannot be deleted here.",
+            )
+            return
+        removed = piper_voice_files(voice_code, PIPER_VOICE_DIR)
+        names = ", ".join(path.name for path in removed)
+        confirmed = ask_yes_no(
+            self.window,
+            "Delete voice",
+            f"Delete installed voice '{voice_code}'?\n\nFiles:\n{names}\n\n"
+            "You can re-download it from this wizard at any time.",
+        )
+        if not confirmed:
+            return
+        delete_piper_voice(voice_code, PIPER_VOICE_DIR)
+        label = self.app.find_piper_label_by_code(voice_code)
+        if label is not None and getattr(self.app, "settings", {}).get("default_piper_voice_label") == label:
+            self.app.set_default_piper_voice(DEFAULT_PIPER_VOICE_LABEL)
+        self.app.reload_piper_voices()
+        self.apply_filters()
+        self.status.set(f"Deleted {voice_code}.")
+
+    def play_sample(self) -> None:
+        if self.previewing:
+            self._stop_preview()
+            return
+        voice_code = self.selected_voice_code()
+        if not voice_code or self.downloading:
+            return
+        if not piper_voice_files(voice_code, PIPER_VOICE_DIR):
+            show_info(
+                self.window,
+                "Voice not installed",
+                f"'{voice_code}' is not installed yet. Download it first, or use "
+                "'Open Sample Page' to hear the official sample in your browser.",
+            )
+            return
+        self.previewing = True
+        self.preview_stop_event = threading.Event()
+        self.play_sample_button.configure(text="■ Stop Preview")
+        self.status.set(f"Preparing sample for {voice_code}...")
+        threading.Thread(
+            target=self._preview_worker,
+            args=(voice_code, self.preview_stop_event),
+            daemon=True,
+        ).start()
+
+    def _stop_preview(self) -> None:
+        self.preview_stop_event.set()
+        self.app.player.stop(quiet=True)
+
+    def _preview_worker(self, voice_code: str, stop_event: threading.Event) -> None:
+        preview_path: Path | None = None
+        try:
+            language = piper_language_of_code(voice_code)
+            preview_dir = PREVIEW_OUTPUT_PATH.resolve().parent
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            preview_path = preview_dir / f"voice-preview-{voice_code}-{time.time_ns()}.wav"
+            request = SynthesisRequest(
+                text=piper_preview_text(language),
+                language=language,
+                output_file=preview_path,
+                engine=ENGINE_PIPER,
+                piper_voice_label="",
+                piper_voice_code=voice_code,
+                speaker_name="",
+                speaker_wav="",
+            )
+            self.app.service.synthesize(request)
+            self._schedule_download_status(f"Playing sample for {voice_code}.")
+            self.app.player.play_blocking(preview_path, stop_event)
+        except Exception as exc:
+            error_message = str(exc)
+            self.window.after(0, lambda message=error_message: self.status.set(f"Preview failed: {message}"))
+        finally:
+            if preview_path is not None:
+                try:
+                    preview_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            self.window.after(0, self._preview_finished)
+
+    def _preview_finished(self) -> None:
+        self.previewing = False
+        self.play_sample_button.configure(text="▶ Play Sample")
+
+    def open_sample_page(self) -> None:
+        voice_code = self.selected_voice_code()
+        if not voice_code:
+            return
+        info = self.catalog.get(voice_code, {})
+        try:
+            webbrowser.open_new_tab(piper_sample_url(voice_code, info))
+        except Exception as exc:
+            show_error(self.window, "Unable to Open Sample", str(exc))
+        else:
+            self.status.set(f"Opened sample page for {voice_code}.")
 
     def set_selected_default(self) -> None:
         voice_code = self.selected_voice_code()

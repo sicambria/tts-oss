@@ -119,6 +119,8 @@ The **Help** menu includes an About dialog and a link to the project's
   app stays open and shows setup instructions instead of closing. For an editable
   companion checkout, install it with `pip install -e ../language-practice`.
 - `Voice Wizard` loads the official Piper voice catalog, lets you download additional voice models, and can set a default Piper voice for the app.
+  - Downloads show a live progress bar; completed voices can be deleted from the wizard (the three bundled voices are kept).
+  - `Play Sample` synthesizes a short preview with an installed voice; `Open Sample Page` opens the official sample in your browser for any catalog voice.
 - `XTTS v2` is the option that supports built-in speaker selection and reference voice cloning.
 - Leave `Reference WAV` empty to use the built-in speaker name.
 - If you provide a reference voice file, the app uses that instead of the built-in speaker.
@@ -155,4 +157,5 @@ The **Help** menu includes an About dialog and a link to the project's
 ## Voice Sources
 
 - Piper voice catalog and samples: https://rhasspy.github.io/piper-samples/
+- In the `Voice Wizard`, `Open Sample Page` jumps straight to the official sample for the selected voice, and `Play Sample` plays a short synthesized preview if the voice is installed.
 - The integrated Piper voices are `hu_HU-anna-medium`, `en_US-lessac-medium`, and `en_GB-alan-medium`.
