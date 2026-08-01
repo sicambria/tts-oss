@@ -135,6 +135,30 @@ ENGINE_SUMMARIES: dict[str, str] = {
         "voice or clone one from a reference clip."
     ),
 }
+
+# Rough CPU-only performance reference (benchmarked in scripts/benchmark_tts.py
+# on a ~500-word page, desktop CPU, no GPU). Rounded to order of magnitude on
+# purpose — these are guide figures, not guarantees; GPU numbers differ a lot.
+ENGINE_PERF_REFERENCE: dict[str, str] = {
+    ENGINE_PIPER: (
+        "Piper — fastest by far.\n"
+        "• ≈30× realtime (a ~3 min page in seconds)\n"
+        "• uses several CPU cores at once\n"
+        "• ≈0.5 GB RAM · loads in ~1 s"
+    ),
+    ENGINE_XTTS: (
+        "XTTS v2 — slowest on CPU.\n"
+        "• ≈3× slower than realtime (a ~3 min page takes ~10 min)\n"
+        "• mostly one CPU core\n"
+        "• ≈15 GB RAM · loads in ~20 s"
+    ),
+    ENGINE_POCKET: (
+        "Pocket TTS — the middle ground.\n"
+        "• ≈3× realtime (a ~3 min page in ~1 min)\n"
+        "• mostly one CPU core\n"
+        "• ≈1 GB RAM · loads in ~3 s"
+    ),
+}
 PIPER_VOICE_DIR = Path.cwd() / "voices" / "piper"
 APP_SETTINGS_PATH = Path.cwd() / "settings.json"
 PIPER_VOICES_JSON_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/voices.json?download=true"
@@ -4617,6 +4641,7 @@ class App:
         # Help menubutton
         help_menu = Menu(toolbar, tearoff=0)
         help_menu.add_command(label="About…\tF1", command=self.show_about)
+        help_menu.add_command(label="Engine Speed Reference…", command=self.show_engine_performance_reference)
         help_menu.add_command(label="GitHub Repository", command=self.open_repository)
         help_mb = ttk.Menubutton(toolbar, text="Help", menu=help_menu, direction="below")
         help_mb.grid(row=0, column=4, padx=4)
@@ -4665,6 +4690,14 @@ class App:
             width=18,
         )
         self.engine_box.grid(row=1, column=1, sticky="ew", pady=6)
+        self.engine_help_button = ttk.Button(
+            controls,
+            text="?",
+            width=2,
+            command=self.show_engine_performance_reference,
+        )
+        self.engine_help_button.grid(row=1, column=2, sticky="w", padx=(4, 0))
+        add_tooltip(self.engine_help_button, "Engine performance reference (CPU)")
 
         # Voice (adaptive)
         self.voice_label_var = StringVar(value="Voice")
@@ -4991,6 +5024,22 @@ class App:
             webbrowser.open_new_tab(REPOSITORY_URL)
         except Exception as exc:
             show_error(self.root, "Unable to Open GitHub", str(exc))
+
+    def show_engine_performance_reference(self) -> None:
+        """Show rough CPU-only speed/memory figures per engine."""
+        body = "\n\n".join(
+            f"{label}\n{ENGINE_PERF_REFERENCE[engine]}"
+            for engine, label in (
+                (ENGINE_PIPER, "Piper"),
+                (ENGINE_POCKET, "Pocket TTS"),
+                (ENGINE_XTTS, "XTTS v2"),
+            )
+        )
+        body += (
+            "\n\nRough reference only — measured on a CPU-only desktop for a "
+            "~3 min page. Your results vary; on a GPU XTTS and Pocket are far faster."
+        )
+        show_info(self.root, "Engine Speed Reference", body)
 
     def resolved_engine(self) -> str:
         return select_engine(
