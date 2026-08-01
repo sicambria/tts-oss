@@ -99,6 +99,7 @@ def _make_app():
         app.preview_job_id = 0
         app.last_selection_start_offset = None
         app.engine_hint = MagicMock()
+        app._text_dirty = False
         app.text = _MockText()
         app.text._content = "Hello world. This is a test."
         app.log = _MockText()

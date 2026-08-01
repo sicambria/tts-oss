@@ -77,6 +77,7 @@ def controller():
     value.playback_toggle_button = MagicMock()
     value.worker = None
     value.voice_wizard = value.doc_wizard = value.lang_learning_wizard = None
+    value._text_dirty = False
     return value
 
 

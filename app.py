@@ -55,6 +55,45 @@ ENGINE_POCKET = "Pocket TTS"
 POCKET_DEFAULT_VOICE = "alba"
 POCKET_VOICE_DIR = Path.cwd() / "voices" / "pocket"
 LANGUAGE_PRACTICE_MODULE_DIR = Path(__file__).resolve().parent / "modules" / "language-practice"
+# XTTS v2 built-in speaker names (from Coqui TTS)
+XTTS_BUILTIN_SPEAKERS = [
+    "Ana Florence",
+    "Andrew",
+    "Annmarie",
+    "Asya",
+    "Brenda",
+    "Camilla",
+    "Clara",
+    "Craig",
+    "Daisy",
+    "Eleanor",
+    "Elias",
+    "Elliot",
+    "Eric",
+    "Ethan",
+    "Frederick",
+    "Gigi",
+    "Graham",
+    "Helena",
+    "Iara",
+    "Jade",
+    "John",
+    "Lily",
+    "Mara",
+    "Mason",
+    "Mia",
+    "Morgan",
+    "Nadine",
+    "Patricia",
+    "Ryan",
+    "Sabrina",
+    "Sam",
+    "Sarah",
+    "Sienna",
+    "Thomas",
+    "Victor",
+    "Xenia",
+]
 POCKET_LANG_MAP: dict[str, str] = {
     "en": "english",
     "fr": "french",
@@ -714,6 +753,9 @@ def export_audio_segment(
     output_format = output_format_for_path(output_file)
     export_kwargs: dict[str, object] = {"format": output_format}
 
+    # Common sample rates that don't need resampling
+    common_rates = {8000, 16000, 22050, 24000, 44100, 48000}
+
     if quality_params is not None:
         export_kwargs["parameters"] = ["-ar", "44100"] + quality_params
     elif bitrate is not None:
@@ -723,9 +765,45 @@ def export_audio_segment(
         export_kwargs["bitrate"] = "64k" if output_format == "mp3" else "192k"
         export_kwargs["parameters"] = ["-ar", "44100"]
     else:
-        export_kwargs["parameters"] = ["-ar", "44100"]
+        # WAV: use native sample rate if common, else 44100
+        native_rate = audio.frame_rate
+        target_rate = native_rate if native_rate in common_rates else 44100
+        export_kwargs["parameters"] = ["-ar", str(target_rate)]
 
     audio.export(output_file, **export_kwargs)
+
+
+def export_wav_fallback(audio: AudioSegment, output_file: Path) -> None:
+    """Write WAV using pure Python wave module as a fallback when ffmpeg is unavailable."""
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    import wave
+    with wave.open(str(output_file), "wb") as wf:
+        wf.setnchannels(audio.channels)
+        wf.setsampwidth(audio.sample_width)
+        wf.setframerate(audio.frame_rate)
+        wf.writeframes(audio.raw_data)
+
+
+def export_audio_with_fallback(
+    audio: AudioSegment,
+    output_file: Path,
+    bitrate: str | None = None,
+    quality_params: list[str] | None = None,
+) -> None:
+    """Export audio with automatic WAV fallback if ffmpeg fails for MP3/OGG."""
+    output_format = output_format_for_path(output_file)
+    try:
+        export_audio_segment(audio, output_file, bitrate, quality_params)
+    except Exception as exc:
+        if output_format in {"mp3", "ogg"}:
+            # Try WAV fallback
+            wav_path = output_file.with_suffix(".wav")
+            export_wav_fallback(audio, wav_path)
+            raise RuntimeError(
+                f"MP3/OGG export failed (ffmpeg issue: {exc}). "
+                f"Fell back to WAV: {wav_path}"
+            ) from exc
+        raise
 
 
 def mp3_sample_rate_for_bitrate(bitrate: str) -> int:
@@ -1295,6 +1373,22 @@ class SynthesisRequest:
     speaker_name: str
     speaker_wav: str
     speed: float = 1.0
+
+
+class MissingDependencyError(RuntimeError):
+    """Raised when a required Python package is not installed."""
+    def __init__(self, package: str, install_cmd: str, extra: str = ""):
+        self.package = package
+        self.install_cmd = install_cmd
+        self.extra = extra
+        super().__init__(f"Missing dependency: {package}. Install with: {install_cmd}")
+
+
+class MissingPiperVoiceError(RuntimeError):
+    """Raised when a Piper voice model is not installed."""
+    def __init__(self, voice_code: str):
+        self.voice_code = voice_code
+        super().__init__(f"Missing Piper voice: {voice_code}")
 
 
 class SessionState(str, Enum):
@@ -1905,8 +1999,10 @@ class XTTSService:
             import torch
             from TTS.api import TTS
         except Exception as exc:  # pragma: no cover - import path varies by machine
-            raise RuntimeError(
-                "Coqui TTS is not installed in this environment. Run the setup script first (`.\\setup.ps1` on Windows or `./setup.sh` on Linux/macOS)."
+            raise MissingDependencyError(
+                "TTS",
+                "pip install TTS",
+                " Coqui TTS is required for XTTS v2.",
             ) from exc
 
         self._patch_torch_load(torch)
@@ -1989,16 +2085,16 @@ class PiperService:
 
         model_path = piper_model_path(voice_code)
         if not model_path.exists():
-            raise RuntimeError(
-                f"Piper voice '{voice_code}' is missing. Run the setup script to download it (`.\\setup.ps1` on Windows or `./setup.sh` on Linux/macOS)."
-            )
+            raise MissingPiperVoiceError(voice_code)
 
         self._log(f"Loading Piper voice '{voice_code}'.")
         try:
             from piper.voice import PiperVoice
         except Exception as exc:
-            raise RuntimeError(
-                "Piper is not installed in this environment. Run the setup script first (`.\\setup.ps1` on Windows or `./setup.sh` on Linux/macOS)."
+            raise MissingDependencyError(
+                "piper-tts",
+                "pip install piper-tts",
+                " Piper is required for Piper TTS.",
             ) from exc
 
         voice = PiperVoice.load(model_path, download_dir=PIPER_VOICE_DIR)
@@ -2107,9 +2203,10 @@ class PocketTTSService:
         try:
             from pocket_tts import TTSModel
         except Exception as exc:
-            raise RuntimeError(
-                "pocket-tts is not installed in this environment. "
-                "Run the setup script first (`.\\setup.ps1` on Windows or `./setup.sh` on Linux/macOS)."
+            raise MissingDependencyError(
+                "pocket-tts",
+                "pip install pocket-tts",
+                " Pocket TTS is required for Pocket TTS engine.",
             ) from exc
         try:
             self._model = TTSModel.load_model(language=lang)
@@ -2235,8 +2332,10 @@ class AudioPlayer:
         try:
             import pygame
         except Exception as exc:
-            raise RuntimeError(
-                "pygame is not installed. Run the setup script first (`.\\setup.ps1` on Windows or `./setup.sh` on Linux/macOS)."
+            raise MissingDependencyError(
+                "pygame",
+                "pip install pygame",
+                " pygame is required for audio playback.",
             ) from exc
 
         if not pygame.mixer.get_init():
@@ -3134,16 +3233,19 @@ class DocumentToAudioWizard:
 
     def _on_format_changed(self, *_args) -> None:
         fmt = self.output_format.get()
+        current_quality = self.quality_preset.get()
         if fmt == "OGG":
             presets = list(self.OGG_PRESETS.keys())
-            self.quality_preset.set(presets[0])
+            if current_quality not in presets:
+                self.quality_preset.set(presets[0])
             self.quality_box.configure(values=presets, state="readonly")
         elif fmt == "WAV":
             self.quality_box.configure(values=["Lossless (no quality setting)"], state="disabled")
             self.quality_preset.set("Lossless (no quality setting)")
         else:
             presets = list(self.MP3_PRESETS.keys())
-            self.quality_preset.set(presets[0])
+            if current_quality not in presets:
+                self.quality_preset.set(presets[0])
             self.quality_box.configure(values=presets, state="readonly")
 
     def _on_split_chapters_toggled(self) -> None:
@@ -3177,11 +3279,21 @@ class DocumentToAudioWizard:
                 ("All files", "*.*"),
             ],
         )
+        rejected: list[str] = []
         for path_str in paths:
             path = Path(path_str)
+            if path.suffix.lower() not in DocumentExtractor.SUPPORTED:
+                rejected.append(path.name)
+                continue
             if path not in self.documents:
                 self.documents.append(path)
                 self.doc_status[path] = "Ready"
+        if rejected:
+            show_info(
+                self.window,
+                "Unsupported format skipped",
+                f"Skipped (unsupported format): {', '.join(rejected)}.\nSupported: {', '.join(DocumentExtractor.SUPPORTED)}",
+            )
         self._refresh_tree()
 
     def _remove_selected(self) -> None:
@@ -3206,6 +3318,28 @@ class DocumentToAudioWizard:
         )
         if folder:
             self.output_folder.set(folder)
+
+    def _validate_output_folder(self, folder: Path) -> bool:
+        if folder.exists():
+            if folder.is_dir():
+                return True
+            show_error(self.window, "Invalid output folder", f"'{folder}' exists and is not a directory.")
+            return False
+        # Folder doesn't exist - check if parent is writable
+        parent = folder.parent
+        if parent.exists() and parent.is_dir() and os.access(parent, os.W_OK):
+            return True
+        # Try to create parent directories
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+            return True
+        except OSError:
+            pass
+        # Offer to browse for a different folder
+        if ask_yes_no(self.window, "Output folder not writable", f"Cannot write to '{folder}'. Choose a different folder?"):
+            self._pick_output_folder()
+            return self._validate_output_folder(Path(self.output_folder.get()))
+        return False
 
     def _pick_wizard_reference_wav(self) -> None:
         path = filedialog.askopenfilename(
@@ -3277,6 +3411,8 @@ class DocumentToAudioWizard:
                 "skip_page_range_conversion_warning"
             ] = self.skip_page_range_conversion_warning.get()
             save_app_settings(self.app.settings)
+        if not self._validate_output_folder(output_folder):
+            return
         output_folder.mkdir(parents=True, exist_ok=True)
 
         self.doc_status = {p: "Queued" for p in self.documents}
@@ -3533,6 +3669,12 @@ class DocumentToAudioWizard:
 
         merged_text = "\n\n".join(parts)
         total_expected = sum(self.chunk_counts.get(e, 1) for e in entries)
+
+        if total_expected > MAX_MERGE_CHUNKS:
+            self.app.enqueue_log(f"Merge exceeds {MAX_MERGE_CHUNKS} chunks ({total_expected}). Falling back to per-file output.")
+            self.window.after(0, lambda: show_info(self.window, "Merge too large", f"Merge exceeds {MAX_MERGE_CHUNKS} chunks ({total_expected}). Falling back to per-file output."))
+            self._do_synthesis_per_file(run)
+            return
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         legacy_output_folder = run if isinstance(run, Path) else None
@@ -4162,132 +4304,6 @@ class LanguageLearningWizard:
         self._set_session_state(SessionState.FAILED, "Generation failed")
         show_error(self.window, "Generation Error", str(exc))
 
-    def _wait_for_session(self) -> bool:
-        """Pause at a safe boundary and return False once the session is stopped."""
-        while not self.pause_event.wait(timeout=0.1):
-            if self.stop_event.is_set():
-                return False
-        return not self.stop_event.is_set()
-
-    def _wait_pair_pause(self, milliseconds: int) -> bool:
-        deadline = time.monotonic() + milliseconds / 1000
-        while time.monotonic() < deadline:
-            if not self._wait_for_session():
-                return False
-            time.sleep(min(0.05, max(0, deadline - time.monotonic())))
-        return not self.stop_event.is_set()
-
-    def _synthesize_pairs(
-        self,
-        pairs: list[tuple[str, str]],
-        config: LanguageSessionConfig,
-    ) -> AudioSegment:
-        """Synthesize all pairs with pair_pause_ms between pairs."""
-        combined = AudioSegment.silent(duration=0)
-
-        for i, (target, translation) in enumerate(pairs):
-            if not self._wait_for_session():
-                break
-            # Synthesize target
-            req_target = self._build_request(target, config.language, config)
-            for _chunk, segment in self.app.service.iter_segments(req_target):
-                if not self._wait_for_session():
-                    return combined
-                combined += segment
-
-            if config.repeat_target_sentence:
-                for _chunk, segment in self.app.service.iter_segments(req_target):
-                    if not self._wait_for_session():
-                        return combined
-                    combined += segment
-
-            # Synthesize translation if enabled
-            if config.show_translations and translation:
-                req_trans = self._build_request(translation, "en", config)
-                for _chunk, segment in self.app.service.iter_segments(req_trans):
-                    if not self._wait_for_session():
-                        return combined
-                    combined += segment
-
-            # Add pair pause (except after last)
-            if i < len(pairs) - 1:
-                if not self._wait_pair_pause(config.pair_pause_ms):
-                    return combined
-                combined += AudioSegment.silent(duration=config.pair_pause_ms)
-
-        return combined
-
-    def _build_request(
-        self,
-        text: str,
-        language: str | None = None,
-        config: LanguageSessionConfig | None = None,
-    ) -> SynthesisRequest:
-        """Build synthesis request using current TTS settings."""
-        lang_code = normalize_learning_language(language or self.lang_var.get()) if language != "en" else "en"
-        engine = config.engine if config else self.engine_var.get()
-        speed = config.speed if config else round(self.speed_var.get(), 1)
-
-        # Resolve voice
-        if engine == ENGINE_PIPER:
-            labels = piper_voices_for_language(self.app.piper_voice_options, lang_code)
-            if not labels:
-                raise RuntimeError(
-                    f"Piper has no installed {language_display_name(lang_code)} voice. "
-                    "Choose Auto/another engine or download a matching voice."
-                )
-            selected = self.piper_voice_label_var.get().strip()
-            piper_label = selected if selected in labels else labels[0]
-            voice_metadata = self.app.piper_voice_options[piper_label]
-            piper_code = voice_metadata["code"]
-            speaker_name = DEFAULT_SPEAKER
-        elif engine == ENGINE_POCKET:
-            piper_label = DEFAULT_PIPER_VOICE_LABEL
-            voice_metadata = get_piper_voice_metadata(piper_label)
-            piper_code = voice_metadata["code"]
-            speaker_name = (
-                self.pocket_voice_var.get().strip()
-                if lang_code == normalize_learning_language(self.lang_var.get())
-                else pocket_default_voice(lang_code)
-            )
-        else:
-            labels = piper_voices_for_language(self.app.piper_voice_options, lang_code)
-            piper_label = labels[0] if labels else DEFAULT_PIPER_VOICE_LABEL
-            voice_metadata = get_piper_voice_metadata(piper_label)
-            piper_code = voice_metadata["code"]
-            speaker_name = self.speaker_name_var.get().strip() or DEFAULT_SPEAKER
-
-        speaker_wav = self.speaker_wav_var.get().strip()
-
-        return SynthesisRequest(
-            text=text,
-            language=lang_code,
-            output_file=Path("temp.mp3"),
-            engine=engine,
-            piper_voice_label=piper_label,
-            piper_voice_code=piper_code,
-            speaker_name=speaker_name,
-            speaker_wav=speaker_wav,
-            speed=speed,
-        )
-
-    def _pairs_from_output(self) -> list[tuple[str, str]]:
-        """Use edited output as the source of truth before speaking/exporting."""
-        raw = self.output_text.get("1.0", "end-1c").strip()
-        if not raw:
-            return self.generated_pairs
-        pairs: list[tuple[str, str]] = []
-        for block in re.split(r"\n\s*\n", raw):
-            lines = [line.strip() for line in block.splitlines() if line.strip()]
-            if not lines:
-                continue
-            target = re.sub(r"^\d+\.\s*", "", lines[0]).strip()
-            translation = lines[1] if len(lines) > 1 else ""
-            if target:
-                pairs.append((target, translation))
-        self.generated_pairs = pairs or self.generated_pairs
-        return self.generated_pairs
-
     def _set_session_state(self, state: SessionState, message: str | None = None) -> None:
         self.session_state = state
         if message:
@@ -4295,106 +4311,6 @@ class LanguageLearningWizard:
         active = state == SessionState.GENERATING
         self.generate_button.configure(state="disabled" if active else "normal")
         self.speak_button.configure(state="disabled" if active else "normal")
-
-    def _toggle_pause(self) -> None:
-        if self.session_state == SessionState.PAUSED:
-            self.pause_event.set()
-            self.app.player.resume()
-            self._set_session_state(SessionState.PLAYING, "Resumed.")
-            return
-        if self.session_state not in {SessionState.SYNTHESIZING, SessionState.PLAYING}:
-            return
-        self.pause_event.clear()
-        self.app.player.pause()
-        self._set_session_state(SessionState.PAUSED, "Paused.")
-
-    def _stop_session(self) -> None:
-        if self.session_state == SessionState.IDLE:
-            return
-        self._set_session_state(SessionState.STOPPING, "Stopping...")
-        self.stop_event.set()
-        self.pause_event.set()
-        self.app.player.stop(quiet=True)
-        self._job_id += 1
-
-    def _cleanup_temp_file(self, path: Path) -> None:
-        """Remove temp file and remove from tracking list."""
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        if path in self._temp_files:
-            self._temp_files.remove(path)
-
-    def _on_speak_error(self, exc: Exception) -> None:
-        self._set_session_state(SessionState.FAILED, "Playback failed")
-        show_error(self.window, "Playback Error", str(exc))
-
-    def _export(self) -> None:
-        """Export generated pairs to file."""
-        if not self._pairs_from_output():
-            show_info(self.window, "Nothing to export", "Generate sentences first.")
-            return
-
-        format_var = StringVar(value="Text")
-        dialog = Toplevel(self.window)
-        dialog.transient(self.window)
-        dialog.title("Export Format")
-        dialog.geometry("300x150")
-        dialog.grab_set()
-
-        ttk.Label(dialog, text="Choose export format:").pack(pady=12)
-        fmt_box = ttk.Combobox(dialog, textvariable=format_var, values=["Text", "Anki CSV", "JSON"], state="readonly")
-        fmt_box.pack(pady=6)
-
-        def do_export():
-            fmt = format_var.get()
-            dialog.destroy()
-            self._do_export(fmt)
-
-        ttk.Button(dialog, text="Export", command=do_export).pack(pady=12)
-
-    def _do_export(self, fmt: str) -> None:
-        path = filedialog.asksaveasfilename(
-            parent=self.window,
-            title="Save export",
-            defaultextension=".txt" if fmt == "Text" else ".csv" if fmt == "Anki CSV" else ".json",
-            filetypes=[
-                ("Text files", "*.txt") if fmt == "Text" else ("CSV files", "*.csv") if fmt == "Anki CSV" else ("JSON files", "*.json"),
-                ("All files", "*.*"),
-            ],
-        )
-        if not path:
-            return
-
-        try:
-            if fmt == "Text":
-                show_trans = self.show_trans_var.get()
-                lines = []
-                for target, trans in self.generated_pairs:
-                    lines.append(target)
-                    if show_trans:
-                        lines.append(trans)
-                    lines.append("")
-                Path(path).write_text("\n".join(lines), encoding="utf-8")
-            elif fmt == "Anki CSV":
-                rows = ["Front,Back,Tags"]
-                for target, trans in self.generated_pairs:
-                    rows.append(f'"{target}","{trans}","language-learning"')
-                Path(path).write_text("\n".join(rows), encoding="utf-8")
-            else:  # JSON
-                import json
-                data = [{"front": t, "back": tr, "tags": ["language-learning"]} for t, tr in self.generated_pairs]
-                Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-            self.status_var.set(f"Exported to {Path(path).name}")
-        except Exception as exc:
-            show_error(self.window, "Export Error", str(exc))
-
-    def _clear(self) -> None:
-        self.output_text.delete("1.0", "end")
-        self.generated_pairs.clear()
-        self.status_var.set("Cleared")
 
     def _on_close(self) -> None:
         # Save settings
@@ -4405,7 +4321,6 @@ class LanguageLearningWizard:
             self.stop_event.set()
             self.worker.join(timeout=1)
         self.window.destroy()
-
 
     def _rebuild_styles(self) -> None:
         """Refresh wizard styles after theme change."""
@@ -4508,30 +4423,6 @@ class SettingsDialog:
         self.audio_ogg_var = StringVar(value=self.settings.get("audio", {}).get("ogg_quality", "High (q5)"))
         ttk.Combobox(frame, textvariable=self.audio_ogg_var, values=list(OGG_QUALITY_PRESETS.keys()), state="readonly", width=30).grid(row=row, column=1, sticky="w", pady=6)
 
-        row += 1
-        ttk.Label(frame, text="Sample Rate").grid(row=row, column=0, sticky="w", pady=6)
-        self.audio_sr_var = IntVar(value=self.settings.get("audio", {}).get("sample_rate", 44100))
-        ttk.Combobox(frame, textvariable=self.audio_sr_var, values=[22050, 44100, 48000], state="readonly", width=20).grid(row=row, column=1, sticky="w", pady=6)
-
-        row += 1
-        ttk.Label(frame, text="Audio Output Device").grid(row=row, column=0, sticky="w", pady=6)
-        self.audio_device_var = StringVar(value=self.settings.get("audio", {}).get("output_device", ""))
-        device_frame = ttk.Frame(frame)
-        device_frame.grid(row=row, column=1, sticky="ew", pady=6)
-        ttk.Combobox(device_frame, textvariable=self.audio_device_var, state="readonly", width=30).grid(row=0, column=0, sticky="ew")
-        ttk.Button(device_frame, text="Refresh", command=self._refresh_audio_devices).grid(row=0, column=1, padx=(6, 0))
-        self._refresh_audio_devices()
-
-    def _refresh_audio_devices(self) -> None:
-        try:
-            import pygame
-            if not pygame.mixer.get_init():
-                pygame.mixer.init()
-            # Note: pygame doesn't easily expose device list in older versions
-            # This is a placeholder for future enhancement
-        except Exception:
-            pass
-
     def _build_appearance_tab(self) -> None:
         frame = ttk.Frame(self.notebook, padding=12)
         self.notebook.add(frame, text="Appearance")
@@ -4582,11 +4473,6 @@ class SettingsDialog:
         ttk.Button(dir_frame2, text="Browse…", command=lambda: self._pick_dir(self.advanced_pocket_dir_var)).grid(row=0, column=1, padx=(6, 0))
 
         row += 1
-        ttk.Label(frame, text="Log Verbosity").grid(row=row, column=0, sticky="w", pady=6)
-        self.advanced_log_var = StringVar(value=self.settings.get("advanced", {}).get("log_level", "INFO"))
-        ttk.Combobox(frame, textvariable=self.advanced_log_var, values=["DEBUG", "INFO", "WARNING", "ERROR"], state="readonly", width=20).grid(row=row, column=1, sticky="w", pady=6)
-
-        row += 1
         ttk.Button(frame, text="Reset All Settings to Defaults", command=self._on_reset).grid(row=row, column=0, columnspan=2, pady=(12, 0))
 
     def _pick_dir(self, var: StringVar) -> None:
@@ -4608,8 +4494,6 @@ class SettingsDialog:
                 "default_format": self.audio_format_var.get(),
                 "mp3_quality": self.audio_mp3_var.get(),
                 "ogg_quality": self.audio_ogg_var.get(),
-                "sample_rate": self.audio_sr_var.get(),
-                "output_device": self.audio_device_var.get(),
             },
             "ui": {
                 "theme": self.appearance_theme_var.get(),
@@ -4622,9 +4506,6 @@ class SettingsDialog:
                 "pocket_voice_dir": self.advanced_pocket_dir_var.get(),
                 "output_folder": self.general_output_var.get(),
             },
-            "advanced": {
-                "log_level": self.advanced_log_var.get(),
-            },
         }
 
     def _apply_settings(self, settings: dict) -> None:
@@ -4635,6 +4516,14 @@ class SettingsDialog:
         resolved = resolve_theme(theme_name)
         apply_theme(resolved, self.app.root)
         self.app._rebuild_styles()
+        # Refresh voice directories if changed
+        piper_dir = settings.get("paths", {}).get("piper_voice_dir")
+        pocket_dir = settings.get("paths", {}).get("pocket_voice_dir")
+        if piper_dir is not None:
+            self.app.piper_voice_options = discover_local_piper_voices()
+            self.app.reload_piper_voices()
+        if pocket_dir is not None and hasattr(self.app, "pocket_voice"):
+            self.app.pocket_voice.set(pocket_default_voice("hu"))
         # Refresh wizard dialogs if open
         for wizard_attr in ("voice_wizard", "doc_wizard", "lang_learning_wizard"):
             wizard = getattr(self.app, wizard_attr, None)
@@ -4682,6 +4571,10 @@ class App:
         self.last_selection_start_offset: int | None = None
         self.player = AudioPlayer(self.enqueue_log)
         self.settings = load_app_settings()
+        # Apply voice directory settings to module-level constants
+        global PIPER_VOICE_DIR, POCKET_VOICE_DIR
+        PIPER_VOICE_DIR = Path(self.settings.get("paths", {}).get("piper_voice_dir", "voices/piper"))
+        POCKET_VOICE_DIR = Path(self.settings.get("paths", {}).get("pocket_voice_dir", "voices/pocket"))
         self.voice_wizard: PiperVoiceWizard | None = None
         self.doc_wizard: DocumentToAudioWizard | None = None
         self.lang_learning_wizard: LanguageLearningWizard | None = None
@@ -4715,6 +4608,7 @@ class App:
         self.generation_close_button = None
         self.generation_open_file_button = None
         self.generation_open_folder_button = None
+        self._text_dirty = False
 
         # Sidebar state
         self.sidebar_collapsed = BooleanVar(value=self.settings.get("ui", {}).get("sidebar_collapsed", False))
@@ -4736,6 +4630,71 @@ class App:
     def _on_language_display_changed(self, *_args) -> None:
         self.language.set(language_code_from_display(self.language_display.get()))
         self.on_voice_settings_changed()
+        self._rebuild_engine_submenu()
+
+    def _rebuild_engine_submenu(self) -> None:
+        """Rebuild the Engine submenu to show only engines supporting the current language."""
+        if not hasattr(self, "engine_submenu"):
+            return
+        self.engine_submenu.delete(0, "end")
+        lang = self.language.get()
+        supported = engines_supporting_language(lang, self.piper_voice_options)
+        for eng in [ENGINE_AUTO] + supported:
+            self.engine_submenu.add_radiobutton(label=eng, variable=self.engine, value=eng, command=self.on_voice_settings_changed)
+        # If current engine not supported, it will be corrected by on_voice_settings_changed
+
+    def _show_missing_dependency(self, package: str, install_cmd: str, extra: str = "") -> None:
+        """Show a dialog for a missing dependency with action buttons."""
+        message = f"Required package '{package}' is not installed.{extra}"
+        dialog = Toplevel(self.root)
+        dialog.transient(self.root)
+        dialog.title("Missing Dependency")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        main = ttk.Frame(dialog, padding=16)
+        main.pack(fill="both", expand=True)
+
+        ttk.Label(main, text=message, wraplength=400, justify="left").pack(anchor="w", pady=(0, 8))
+        ttk.Label(main, text="Install with:", style="Hint.TLabel").pack(anchor="w")
+        cmd_var = StringVar(value=install_cmd)
+        cmd_entry = ttk.Entry(main, textvariable=cmd_var, width=50, state="readonly")
+        cmd_entry.pack(fill="x", pady=(4, 12))
+
+        btns = ttk.Frame(main)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="Copy Command", command=lambda: self._copy_to_clipboard(install_cmd)).pack(side="left")
+        ttk.Button(btns, text="Open README", command=lambda: webbrowser.open_new_tab(REPOSITORY_URL)).pack(side="left", padx=(8, 0))
+        ttk.Button(btns, text="Retry", style="Accent.TButton", command=lambda: (dialog.destroy(), self._retry_after_missing_dep(package))).pack(side="right")
+        ttk.Button(btns, text="Dismiss", command=dialog.destroy).pack(side="right", padx=(0, 8))
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.enqueue_log("Install command copied to clipboard.")
+
+    def _retry_after_missing_dep(self, package: str) -> None:
+        """Override in subclass or call appropriate retry logic."""
+        pass
+
+    def _show_missing_piper_voice(self, voice_code: str) -> None:
+        """Show dialog for missing Piper voice with 'Open Voice Wizard' button."""
+        dialog = Toplevel(self.root)
+        dialog.transient(self.root)
+        dialog.title("Missing Piper Voice")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        main = ttk.Frame(dialog, padding=16)
+        main.pack(fill="both", expand=True)
+
+        ttk.Label(main, text=f"Piper voice '{voice_code}' is not installed.", wraplength=400).pack(anchor="w", pady=(0, 8))
+        ttk.Label(main, text="You can download it from the Voice Wizard.", style="Hint.TLabel").pack(anchor="w", pady=(0, 12))
+
+        btns = ttk.Frame(main)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="Open Voice Wizard", style="Accent.TButton", command=lambda: (dialog.destroy(), self.open_voice_wizard())).pack(side="right")
+        ttk.Button(btns, text="Dismiss", command=dialog.destroy).pack(side="right", padx=(0, 8))
 
     def _configure_styles(self) -> None:  # pragma: no cover
         style = ttk.Style()
@@ -4760,7 +4719,37 @@ class App:
                 fg=THEMES[CURRENT_THEME]["log_fg"],
                 insertbackground=ACCENT,
             )
+        self._create_toolbar_icons()
         self.root.update_idletasks()
+
+    def _create_toolbar_icons(self) -> None:
+        """Recreate toolbar icons with current ACCENT color."""
+        compact = bool(self.settings.get("ui", {}).get("toolbar_compact", False))
+        self.toolbar_icons = {
+            "load": make_playback_icon(self.root, "load"),
+            "generate": make_playback_icon(self.root, "generate"),
+            "read": make_playback_icon(self.root, "resume"),
+        }
+        self.playback_icons = {
+            "pause": make_playback_icon(self.root, "pause"),
+            "resume": make_playback_icon(self.root, "resume"),
+            "stop": make_playback_icon(self.root, "stop"),
+        }
+        # Update button images if they exist
+        if hasattr(self, "load_button") and compact:
+            self.load_button.configure(image=self.toolbar_icons["load"])
+        if hasattr(self, "generate_button") and compact:
+            self.generate_button.configure(image=self.toolbar_icons["generate"])
+        if hasattr(self, "read_button") and compact:
+            self.read_button.configure(image=self.toolbar_icons["read"])
+        if hasattr(self, "pause_playback_button"):
+            self.pause_playback_button.configure(image=self.playback_icons["pause"])
+        if hasattr(self, "resume_playback_button"):
+            self.resume_playback_button.configure(image=self.playback_icons["resume"])
+        if hasattr(self, "stop_playback_button"):
+            self.stop_playback_button.configure(image=self.playback_icons["stop"])
+        if hasattr(self, "sidebar_toggle_btn"):
+            self.sidebar_toggle_btn.configure(image=make_playback_icon(self.root, "options"))
 
     def _bind_shortcuts(self) -> None:
         """Bind keyboard shortcuts."""
@@ -4830,6 +4819,12 @@ class App:
         self.log.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self.log.configure(state="disabled")
 
+        # Log actions row
+        log_actions = ttk.Frame(log_frame)
+        log_actions.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(log_actions, text="Export Log…", command=self.export_log).pack(side="left")
+        ttk.Button(log_actions, text="Clear", command=self._clear_log).pack(side="left", padx=(8, 0))
+
         # Apply initial sidebar state
         if self.sidebar_collapsed.get():
             self._collapse_sidebar()
@@ -4868,32 +4863,32 @@ class App:
             "generate": make_playback_icon(self.root, "generate"),
             "read": make_playback_icon(self.root, "resume"),
         }
-        load_button = ttk.Button(
+        self.load_button = ttk.Button(
             home_frame,
             text="" if compact else "Load text",
             image=self.toolbar_icons["load"] if compact else "",
             command=self.load_text_file,
         )
-        load_button.pack(side="left", padx=2)
-        generate_button = ttk.Button(
+        self.load_button.pack(side="left", padx=2)
+        self.generate_button = ttk.Button(
             home_frame,
             text="" if compact else "Generate audio",
             image=self.toolbar_icons["generate"] if compact else "",
             style="Accent.TButton",
             command=self.start_generation,
         )
-        generate_button.pack(side="left", padx=2)
-        read_button = ttk.Button(
+        self.generate_button.pack(side="left", padx=2)
+        self.read_button = ttk.Button(
             home_frame,
             text="" if compact else "Read aloud",
             image=self.toolbar_icons["read"] if compact else "",
             command=self.start_read_aloud,
         )
-        read_button.pack(side="left", padx=2)
+        self.read_button.pack(side="left", padx=2)
         if compact:
-            add_tooltip(load_button, "Load text")
-            add_tooltip(generate_button, "Generate audio")
-            add_tooltip(read_button, "Read aloud")
+            add_tooltip(self.load_button, "Load text")
+            add_tooltip(self.generate_button, "Generate audio")
+            add_tooltip(self.read_button, "Read aloud")
         self.playback_icons = {
             "pause": make_playback_icon(self.root, "pause"),
             "resume": make_playback_icon(self.root, "resume"),
@@ -4928,14 +4923,13 @@ class App:
         add_tooltip(self.stop_playback_button, "Stop read aloud")
 
         # Voice menubutton
-        voice_menu = Menu(toolbar, tearoff=0)
-        engine_submenu = Menu(voice_menu, tearoff=0)
-        for eng in [ENGINE_AUTO, ENGINE_PIPER, ENGINE_XTTS, ENGINE_POCKET]:
-            engine_submenu.add_radiobutton(label=eng, variable=self.engine, value=eng, command=self.on_voice_settings_changed)
-        voice_menu.add_cascade(label="Engine", menu=engine_submenu)
-        voice_menu.add_separator()
-        voice_menu.add_command(label="Voice Wizard…", command=self.open_voice_wizard)
-        voice_mb = ttk.Menubutton(toolbar, text="Voice", menu=voice_menu, direction="below")
+        self.voice_menu = Menu(toolbar, tearoff=0)
+        self.engine_submenu = Menu(self.voice_menu, tearoff=0)
+        self._rebuild_engine_submenu()
+        self.voice_menu.add_cascade(label="Engine", menu=self.engine_submenu)
+        self.voice_menu.add_separator()
+        self.voice_menu.add_command(label="Voice Wizard…", command=self.open_voice_wizard)
+        voice_mb = ttk.Menubutton(toolbar, text="Voice", menu=self.voice_menu, direction="below")
         voice_mb.grid(row=0, column=2, padx=(8, 4))
 
         # Tools menubutton
@@ -5027,7 +5021,12 @@ class App:
             values=POCKET_PREDEFINED_VOICES,
             state="readonly",
         )
-        self.speaker_name_entry = ttk.Entry(voice_area, textvariable=self.speaker_name)
+        self.speaker_name_entry = ttk.Combobox(
+            voice_area,
+            textvariable=self.speaker_name,
+            values=XTTS_BUILTIN_SPEAKERS,
+            state="normal",
+        )
         for widget in (self.piper_voice_box, self.pocket_voice_box, self.speaker_name_entry):
             widget.grid(row=0, column=0, sticky="ew")
             widget.grid_remove()
@@ -5118,6 +5117,7 @@ class App:
         self.text.bind("<ButtonRelease-1>", self.on_text_click)
         self.text.bind("<ButtonRelease-1>", self.update_selection_cache, add="+")
         self.text.bind("<KeyRelease>", self.update_selection_cache, add="+")
+        self.text.bind("<<Modified>>", self._on_text_change, add="+")
         self._show_text_placeholder()
 
     def _show_text_placeholder(self) -> None:
@@ -5134,6 +5134,22 @@ class App:
         self.text.delete("1.0", "end")
         self.text.configure(fg=THEMES[CURRENT_THEME]["label_fg"])
         self._text_placeholder_visible = False
+
+    def _on_text_change(self, _event=None) -> None:
+        if self.text.edit_modified():
+            self._text_dirty = True
+            self.text.edit_modified(False)
+
+    def _check_dirty_and_confirm(self) -> bool:
+        if not self._text_dirty:
+            return True
+        if not ask_yes_no(self.root, "Unsaved changes", "Discard unsaved text?"):
+            return False
+        self._text_dirty = False
+        return True
+
+    def _mark_text_clean(self) -> None:
+        self._text_dirty = False
 
     def _on_text_focus_in(self, _event=None):
         self._hide_text_placeholder()
@@ -5161,6 +5177,15 @@ class App:
 
     def _confirm_exit(self) -> None:
         """Confirm exit if setting is enabled."""
+        # Check for running generation/preview workers
+        if self.worker and self.worker.is_alive():
+            if not ask_yes_no(self.root, "Generation running", "Audio generation is in progress. Stop and exit?"):
+                return
+            self.stop_playback()
+        if self.preview_worker and self.preview_worker.is_alive():
+            if not ask_yes_no(self.root, "Preview running", "Read-aloud preview is in progress. Stop and exit?"):
+                return
+            self.stop_playback()
         if self.settings.get("general", {}).get("confirm_on_exit", True):
             if not ask_yes_no(self.root, "Exit", "Are you sure you want to exit?"):
                 return
@@ -5168,11 +5193,14 @@ class App:
 
     def new_document(self) -> None:
         """Clear the text area for a new document."""
+        if not self._check_dirty_and_confirm():
+            return
         self._hide_text_placeholder()
         self.text.delete("1.0", "end")
         self.clear_language_practice()
         self.last_selection_start_offset = None
         self.clear_read_aloud_highlight()
+        self._mark_text_clean()
         self.enqueue_log("New document created.")
 
     def activate_language_practice(
@@ -5290,6 +5318,8 @@ class App:
     def save_audio_as(self) -> None:
         """Pick output file and generate audio."""
         self.pick_output_file()
+        if self.output_file.get().strip():
+            self._mark_text_clean()
         self.start_generation()
 
     def export_log(self) -> None:
@@ -5308,6 +5338,12 @@ class App:
             self.enqueue_log(f"Log exported to {path}")
         except Exception as exc:
             show_error(self.root, "Export Failed", str(exc))
+
+    def _clear_log(self) -> None:
+        """Clear the log panel."""
+        self.log.configure(state="normal")
+        self.log.delete("1.0", "end")
+        self.log.configure(state="disabled")
 
     def open_settings(self) -> None:
         """Open the settings dialog."""
@@ -5498,20 +5534,28 @@ class App:
             self.speaker_wav.set(path)
 
     def pick_output_file(self) -> None:
+        # Use saved default format to determine initial extension
+        default_format = self.settings.get("audio", {}).get("default_format", "MP3")
+        ext_map = {"MP3": ".mp3", "OGG": ".ogg", "WAV": ".wav"}
+        defaultext = ext_map.get(default_format, ".mp3")
+        initial_file = f"speech{defaultext}"
+
+        # Separate filters per format so selected filter determines extension
         path = filedialog.asksaveasfilename(
             parent=self.root,
             title="Save output audio",
-            defaultextension=".mp3",
+            defaultextension=defaultext,
             filetypes=[
-                ("Audio files", "*.mp3 *.ogg *.wav"),
                 ("MP3 files", "*.mp3"),
                 ("OGG files", "*.ogg"),
                 ("WAV files", "*.wav"),
+                ("Audio files", "*.mp3 *.ogg *.wav"),
             ],
-            initialfile="speech.mp3",
+            initialfile=initial_file,
         )
         if path:
             self.output_file.set(path)
+            self._mark_text_clean()
 
     def open_voice_wizard(self) -> None:
         if self.voice_wizard is not None and self.voice_wizard.window.winfo_exists():
@@ -5559,9 +5603,21 @@ class App:
         frame.pack(fill="both", expand=True)
 
         ttk.Label(frame, text="Creating audio file", style="Header.TLabel").pack(anchor="w")
+        # Show output path with format/quality info
+        ext = output_path.suffix.lower()
+        fmt = ext[1:].upper() if ext else "MP3"
+        quality = ""
+        if fmt in {"MP3", "OGG"}:
+            quality_key = self.settings.get("audio", {}).get(f"{fmt.lower()}_quality", "")
+            if quality_key:
+                quality = f" ({quality_key}, {fmt})"
+            else:
+                quality = f" ({fmt})"
+        else:
+            quality = " (Lossless, WAV)"
         ttk.Label(
             frame,
-            text=f"Output: {output_path}",
+            text=f"Output: {output_path}{quality}",
             style="Hint.TLabel",
             wraplength=480,
         ).pack(anchor="w", pady=(6, 10))
@@ -5642,6 +5698,8 @@ class App:
         self.open_path_in_system(target)
 
     def load_text_file(self) -> None:
+        if not self._check_dirty_and_confirm():
+            return
         path = filedialog.askopenfilename(
             parent=self.root,
             title="Open text file",
@@ -5649,14 +5707,27 @@ class App:
         )
         if not path:
             return
-        content = Path(path).read_text(encoding="utf-8")
+        content = None
+        for encoding in ("utf-8", "cp1252", "latin-1"):
+            try:
+                content = Path(path).read_text(encoding=encoding)
+                if encoding != "utf-8":
+                    self.enqueue_log(f"Loaded text from {path} (decoded as {encoding.upper()})")
+                break
+            except UnicodeDecodeError:
+                continue
+        if content is None:
+            show_error(self.root, "Decode failed", f"Could not decode {path}. Tried: UTF-8, CP1252, Latin-1")
+            return
         self._hide_text_placeholder()
         self.text.delete("1.0", END)
         self.text.insert("1.0", content)
         self.clear_language_practice()
         self.last_selection_start_offset = None
         self.clear_read_aloud_highlight()
-        self.enqueue_log(f"Loaded text from {path}")
+        self._mark_text_clean()
+        if content:
+            self.enqueue_log(f"Loaded text from {path}")
 
     def collect_request(self, require_output: bool = True) -> SynthesisRequest | None:
         text = self.get_text_content()
@@ -5918,6 +5989,12 @@ class App:
                 export_audio_segment(segment, preview_path)
                 self.root.after(0, lambda: self.set_playback_controls_active(True))
                 self.player.play_blocking(preview_path, stop_event)
+        except MissingDependencyError as exc:
+            self.enqueue_log(f"Error: {exc}")
+            self.root.after(0, lambda e=exc: self._show_missing_dependency(e.package, e.install_cmd, e.extra))
+        except MissingPiperVoiceError as exc:
+            self.enqueue_log(f"Error: {exc}")
+            self.root.after(0, lambda e=exc: self._show_missing_piper_voice(e.voice_code))
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
             error_message = str(exc)
@@ -5958,6 +6035,12 @@ class App:
                     deadline = time.monotonic() + item.pause_after_ms / 1000
                     while time.monotonic() < deadline and not stop_event.is_set():
                         time.sleep(min(0.05, deadline - time.monotonic()))
+        except MissingDependencyError as exc:
+            self.enqueue_log(f"Error: {exc}")
+            self.root.after(0, lambda e=exc: self._show_missing_dependency(e.package, e.install_cmd, e.extra))
+        except MissingPiperVoiceError as exc:
+            self.enqueue_log(f"Error: {exc}")
+            self.root.after(0, lambda e=exc: self._show_missing_piper_voice(e.voice_code))
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
             self.root.after(0, lambda message=str(exc): show_error(self.root, "Read aloud failed", message))
@@ -6093,6 +6176,10 @@ class App:
             self.root.after(0, lambda offset=start_offset: self.start_read_aloud_from(offset, reason="click_jump"))
 
     def ensure_xtts_license_acceptance(self) -> bool:
+        # Check setting first (persisted across sessions)
+        if self.settings.get("general", {}).get("xtts_license_accepted"):
+            os.environ["COQUI_TOS_AGREED"] = "1"
+            return True
         if os.environ.get("COQUI_TOS_AGREED") == "1":
             return True
 
@@ -6109,6 +6196,8 @@ class App:
         )
         if accepted:
             os.environ["COQUI_TOS_AGREED"] = "1"
+            self.settings.setdefault("general", {})["xtts_license_accepted"] = True
+            save_app_settings(self.settings)
             return True
         self.enqueue_log("XTTS license confirmation was declined.")
         return False
@@ -6136,13 +6225,19 @@ class App:
 
             self.root.after(0, lambda: self.generation_status.set("Saving audio file..."))
             self.enqueue_log(f"Exporting audio to {request.output_file}")
-            export_audio_segment(
+            export_audio_with_fallback(
                 combined,
                 request.output_file,
                 **audio_export_options(self.settings, request.output_file),
             )
             self.enqueue_log("Finished.")
             result = request.output_file
+        except MissingDependencyError as exc:
+            self.enqueue_log(f"Error: {exc}")
+            self.root.after(0, lambda e=exc: self._show_missing_dependency(e.package, e.install_cmd, e.extra))
+        except MissingPiperVoiceError as exc:
+            self.enqueue_log(f"Error: {exc}")
+            self.root.after(0, lambda e=exc: self._show_missing_piper_voice(e.voice_code))
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
             error_message = str(exc)
@@ -6178,11 +6273,17 @@ class App:
                     ),
                 )
             self.root.after(0, lambda: self.generation_status.set("Saving audio file..."))
-            export_audio_segment(
+            export_audio_with_fallback(
                 combined,
                 output_file,
                 **audio_export_options(self.settings, output_file),
             )
+        except MissingDependencyError as exc:
+            self.enqueue_log(f"Error: {exc}")
+            self.root.after(0, lambda e=exc: self._show_missing_dependency(e.package, e.install_cmd, e.extra))
+        except MissingPiperVoiceError as exc:
+            self.enqueue_log(f"Error: {exc}")
+            self.root.after(0, lambda e=exc: self._show_missing_piper_voice(e.voice_code))
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
             self.root.after(0, lambda message=str(exc): self.finish_generation_modal(None, error=message))

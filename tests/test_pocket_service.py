@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
+import app
 from app import POCKET_VOICE_DIR
 from app import PocketTTSService
 from app import SynthesisRequest
@@ -34,7 +35,7 @@ class TestPocketServiceEnsureLoaded:
     def test_missing_import_raises(self):
         svc = PocketTTSService(log=MagicMock())
         with patch.dict("sys.modules", {"pocket_tts": None}):
-            with pytest.raises(RuntimeError, match="pocket-tts is not installed"):
+            with pytest.raises(app.MissingDependencyError, match="pocket-tts"):
                 svc.ensure_loaded("en")
 
     def test_loads_model_on_first_call(self):

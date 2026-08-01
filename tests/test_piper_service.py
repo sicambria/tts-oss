@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from piper.config import SynthesisConfig
 
+import app
 from app import PiperService
 from app import SynthesisRequest
 from app import chunk_text_with_offsets
@@ -32,7 +33,7 @@ class TestPiperServiceEnsureLoaded:
     def test_missing_onnx_raises(self):
         svc = PiperService(log=MagicMock())
         with patch("app.piper_model_path", return_value=Path("/nonexistent/voice.onnx")):
-            with pytest.raises(RuntimeError, match="is missing"):
+            with pytest.raises(app.MissingPiperVoiceError, match="Missing Piper voice"):
                 svc.ensure_loaded("nonexistent")
 
     def test_missing_piper_import_raises(self):
@@ -41,7 +42,7 @@ class TestPiperServiceEnsureLoaded:
         with patch("app.piper_model_path", return_value=model_path):
             with patch.object(Path, "exists", return_value=True):
                 with patch.dict("sys.modules", {"piper": None, "piper.voice": None}):
-                    with pytest.raises(RuntimeError, match="Piper is not installed"):
+                    with pytest.raises(app.MissingDependencyError, match="piper-tts"):
                         svc.ensure_loaded("test-code")
 
 

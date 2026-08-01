@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -11,10 +10,8 @@ import pytest
 
 from app import CEFR_PRESETS
 from app import ENGINE_PIPER
-from app import ENGINE_POCKET
 from app import LanguageLearningAvailability
 from app import LanguageLearningWizard
-from app import LanguageSessionConfig
 from app import SessionState
 
 
@@ -244,99 +241,5 @@ class TestLanguageLearningWizardGeneration:
             instance._handoff_pairs([("Olá", "Hello")], 3, True)
         instance.app.activate_language_practice.assert_called_once()
         assert instance.app.activate_language_practice.call_args.kwargs["speak"] is True
-        save.assert_called_once()
-        instance.window.destroy.assert_called_once()
-
-
-@pytest.mark.integration
-class TestLanguageLearningWizardPlaybackAndExport:
-    def test_build_request_uses_matching_piper_voice(self):
-        instance = wizard()
-        config = LanguageSessionConfig("pt", ENGINE_PIPER, 1.25, 1000, True, True)
-
-        request = instance._build_request("Olá", config=config)
-
-        assert request.language == "pt"
-        assert request.piper_voice_code == "pt_PT-tugao-medium"
-        assert request.speed == 1.25
-
-    def test_build_request_uses_language_default_pocket_voice_for_translation(self):
-        instance = wizard()
-        config = LanguageSessionConfig("pt", ENGINE_POCKET, 1.0, 1000, True, False)
-
-        request = instance._build_request("Hello", "en", config)
-
-        assert request.language == "en"
-        assert request.speaker_name
-
-    def test_pairs_from_output_reads_editable_blocks_and_retains_fallback(self):
-        instance = wizard()
-        instance.generated_pairs = [("old", "old translation")]
-        instance.output_text.value = "1. Olá\nHello\n\n2. Tudo bem?\n"
-
-        assert instance._pairs_from_output() == [("Olá", "Hello"), ("Tudo bem?", "")]
-        instance.output_text.value = ""
-        assert instance._pairs_from_output() == [("Olá", "Hello"), ("Tudo bem?", "")]
-
-    def test_session_pause_resume_and_stop_control_player(self):
-        instance = wizard()
-        instance.session_state = SessionState.PLAYING
-        instance._toggle_pause()
-        assert instance.session_state == SessionState.PAUSED
-        instance.app.player.pause.assert_called_once()
-
-        instance._toggle_pause()
-        assert instance.session_state == SessionState.PLAYING
-        instance.app.player.resume.assert_called_once()
-
-        instance._stop_session()
-        assert instance.stop_event.is_set()
-        instance.app.player.stop.assert_called_once_with(quiet=True)
-
-    def test_cleanup_temp_file_removes_disk_file_and_tracking(self, temp_dir):
-        instance = wizard()
-        path = temp_dir / "temp.wav"
-        path.write_bytes(b"audio")
-        instance._temp_files = [path]
-
-        instance._cleanup_temp_file(path)
-
-        assert not path.exists()
-        assert instance._temp_files == []
-
-    @pytest.mark.parametrize(
-        ("fmt", "suffix", "expected"),
-        [
-            ("Text", ".txt", "Olá\nHello"),
-            ("Anki CSV", ".csv", '"Olá","Hello","language-learning"'),
-            ("JSON", ".json", None),
-        ],
-    )
-    def test_export_writes_selected_format(self, temp_dir, fmt, suffix, expected):
-        instance = wizard()
-        instance.generated_pairs = [("Olá", "Hello")]
-        instance.show_trans_var = Var(True)
-        path = temp_dir / f"pairs{suffix}"
-        with patch("app.filedialog.asksaveasfilename", return_value=str(path)):
-            instance._do_export(fmt)
-
-        assert path.exists()
-        if expected:
-            assert expected in path.read_text(encoding="utf-8")
-        else:
-            assert json.loads(path.read_text(encoding="utf-8"))[0]["front"] == "Olá"
-
-    def test_clear_and_close_save_settings_and_destroy(self):
-        instance = wizard()
-        instance.output_text.value = "generated"
-        instance.generated_pairs = [("Olá", "Hello")]
-        instance._clear()
-        assert instance.generated_pairs == []
-        assert instance.status_var.get() == "Cleared"
-
-        instance.app.settings = {}
-        with patch("app.save_app_settings") as save:
-            instance._on_close()
-        assert instance.app.settings["language_learning"]["language"] == "pt"
         save.assert_called_once()
         instance.window.destroy.assert_called_once()

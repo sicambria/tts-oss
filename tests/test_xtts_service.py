@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+import app
 from app import SynthesisRequest
 from app import XTTSService
 from app import chunk_text_with_offsets
@@ -92,7 +93,7 @@ class TestXTTSServiceEnsureLoaded:
     def test_missing_import_raises(self):
         svc = XTTSService(log=MagicMock())
         with patch.dict(sys.modules, {"torch": None}):
-            with pytest.raises(RuntimeError, match="Coqui TTS"):
+            with pytest.raises(app.MissingDependencyError, match="TTS"):
                 svc.ensure_loaded()
 
 
