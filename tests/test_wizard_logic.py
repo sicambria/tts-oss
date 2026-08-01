@@ -431,6 +431,53 @@ class TestParsePageRange:
         assert from_page is None
         assert to_page == 10
 
+    @pytest.mark.parametrize(
+        ("from_value", "to_value", "message"),
+        [
+            ("one", "", "From page must be a whole number"),
+            ("0", "", "From page must be at least 1"),
+            ("", "-1", "To page must be a whole number"),
+            ("7", "3", "From page must not exceed To page"),
+        ],
+    )
+    def test_invalid_page_range_is_rejected(self, from_value, to_value, message) -> None:
+        wizard = _make_wizard(MockApp())
+        wizard.from_page.set(from_value)
+        wizard.to_page.set(to_value)
+
+        with pytest.raises(ValueError, match=message):
+            wizard._parse_page_range()
+
+    def test_invalid_page_range_shows_immediate_feedback(self) -> None:
+        wizard = _make_wizard(MockApp())
+        wizard.documents = [Path("/tmp/test.pdf")]
+        wizard.from_page_entry = MagicMock()
+        wizard.to_page_entry = MagicMock()
+        wizard.from_page.set("7")
+        wizard.to_page.set("3")
+
+        wizard._on_page_range_changed()
+
+        assert wizard.page_range_error.get() == "From page must not exceed To page."
+        wizard.from_page_entry.configure.assert_called_with(style="Invalid.TEntry")
+        wizard.to_page_entry.configure.assert_called_with(style="Invalid.TEntry")
+        wizard.start_button.configure.assert_called_with(state="disabled")
+
+    def test_valid_page_range_clears_feedback_and_enables_start(self) -> None:
+        wizard = _make_wizard(MockApp())
+        wizard.documents = [Path("/tmp/test.pdf")]
+        wizard.from_page_entry = MagicMock()
+        wizard.to_page_entry = MagicMock()
+        wizard.from_page.set("2")
+        wizard.to_page.set("3")
+
+        wizard._on_page_range_changed()
+
+        assert wizard.page_range_error.get() == ""
+        wizard.from_page_entry.configure.assert_called_with(style="TEntry")
+        wizard.to_page_entry.configure.assert_called_with(style="TEntry")
+        wizard.start_button.configure.assert_called_with(state="normal")
+
 
 class TestWizardBuildRequestSpeed:
     def test_speed_included(self) -> None:

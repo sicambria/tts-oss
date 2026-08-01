@@ -188,6 +188,26 @@ class TestPdfPageRange:
         assert "Page one" in text
         assert "Page two" in text
 
+    @pytest.mark.parametrize(
+        ("from_page", "to_page", "message"),
+        [
+            (0, 1, "From page must be at least 1"),
+            (1, 0, "To page must be at least 1"),
+            (3, 2, "From page must not exceed To page"),
+            (99, None, "From page 99 is beyond the 2-page PDF"),
+        ],
+    )
+    def test_invalid_page_range_is_rejected(self, temp_dir, from_page, to_page, message):
+        mock_reader = MagicMock()
+        mock_reader.pages = [MagicMock(), MagicMock()]
+
+        pdf_file = temp_dir / "fake.pdf"
+        pdf_file.write_text("")
+
+        with patch("pypdf.PdfReader", return_value=mock_reader):
+            with pytest.raises(ValueError, match=message):
+                DocumentExtractor._extract_pdf(pdf_file, from_page=from_page, to_page=to_page)
+
 
 class TestOdtExtraction:
     def test_multi_paragraph(self, odt_path):
