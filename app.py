@@ -482,6 +482,8 @@ def apply_theme(theme_key: str, root: Tk | None = None) -> None:
         foreground=[("active", "#ffffff" if theme_key != "high_contrast" else "#000000")],
     )
     style.configure("TEntry", fieldbackground=CARD_BG, bordercolor=TEXT_BORDER, padding=6)
+    style.configure("Invalid.TEntry", fieldbackground="#fff1f2", bordercolor="#dc2626", padding=6)
+    style.configure("ValidationError.TLabel", background=SURFACE_BG, foreground="#b91c1c", font=(FONT_BODY, 9))
     style.configure("TCombobox", fieldbackground=CARD_BG, bordercolor=TEXT_BORDER, padding=6)
     style.configure("TMenubutton", padding=(10, 7), background=colors["button_bg"], foreground=colors["button_fg"])
     style.configure("TCheckbutton", background=SURFACE_BG, foreground=colors["label_fg"])
@@ -739,6 +741,29 @@ class DocumentExtractor:
     }
 
     @staticmethod
+    def _pdf_page_slice(
+        total_pages: int, from_page: int | None, to_page: int | None
+    ) -> tuple[int, int]:
+        """Return a zero-based, end-exclusive PDF page slice after validating user input."""
+        if from_page is not None and from_page < 1:
+            raise ValueError("From page must be at least 1.")
+        if to_page is not None and to_page < 1:
+            raise ValueError("To page must be at least 1.")
+        if from_page is not None and to_page is not None and from_page > to_page:
+            raise ValueError("From page must not exceed To page.")
+        if total_pages == 0:
+            if from_page is not None or to_page is not None:
+                raise ValueError("The PDF has no pages to select.")
+            return 0, 0
+
+        start_page = from_page or 1
+        if start_page > total_pages:
+            raise ValueError(f"From page {start_page} is beyond the {total_pages}-page PDF.")
+
+        end_page = min(to_page, total_pages) if to_page is not None else total_pages
+        return start_page - 1, end_page
+
+    @staticmethod
     def extract_text(filepath: Path, from_page: int | None = None, to_page: int | None = None) -> str:
         suffix = filepath.suffix.lower()
         if suffix == ".docx":
@@ -787,10 +812,7 @@ class DocumentExtractor:
             raise RuntimeError("pypdf not installed. Run: pip install pypdf")
         reader = PdfReader(str(filepath))
         total_pages = len(reader.pages)
-        start = (from_page or 1) - 1
-        end = to_page if to_page else total_pages
-        start = max(0, min(start, total_pages - 1))
-        end = max(start + 1, min(end, total_pages))
+        start, end = DocumentExtractor._pdf_page_slice(total_pages, from_page, to_page)
         pages = []
         for page in reader.pages[start:end]:
             text = page.extract_text()
@@ -1029,10 +1051,7 @@ class DocumentExtractor:
         to_page: int | None = None,
     ) -> list[tuple[str, str]]:
         total_pages = len(reader.pages)
-        user_start = max(0, (from_page or 1) - 1)
-        user_end = min(total_pages, to_page) if to_page else total_pages
-        user_start = max(0, min(user_start, total_pages - 1))
-        user_end = max(user_start + 1, min(user_end, total_pages))
+        user_start, user_end = DocumentExtractor._pdf_page_slice(total_pages, from_page, to_page)
 
         pages_text: dict[int, str] = {}
         for page_num in range(user_start, user_end):
@@ -2307,6 +2326,7 @@ class DocumentToAudioWizard:
 
         self.from_page = StringVar(value="")
         self.to_page = StringVar(value="")
+        self.page_range_error = StringVar(value="")
 
         initial_lang = app.language.get().strip() or "hu"
         self.wizard_language = StringVar(value=initial_lang)
@@ -2327,10 +2347,13 @@ class DocumentToAudioWizard:
         self._build_ui()
         self._on_split_chapters_toggled()
         self.output_format.trace_add("write", self._on_format_changed)
+        self.from_page.trace_add("write", self._on_page_range_changed)
+        self.to_page.trace_add("write", self._on_page_range_changed)
         self.wizard_language_display.trace_add("write", self._on_wizard_language_changed)
         self.wizard_engine.trace_add("write", self._on_wizard_engine_changed)
         self.wizard_speaker_wav.trace_add("write", self._on_wizard_engine_changed)
         self._on_wizard_engine_changed()
+        self._on_page_range_changed()
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self) -> None:  # pragma: no cover
@@ -2537,6 +2560,9 @@ class DocumentToAudioWizard:
         ttk.Label(page_row, text="To:").pack(side="left")
         self.to_page_entry = ttk.Entry(page_row, textvariable=self.to_page, width=6)
         self.to_page_entry.pack(side="left", padx=(4, 0))
+        ttk.Label(page_row, textvariable=self.page_range_error, style="ValidationError.TLabel").pack(
+            side="left", padx=(12, 0)
+        )
 
         progress_frame = ttk.LabelFrame(bottom, text="Progress", padding=10)
         progress_frame.pack(fill="x", pady=(10, 0))
@@ -2564,7 +2590,62 @@ class DocumentToAudioWizard:
         speed_val = round(self.wizard_speed.get(), 1)
         self.wizard_speed_label.configure(text=f"Speed: {speed_val:.1f}x")
 
+    def _page_field_errors(self) -> dict[str, str]:
+        from_str = self.from_page.get().strip()
+        to_str = self.to_page.get().strip()
+        errors: dict[str, str] = {}
+
+        values: dict[str, int] = {}
+        for field, raw_value, label in (
+            ("from", from_str, "From page"),
+            ("to", to_str, "To page"),
+        ):
+            if not raw_value:
+                continue
+            if not raw_value.isdecimal():
+                errors[field] = f"{label} must be a whole number."
+                continue
+            value = int(raw_value)
+            if value < 1:
+                errors[field] = f"{label} must be at least 1."
+                continue
+            values[field] = value
+
+        if "from" in values and "to" in values and values["from"] > values["to"]:
+            message = "From page must not exceed To page."
+            errors.setdefault("from", message)
+            errors.setdefault("to", message)
+
+        return errors
+
+    def _page_range_error_message(self) -> str:
+        messages = list(dict.fromkeys(self._page_field_errors().values()))
+        return " ".join(messages)
+
+    def _on_page_range_changed(self, *_args) -> None:
+        field_errors = self._page_field_errors()
+        self.page_range_error.set(" ".join(dict.fromkeys(field_errors.values())))
+
+        for field, entry_name in (("from", "from_page_entry"), ("to", "to_page_entry")):
+            entry = getattr(self, entry_name, None)
+            if entry is not None:
+                entry.configure(style="Invalid.TEntry" if field in field_errors else "TEntry")
+
+        self._update_start_button_state()
+
+    def _update_start_button_state(self) -> None:
+        start_button = getattr(self, "start_button", None)
+        if start_button is None:
+            return
+        processing = self.worker is not None and self.worker.is_alive()
+        can_start = bool(self.documents) and not self._page_field_errors() and not processing
+        start_button.configure(state="normal" if can_start else "disabled")
+
     def _parse_page_range(self) -> tuple[int | None, int | None]:
+        error = self._page_range_error_message()
+        if error:
+            raise ValueError(error)
+
         from_str = self.from_page.get().strip()
         to_str = self.to_page.get().strip()
         from_page = int(from_str) if from_str else None
@@ -2748,11 +2829,13 @@ class DocumentToAudioWizard:
                     self.doc_status.get(path, "Ready"),
                 ),
             )
-        self.start_button.configure(state="normal" if self.documents else "disabled")
+        self._update_start_button_state()
 
     def _set_buttons_state(self, processing: bool) -> None:
-        state = "disabled" if processing else "normal"
-        self.start_button.configure(state=state)
+        if processing:
+            self.start_button.configure(state="disabled")
+        else:
+            self._update_start_button_state()
         self.pause_button_text.set("Pause")
 
     def _start_processing(self) -> None:
@@ -2760,6 +2843,11 @@ class DocumentToAudioWizard:
             return
         if not self.documents:
             show_info(self.window, "No documents", "Add at least one document first.")
+            return
+        page_range_error = self._page_range_error_message()
+        if page_range_error:
+            self._on_page_range_changed()
+            show_error(self.window, "Invalid page range", page_range_error)
             return
 
         output_folder = Path(self.output_folder.get())
