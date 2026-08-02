@@ -3079,7 +3079,7 @@ class DocumentToAudioWizard:
             side="left", padx=(12, 0)
         )
         ttk.Checkbutton(
-            page_row, text="Skip this warning next time", variable=self.skip_page_range_conversion_warning
+            page_row, text="Skip warnings", variable=self.skip_page_range_conversion_warning
         ).pack(side="left", padx=(12, 0))
 
         progress_frame = ttk.LabelFrame(bottom, text="Progress", padding=10)
