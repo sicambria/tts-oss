@@ -109,12 +109,14 @@ The **Help** menu includes an About dialog and a link to the project's
 - Language Learning supports Portuguese and Spanish. `Generate` closes the learner and
   copies editable target/English pairs into the main editor with the target language selected.
   `Speak` performs the same handoff and immediately starts playback.
-- Language-learning pairs repeat the target-language sentence by default, then read its English voice translation.
-  Uncheck `Repeat target sentence before English translation` in the learning window to read it once.
+- Language-learning pairs read the target-language sentence once by default, then read its English voice translation.
+  Check `Repeat target sentence before English translation` in the learning window to hear the target twice.
   Uncheck `Read English translations` in the main options to practice only the target lines.
   If the selected target setup cannot speak English, the app selects an available English voice
   and reports the fallback in Status.
 - Export current language-learning pairs from the main window as Text, Anki CSV, or JSON.
+- The `Document to Audio Converter` reads each extracted sentence once by default.
+  Check `Repeat each sentence` in its Output Settings to include a second reading of every sentence.
 - Language Learning is an optional companion feature. If it is unavailable, the
   app stays open and shows setup instructions instead of closing. For an editable
   companion checkout, install it with `pip install -e ../language-practice`.

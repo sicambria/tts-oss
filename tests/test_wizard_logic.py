@@ -17,6 +17,7 @@ from app import OGG_QUALITY_PRESETS
 from app import ChapterEntry
 from app import DocumentConversionRun
 from app import DocumentToAudioWizard
+from app import sentence_synthesis_units
 
 
 class _MockVar:
@@ -403,6 +404,28 @@ class TestDoPreparation:
         assert entry in wizard.chunk_counts
         assert wizard.chunk_counts[entry] >= 1
 
+    def test_repetition_counts_sentence_units_individually(self) -> None:
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard.repeat_sentences.set(True)
+        wizard._set_overall = MagicMock()
+        entry = ChapterEntry(
+            source_path=Path("/tmp/test.docx"),
+            index=0,
+            title="",
+            content="First sentence. Second sentence.",
+            word_count=4,
+        )
+        wizard.extracted_texts = {entry: entry.content}
+        wizard.stop_event = MagicMock()
+        wizard.stop_event.is_set.return_value = False
+        wizard.window.after = MagicMock()
+
+        wizard._do_preparation()
+
+        assert sentence_synthesis_units(entry.content) == ["First sentence.", "Second sentence."]
+        assert wizard.chunk_counts[entry] == 2
+
 
 class TestRefreshTree:
     def test_rows_inserted(self) -> None:
@@ -556,6 +579,49 @@ class TestDocumentSynthesisAssembly:
                 )
 
         assert combined.parts == [first_segment, pause, second_segment]
+
+    def test_repetition_duplicates_each_sentence_audio(self) -> None:
+        class RecordingAudio:
+            def __init__(self) -> None:
+                self.parts: list[object] = []
+
+            def __iadd__(self, other: object):
+                self.parts.append(other)
+                return self
+
+        app = MockApp()
+        wizard = _make_wizard(app)
+        wizard.stop_event = MagicMock()
+        wizard.stop_event.is_set.return_value = False
+        wizard.pause_event = MagicMock()
+        wizard._total_chunks = 2
+        wizard.phase_text = MagicMock()
+        wizard.quality_preset = _MockVar("Standard")
+        wizard.output_format = _MockVar("MP3")
+        first_segment = object()
+        second_segment = object()
+        pause = object()
+        combined = RecordingAudio()
+        wizard._build_request = lambda text, _output, _run: MagicMock(text=text)
+        app.service.iter_segments.side_effect = lambda request: [
+            (MagicMock(), first_segment if request.text.startswith("Sentence one") else second_segment)
+        ]
+        run = DocumentConversionRun(
+            documents=(), output_folder=Path("/tmp/out"), from_page=None, to_page=None,
+            merge_files=False, split_chapters=False, chapter_level="all", output_format="MP3",
+            quality_preset="Standard", piper_voice_label="Hungarian | Anna | medium", language="hu",
+            engine=ENGINE_AUTO, speaker_name=DEFAULT_SPEAKER, pocket_voice="alba", speaker_wav="", speed=1.0,
+            repeat_sentences=True,
+        )
+
+        with patch("app.export_audio_segment"):
+            with patch("app.AudioSegment.silent", side_effect=lambda duration: combined if duration == 0 else pause):
+                wizard._synthesize_text(
+                    "Sentence one. Sentence two.", Path("/tmp/out.mp3"), expected_chunks=2,
+                    doc_index=0, total_docs=1, cumul_chunks_start=0, run=run,
+                )
+
+        assert combined.parts == [first_segment, pause, first_segment, pause, second_segment, pause, second_segment]
 
 
 class TestDoSynthesisPerFile:
