@@ -270,7 +270,7 @@ DEFAULT_LANG_LEARNING_SETTINGS: dict[str, object] = {
     "vary_role": None,
     "vary_words": None,
     "pair_pause_ms": 2000,
-    "repeat_target_sentence": True,
+    "repeat_target_sentence": False,
 }
 
 HEADING_PATTERNS: list[tuple[str, int]] = [
@@ -624,6 +624,14 @@ def chunk_text(text: str, max_chars: int = MAX_CHARS_PER_CHUNK) -> list[str]:
     if current:
         chunks.append(current)
     return chunks
+
+
+def sentence_synthesis_units(text: str, max_chars: int = MAX_CHARS_PER_CHUNK) -> list[str]:
+    """Return sentence-sized synthesis units without merging neighboring sentences."""
+    units: list[str] = []
+    for sentence in sentence_split(text):
+        units.extend(split_long_piece(sentence, max_chars))
+    return units
 
 
 @dataclass
@@ -1415,7 +1423,7 @@ class LanguageSessionConfig:
     speed: float
     pair_pause_ms: int
     show_translations: bool
-    repeat_target_sentence: bool = True
+    repeat_target_sentence: bool = False
 
 
 @dataclass(frozen=True)
@@ -1424,7 +1432,7 @@ class LanguagePracticeSession:
 
     target_language: str
     pair_pause_ms: int
-    repeat_target_sentence: bool = True
+    repeat_target_sentence: bool = False
 
 
 @dataclass(frozen=True)
@@ -1514,6 +1522,7 @@ class DocumentConversionRun:
     pocket_voice: str
     speaker_wav: str
     speed: float
+    repeat_sentences: bool = False
 
 
 def get_piper_voice_metadata(label: str) -> dict[str, str]:
@@ -2815,6 +2824,7 @@ class DocumentToAudioWizard:
         self.merge_files = BooleanVar(value=False)
         self.output_folder = StringVar(value=str(get_default_music_folder().resolve()))
         self.split_chapters = BooleanVar(value=False)
+        self.repeat_sentences = BooleanVar(value=False)
         self.chapter_level = StringVar(value="all")
 
         self.wizard_speed = DoubleVar(value=self.app.speed.get())
@@ -3023,8 +3033,14 @@ class DocumentToAudioWizard:
             variable=self.merge_files,
         ).grid(row=4, column=0, columnspan=6, sticky="w", pady=(6, 4))
 
+        ttk.Checkbutton(
+            settings_frame,
+            text="Repeat each sentence",
+            variable=self.repeat_sentences,
+        ).grid(row=5, column=0, columnspan=6, sticky="w", pady=(2, 4))
+
         split_row = ttk.Frame(settings_frame)
-        split_row.grid(row=5, column=0, columnspan=6, sticky="ew", pady=(6, 4))
+        split_row.grid(row=6, column=0, columnspan=6, sticky="ew", pady=(6, 4))
         self.split_chapters_check = ttk.Checkbutton(
             split_row,
             text="Split by chapter (experimental)",
@@ -3042,17 +3058,17 @@ class DocumentToAudioWizard:
         )
         self.chapter_level_box.pack(side="left")
 
-        ttk.Label(settings_frame, text="Output Folder").grid(row=6, column=0, sticky="w", pady=4)
+        ttk.Label(settings_frame, text="Output Folder").grid(row=7, column=0, sticky="w", pady=4)
         ttk.Entry(settings_frame, textvariable=self.output_folder).grid(
-            row=6, column=1, columnspan=4, sticky="ew", pady=4
+            row=7, column=1, columnspan=4, sticky="ew", pady=4
         )
         ttk.Button(settings_frame, text="Browse...", command=self._pick_output_folder).grid(
-            row=6, column=5, sticky="e", pady=4, padx=(8, 0)
+            row=7, column=5, sticky="e", pady=4, padx=(8, 0)
         )
 
-        ttk.Label(settings_frame, text="Pages (all formats)").grid(row=7, column=0, sticky="w", pady=4)
+        ttk.Label(settings_frame, text="Pages (all formats)").grid(row=8, column=0, sticky="w", pady=4)
         page_row = ttk.Frame(settings_frame)
-        page_row.grid(row=7, column=1, columnspan=5, sticky="w", pady=4)
+        page_row.grid(row=8, column=1, columnspan=5, sticky="w", pady=4)
         ttk.Label(page_row, text="From:").pack(side="left")
         self.from_page_entry = ttk.Entry(page_row, textvariable=self.from_page, width=6)
         self.from_page_entry.pack(side="left", padx=(4, 12))
@@ -3396,6 +3412,7 @@ class DocumentToAudioWizard:
             piper_voice_label=self.wizard_piper_voice_label.get(), language=self.wizard_language.get(),
             engine=self.wizard_engine.get(), speaker_name=self.wizard_speaker_name.get(),
             pocket_voice=self.wizard_pocket_voice.get(), speaker_wav=self.wizard_speaker_wav.get(), speed=round(self.wizard_speed.get(), 1),
+            repeat_sentences=self.repeat_sentences.get(),
         )
         non_pdf_documents = [path.name for path in run.documents if path.suffix.lower() != ".pdf"]
         if (run.from_page is not None or run.to_page is not None) and non_pdf_documents and not self.skip_page_range_conversion_warning.get():
@@ -3434,7 +3451,7 @@ class DocumentToAudioWizard:
             if self.stop_event.is_set():
                 return self._finish("Stopped.")
 
-            self._do_preparation()
+            self._do_preparation(run)
             if self.stop_event.is_set():
                 return self._finish("Stopped.")
 
@@ -3449,7 +3466,7 @@ class DocumentToAudioWizard:
     def _do_extraction(self, run: DocumentConversionRun | None = None) -> None:
         if run is None:
             from_page, to_page = self._parse_page_range()
-            run = DocumentConversionRun(tuple(self.documents), Path(self.output_folder.get()), from_page, to_page, self.merge_files.get(), self.split_chapters.get(), self.chapter_level.get(), self.output_format.get(), self.quality_preset.get(), self.wizard_piper_voice_label.get(), self.wizard_language.get(), self.wizard_engine.get(), self.wizard_speaker_name.get(), self.wizard_pocket_voice.get(), self.wizard_speaker_wav.get(), round(self.wizard_speed.get(), 1))
+            run = DocumentConversionRun(tuple(self.documents), Path(self.output_folder.get()), from_page, to_page, self.merge_files.get(), self.split_chapters.get(), self.chapter_level.get(), self.output_format.get(), self.quality_preset.get(), self.wizard_piper_voice_label.get(), self.wizard_language.get(), self.wizard_engine.get(), self.wizard_speaker_name.get(), self.wizard_pocket_voice.get(), self.wizard_speaker_wav.get(), round(self.wizard_speed.get(), 1), self.repeat_sentences.get())
         docs = list(run.documents)
         total = len(docs)
         chapter_formats = {".docx", ".odt", ".pdf", ".epub"}
@@ -3532,7 +3549,7 @@ class DocumentToAudioWizard:
                     lambda p=doc_path, e=str(exc): self._update_doc_status(p, f"Failed: {e}"),
                 )
 
-    def _do_preparation(self) -> None:
+    def _do_preparation(self, run: DocumentConversionRun | None = None) -> None:
         entries = list(self.extracted_texts.keys())
         if not entries:
             raise RuntimeError("No documents could be extracted.")
@@ -3542,11 +3559,16 @@ class DocumentToAudioWizard:
 
         self.chunk_counts: dict[ChapterEntry, int] = {}
         total_chunks = 0
+        repeat_sentences = run.repeat_sentences if run is not None else self.repeat_sentences.get()
         for i, entry in enumerate(entries):
             if self.stop_event.is_set():
                 return
             text = self.extracted_texts[entry]
-            count = len(chunk_text_with_offsets(text, MAX_CHARS_PER_CHUNK))
+            count = (
+                len(sentence_synthesis_units(text))
+                if repeat_sentences
+                else len(chunk_text_with_offsets(text, MAX_CHARS_PER_CHUNK))
+            )
             self.chunk_counts[entry] = max(count, 1)
             total_chunks += self.chunk_counts[entry]
             self.window.after(
@@ -3761,42 +3783,48 @@ class DocumentToAudioWizard:
         cumul_chunks_start: int,
         run: DocumentConversionRun | None = None,
     ) -> None:
-        request = self._build_request(text, output_path, run)
+        repeat_sentences = bool(run and run.repeat_sentences)
+        units = sentence_synthesis_units(text) if repeat_sentences else [text]
         combined = AudioSegment.silent(duration=0)
         chunk_count = 0
 
-        for _chunk, segment in self.app.service.iter_segments(request):
-            if self.stop_event.is_set():
-                return
-            self.pause_event.wait()
+        for unit in units:
+            request = self._build_request(unit, output_path, run)
+            for _chunk, segment in self.app.service.iter_segments(request):
+                if self.stop_event.is_set():
+                    return
+                self.pause_event.wait()
 
-            combined += segment
-            chunk_count += 1
-            if chunk_count < expected_chunks:
-                combined += AudioSegment.silent(duration=PAUSE_MS)
+                combined += segment
+                if repeat_sentences:
+                    combined += AudioSegment.silent(duration=PAUSE_MS)
+                    combined += segment
+                chunk_count += 1
+                if chunk_count < expected_chunks:
+                    combined += AudioSegment.silent(duration=PAUSE_MS)
 
-            current = cumul_chunks_start + chunk_count
-            total = max(self._total_chunks, 1)
-            overall_pct = round(current / total * 100)
-            file_pct = (
-                round(chunk_count / expected_chunks * 100)
-                if expected_chunks > 0
-                else 0
-            )
-            self.window.after(
-                0,
-                lambda ov=overall_pct, msg=f"{current}/{total} chunks": self._set_overall(ov, msg),
-            )
-            self.window.after(
-                0,
-                lambda fp=file_pct, msg=f"Chunk {chunk_count}/{expected_chunks}": self._set_file(fp, msg),
-            )
-            self.window.after(
-                0,
-                lambda cur=doc_index + 1, tot=total_docs: self.phase_text.set(
-                    f"Synthesizing document {cur}/{tot}..."
-                ),
-            )
+                current = cumul_chunks_start + chunk_count
+                total = max(self._total_chunks, 1)
+                overall_pct = round(current / total * 100)
+                file_pct = (
+                    round(chunk_count / expected_chunks * 100)
+                    if expected_chunks > 0
+                    else 0
+                )
+                self.window.after(
+                    0,
+                    lambda ov=overall_pct, msg=f"{current}/{total} chunks": self._set_overall(ov, msg),
+                )
+                self.window.after(
+                    0,
+                    lambda fp=file_pct, msg=f"Chunk {chunk_count}/{expected_chunks}": self._set_file(fp, msg),
+                )
+                self.window.after(
+                    0,
+                    lambda cur=doc_index + 1, tot=total_docs: self.phase_text.set(
+                        f"Synthesizing document {cur}/{tot}..."
+                    ),
+                )
 
         if self.stop_event.is_set():
             return
@@ -3922,7 +3950,7 @@ class LanguageLearningWizard:
         # live in the main window so there is one source of truth.
         self.pair_pause_var = IntVar(value=self.settings.get("pair_pause_ms", 2000))
         self.repeat_target_sentence_var = BooleanVar(
-            value=self.settings.get("repeat_target_sentence", True)
+            value=self.settings.get("repeat_target_sentence", False)
         )
 
         # Worker thread
@@ -5209,7 +5237,7 @@ class App:
         target_language: str,
         pair_pause_ms: int,
         *,
-        repeat_target_sentence: bool = True,
+        repeat_target_sentence: bool = False,
         speak: bool,
     ) -> None:
         """Move generated PT/ES pairs into the editable main speech workflow."""

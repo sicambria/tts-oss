@@ -60,7 +60,7 @@ def _app(text: str, voices: dict[str, dict[str, str]]) -> App:
     app.speaker_wav = _Var("")
     app.speed = _Var(1.0)
     app.read_translations = _Var(True)
-    app.practice_session = LanguagePracticeSession("es", 1250)
+    app.practice_session = LanguagePracticeSession("es", 1250, True)
     app.enqueue_log = MagicMock()
     return app
 
@@ -95,7 +95,7 @@ class TestLanguagePracticeMainFlow:
         app.activate_language_practice([("Hola.", "Hello.")], "es", 1000, speak=False)
 
         assert app.text.content == "Hola.\nHello."
-        assert app.practice_session == LanguagePracticeSession("es", 1000, True)
+        assert app.practice_session == LanguagePracticeSession("es", 1000)
         assert app.language_display.get() == "Spanish"
         assert app.read_translations.get() is True
         app.root.lift.assert_called_once()
@@ -130,7 +130,7 @@ class TestLanguagePracticeMainFlow:
                 "English US | Lessac | medium": {"code": "en_US-lessac-medium", "xtts_language": "en"},
             },
         )
-        app.practice_session = LanguagePracticeSession("pt", 800)
+        app.practice_session = LanguagePracticeSession("pt", 800, True)
         app.read_translations.set(False)
 
         requests = app.practice_requests(_base_request())
