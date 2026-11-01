@@ -9,11 +9,14 @@ from app import DEFAULT_DOCUMENT_CONVERSION_SETTINGS
 from app import DEFAULT_GENERAL_SETTINGS
 from app import DEFAULT_LANG_LEARNING_SETTINGS
 from app import DEFAULT_PATHS_SETTINGS
+from app import DEFAULT_PIPER_VOICE_BY_LANGUAGE
 from app import DEFAULT_UI_SETTINGS
+from app import default_piper_voice_for_language
 from app import load_app_settings
 from app import normalize_app_settings
 from app import normalize_general_language
 from app import normalize_learning_language
+from app import normalize_piper_voice_defaults
 from app import save_app_settings
 from app import system_language_code
 
@@ -24,6 +27,7 @@ DEFAULT_SECTIONS = {
     "general": DEFAULT_GENERAL_SETTINGS,
     "paths": DEFAULT_PATHS_SETTINGS,
     "document_conversion": DEFAULT_DOCUMENT_CONVERSION_SETTINGS,
+    "default_piper_voice_by_language": DEFAULT_PIPER_VOICE_BY_LANGUAGE,
 }
 DEFAULT_SECTIONS["general"] = {
     **DEFAULT_GENERAL_SETTINGS,
@@ -119,6 +123,33 @@ class TestSettingsMigration:
 
     def test_unknown_general_language_falls_back_to_default(self):
         assert normalize_general_language("Klingon") == "en"
+
+    def test_piper_voice_defaults_normalize_supported_language_keys_and_labels(self):
+        assert normalize_piper_voice_defaults(
+            {"EN_us": "English voice", "bad code !": "ignored", "hu": "  "}
+        ) == {"en-us": "English voice"}
+
+    def test_per_language_piper_default_precedes_legacy_global_default(self):
+        options = {
+            "Hungarian | Anna | medium": {"code": "hu_HU-anna-medium"},
+            "English US | Lessac | medium": {"code": "en_US-lessac-medium"},
+        }
+        settings = {
+            "default_piper_voice_label": "Hungarian | Anna | medium",
+            "default_piper_voice_by_language": {
+                "en": "English US | Lessac | medium",
+            },
+        }
+        assert default_piper_voice_for_language(settings, "en", options) == "English US | Lessac | medium"
+        assert default_piper_voice_for_language(settings, "hu", options) == "Hungarian | Anna | medium"
+
+    def test_invalid_per_language_piper_default_falls_back_to_first_language_voice(self):
+        options = {
+            "English US | Lessac | medium": {"code": "en_US-lessac-medium"},
+            "English GB | Alan | medium": {"code": "en_GB-alan-medium"},
+        }
+        settings = {"default_piper_voice_by_language": {"en": "removed voice"}}
+        assert default_piper_voice_for_language(settings, "en", options) == "English US | Lessac | medium"
 
     def test_target_sentence_repetition_defaults_to_disabled(self):
         settings = normalize_app_settings({"language_learning": {}})
