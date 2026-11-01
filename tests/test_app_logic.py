@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import queue
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -12,6 +13,7 @@ from app import ENGINE_AUTO
 from app import PREVIEW_OUTPUT_PATH
 from app import App
 from app import get_default_music_folder
+from app import piper_preview_text
 
 
 class _MockVar:
@@ -93,6 +95,10 @@ def _make_app():
         app.generation_modal = None
         app.generation_progress = None
         app.generation_status = MagicMock()
+        app.generation_cancel_event = threading.Event()
+        app.voice_preview_worker = None
+        app.voice_preview_stop_event = threading.Event()
+        app.voice_preview_buttons = []
         app.worker = None
         app.preview_worker = None
         app.preview_stop_event = MagicMock()
@@ -798,6 +804,68 @@ class TestRunGeneration:
                     app.run_generation(request)
 
         assert combined.parts == [first_segment, pause, second_segment]
+
+    def test_run_generation_cancelled_at_chunk_boundary_skips_export(self):
+        app = _make_app()
+        app.generation_cancel_event = threading.Event()
+        app.finish_generation_modal = MagicMock()
+        app.root.after.side_effect = lambda _ms, callback: callback()
+        request = MagicMock(text="First chunk. Second chunk.", output_file=Path("/tmp/out.mp3"))
+
+        def segments(_request):
+            yield MagicMock(), MagicMock()
+            app.generation_cancel_event.set()
+            yield MagicMock(), MagicMock()
+
+        app.service.iter_segments.side_effect = segments
+        with patch("app.export_audio_with_fallback") as export:
+            with patch("app.AudioSegment.silent", return_value=MagicMock()):
+                with patch("app.chunk_text_with_offsets", return_value=[MagicMock(), MagicMock()]):
+                    app.run_generation(request)
+
+        export.assert_not_called()
+        app.finish_generation_modal.assert_called_once_with(None, cancelled=True)
+
+
+class TestVoicePreview:
+    def test_preview_request_uses_selected_language_engine_and_voice(self):
+        app = _make_app()
+        app.language.set("en")
+        app.piper_voice_label.set("English US | Lessac | medium")
+        app.toggle_voice_preview = MagicMock()
+        app.voice_preview_button = MagicMock()
+
+        app.preview_selected_voice()
+
+        request = app.toggle_voice_preview.call_args.args[0]
+        assert request.text == piper_preview_text("en")
+        assert request.language == "en"
+        assert request.engine == ENGINE_AUTO
+        assert request.piper_voice_code == "en_US-lessac-medium"
+        assert request.output_file == PREVIEW_OUTPUT_PATH
+
+    def test_voice_preview_uses_temporary_wav_and_cleans_it(self, temp_dir):
+        app = _make_app()
+        app.root.after.side_effect = lambda _ms, callback: callback()
+        app.service.iter_segments.return_value = [(MagicMock(), MagicMock())]
+        request = MagicMock(output_file=temp_dir / "selected-output.mp3")
+        stop_event = threading.Event()
+        exported: list[Path] = []
+
+        def export(_segment, path):
+            exported.append(path)
+            path.write_bytes(b"preview")
+
+        with patch("app.PREVIEW_OUTPUT_PATH", temp_dir / "preview-base.mp3"):
+            with patch("app.export_audio_segment", side_effect=export):
+                with patch("app.AudioSegment.silent", return_value=MagicMock()):
+                    app._run_voice_preview(request, stop_event)
+
+        assert len(exported) == 1
+        assert exported[0].suffix == ".wav"
+        assert exported[0] != request.output_file
+        assert not exported[0].exists()
+        app.player.play_blocking.assert_called_once_with(exported[0], stop_event)
 
 
 class TestGetDefaultMusicFolder:
