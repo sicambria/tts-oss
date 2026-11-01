@@ -5224,7 +5224,6 @@ class App:
         voice_area = ttk.Frame(controls)
         voice_area.grid(row=2, column=1, sticky="ew", pady=6)
         voice_area.columnconfigure(0, weight=1)
-        voice_area.columnconfigure(1, weight=0)
 
         self.piper_voice_box = ttk.Combobox(
             voice_area,
@@ -5252,13 +5251,13 @@ class App:
             "stop": make_playback_icon(self.root, "stop"),
         }
         self.voice_preview_button = ttk.Button(
-            voice_area,
+            controls,
             image=self.voice_preview_icons["preview"],
-            width=2,
+            width=3,
             padding=(2, 2),
             command=lambda: self.preview_selected_voice(),
         )
-        self.voice_preview_button.grid(row=0, column=1, padx=(4, 0))
+        self.voice_preview_button.grid(row=2, column=2, sticky="w", padx=(4, 0))
         self.voice_preview_button._preview_icon = self.voice_preview_icons["preview"]
         self.voice_preview_button._stop_icon = self.voice_preview_icons["stop"]
         self.voice_preview_buttons.append(self.voice_preview_button)
