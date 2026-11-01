@@ -3077,15 +3077,16 @@ class DocumentToAudioWizard:
             widget.grid_remove()
         self.wizard_voice_preview_button = ttk.Button(
             wizard_voice_area,
-            text="Preview",
             image=self.action_icons["preview"],
-            compound="left",
+            width=3,
+            padding=(2, 2),
             command=self.preview_selected_voice,
         )
-        self.wizard_voice_preview_button.grid(row=0, column=1, padx=(6, 0))
+        self.wizard_voice_preview_button.grid(row=0, column=1, padx=(4, 0))
         self.wizard_voice_preview_button._preview_icon = self.action_icons["preview"]
         self.wizard_voice_preview_button._stop_icon = self.action_icons["stop"]
         self.app.voice_preview_buttons.append(self.wizard_voice_preview_button)
+        add_tooltip(self.wizard_voice_preview_button, "Preview selected voice; click again to stop")
 
         ttk.Label(settings_frame, text="Quality").grid(row=1, column=4, sticky="w", pady=4)
         self.quality_box = ttk.Combobox(
@@ -5147,7 +5148,7 @@ class App:
         self.engine_help_button = ttk.Button(
             controls,
             text="?",
-            width=2,
+            width=3,
             command=self.show_engine_performance_reference,
         )
         self.engine_help_button.grid(row=1, column=2, sticky="w", padx=(4, 0))
@@ -5188,15 +5189,16 @@ class App:
         }
         self.voice_preview_button = ttk.Button(
             voice_area,
-            text="Preview",
             image=self.voice_preview_icons["preview"],
-            compound="left",
+            width=2,
+            padding=(2, 2),
             command=lambda: self.preview_selected_voice(),
         )
-        self.voice_preview_button.grid(row=0, column=1, padx=(6, 0))
+        self.voice_preview_button.grid(row=0, column=1, padx=(4, 0))
         self.voice_preview_button._preview_icon = self.voice_preview_icons["preview"]
         self.voice_preview_button._stop_icon = self.voice_preview_icons["stop"]
         self.voice_preview_buttons.append(self.voice_preview_button)
+        add_tooltip(self.voice_preview_button, "Preview selected voice; click again to stop")
         add_context_menu(self.speaker_name_entry)
 
         # Reference WAV
@@ -5704,7 +5706,6 @@ class App:
             self.voice_preview_buttons.append(button)
         for candidate in self.voice_preview_buttons:
             candidate.configure(
-                text="Stop preview",
                 image=getattr(candidate, "_stop_icon", make_playback_icon(self.root, "stop")),
                 state="normal",
             )
@@ -5759,7 +5760,6 @@ class App:
             try:
                 if button.winfo_exists():
                     button.configure(
-                        text="Preview",
                         image=getattr(button, "_preview_icon", ""),
                         state="normal",
                     )
