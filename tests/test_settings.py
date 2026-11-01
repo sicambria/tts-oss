@@ -15,6 +15,7 @@ from app import normalize_app_settings
 from app import normalize_general_language
 from app import normalize_learning_language
 from app import save_app_settings
+from app import system_language_code
 
 DEFAULT_SECTIONS = {
     "language_learning": DEFAULT_LANG_LEARNING_SETTINGS,
@@ -23,6 +24,10 @@ DEFAULT_SECTIONS = {
     "general": DEFAULT_GENERAL_SETTINGS,
     "paths": DEFAULT_PATHS_SETTINGS,
     "document_conversion": DEFAULT_DOCUMENT_CONVERSION_SETTINGS,
+}
+DEFAULT_SECTIONS["general"] = {
+    **DEFAULT_GENERAL_SETTINGS,
+    "default_language": system_language_code(),
 }
 
 
@@ -42,6 +47,22 @@ class TestLoadAppSettings:
             mp.setattr("app.APP_SETTINGS_PATH", path)
             result = load_app_settings()
         assert result == DEFAULT_SECTIONS
+
+    def test_file_does_not_exist_uses_supported_system_locale(self, temp_dir, monkeypatch):
+        path = temp_dir / "nonexistent.json"
+        monkeypatch.setattr("app.APP_SETTINGS_PATH", path)
+        monkeypatch.setattr("app.locale.getlocale", lambda: ("fr_FR", "UTF-8"))
+        assert load_app_settings()["general"]["default_language"] == "fr"
+
+    def test_missing_preference_uses_english_for_unsupported_locale(self, monkeypatch):
+        monkeypatch.setattr("app.locale.getlocale", lambda: ("eo_EO", "UTF-8"))
+        settings = normalize_app_settings({"general": {"default_engine": "Auto"}})
+        assert settings["general"]["default_language"] == "en"
+
+    def test_saved_language_preference_takes_precedence_over_locale(self, monkeypatch):
+        monkeypatch.setattr("app.locale.getlocale", lambda: ("fr_FR", "UTF-8"))
+        settings = normalize_app_settings({"general": {"default_language": "es"}})
+        assert settings["general"]["default_language"] == "es"
 
     def test_file_has_invalid_json_returns_defaults(self, temp_dir):
         path = temp_dir / "settings.json"
@@ -97,8 +118,7 @@ class TestSettingsMigration:
         assert settings["general"]["default_language"] == "en"
 
     def test_unknown_general_language_falls_back_to_default(self):
-        assert normalize_general_language("Klingon") == DEFAULT_GENERAL_SETTINGS["default_language"]
-        assert normalize_general_language(None) == DEFAULT_GENERAL_SETTINGS["default_language"]
+        assert normalize_general_language("Klingon") == "en"
 
     def test_target_sentence_repetition_defaults_to_disabled(self):
         settings = normalize_app_settings({"language_learning": {}})

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import locale
 import os
 import queue
 import re
@@ -307,6 +308,34 @@ def make_playback_icon(master, kind: str) -> PhotoImage:
         for x, knob_y in ((4, 5), (8, 10), (12, 7)):
             image.put(color, to=(x, 2, x + 1, 14))
             image.put(color, to=(x - 2, knob_y - 1, x + 3, knob_y + 1))
+    elif kind in {"add", "browse", "preview"}:
+        image.put(color, to=(7, 2, 9, 14))
+        image.put(color, to=(2, 7, 14, 9))
+        if kind == "browse":
+            image.put(TEXT_BG, to=(8, 7, 14, 9))
+            image.put(color, to=(10, 5, 14, 7))
+        elif kind == "preview":
+            image.put(TEXT_BG, to=(9, 7, 14, 9))
+            for x, top, bottom in ((10, 5, 11), (12, 3, 13)):
+                image.put(color, to=(x, top, x + 1, bottom))
+    elif kind in {"remove", "clear"}:
+        image.put(color, to=(3, 4, 13, 6))
+        image.put(color, to=(4, 6, 12, 14))
+        image.put(TEXT_BG, to=(6, 7, 7, 12))
+        image.put(TEXT_BG, to=(9, 7, 10, 12))
+        image.put(color, to=(5, 2, 11, 4))
+    elif kind in {"close", "cancel"}:
+        for offset in range(0, 8):
+            image.put(color, to=(4 + offset, 4 + offset, 6 + offset, 6 + offset))
+            image.put(color, to=(10 - offset, 4 + offset, 12 - offset, 6 + offset))
+    elif kind == "start":
+        image.put(color, to=(4, 2, 6, 14))
+        image.put(color, to=(6, 4, 8, 12))
+        image.put(color, to=(8, 6, 10, 10))
+        image.put(color, to=(10, 7, 13, 9))
+    elif kind == "folder":
+        image.put(color, to=(2, 4, 14, 13))
+        image.put(color, to=(3, 2, 8, 5))
     return image
 
 
@@ -1633,11 +1662,13 @@ def load_app_settings() -> dict:
 
 def _default_settings_dict() -> dict:
     """Return settings dict with all default sections populated."""
+    general = DEFAULT_GENERAL_SETTINGS.copy()
+    general["default_language"] = system_language_code()
     return {
         "language_learning": DEFAULT_LANG_LEARNING_SETTINGS.copy(),
         "ui": DEFAULT_UI_SETTINGS.copy(),
         "audio": DEFAULT_AUDIO_SETTINGS.copy(),
-        "general": DEFAULT_GENERAL_SETTINGS.copy(),
+        "general": general,
         "paths": DEFAULT_PATHS_SETTINGS.copy(),
         "document_conversion": DEFAULT_DOCUMENT_CONVERSION_SETTINGS.copy(),
     }
@@ -1654,9 +1685,27 @@ def normalize_learning_language(value: object) -> str:
 def normalize_general_language(value: object) -> str:
     """Return a supported language code for the main generator settings."""
     if not isinstance(value, str):
-        return str(DEFAULT_GENERAL_SETTINGS["default_language"])
+        return system_language_code()
     normalized = language_code_from_display(value.strip())
-    return normalized if normalized in LANGUAGE_NAMES else str(DEFAULT_GENERAL_SETTINGS["default_language"])
+    return normalized if normalized in LANGUAGE_NAMES else "en"
+
+
+def system_language_code(locale_name: str | None = None) -> str:
+    """Resolve the system locale to a supported app language, or English."""
+    if locale_name is None:
+        try:
+            locale_name = locale.getlocale()[0]
+        except (ValueError, TypeError):
+            locale_name = None
+    if not locale_name:
+        return "en"
+    normalized = locale_name.replace("_", "-").strip().lower()
+    if normalized in LANGUAGE_NAMES:
+        return normalized
+    base = normalized.split("-", 1)[0]
+    if base == "zh":
+        return "zh-cn"
+    return base if base in LANGUAGE_NAMES else "en"
 
 
 def normalize_app_settings(raw_settings: object) -> dict:
@@ -1684,9 +1733,13 @@ def normalize_app_settings(raw_settings: object) -> dict:
     settings["language_learning"]["language"] = normalize_learning_language(
         settings["language_learning"].get("language")
     )
-    settings["general"]["default_language"] = normalize_general_language(
-        settings["general"].get("default_language")
+    general_raw = raw.get("general")
+    saved_language = (
+        general_raw.get("default_language")
+        if isinstance(general_raw, dict) and "default_language" in general_raw
+        else None
     )
+    settings["general"]["default_language"] = normalize_general_language(saved_language)
     return settings
 
 
@@ -1781,6 +1834,17 @@ PIPER_PREVIEW_TEXTS: dict[str, str] = {
     "de": "Der schnelle braune Fuchs springt über den faulen Hund. Piper spricht klar und schnell.",
     "es": "El rápido zorro marrón salta sobre el perro perezoso. Piper habla de forma clara y rápida.",
     "fr": "Le rapide renard brun saute par-dessus le chien paresseux. Piper parle clairement et rapidement.",
+    "it": "Ciao, questo è un breve esempio vocale. Parlo in modo chiaro e tranquillo.",
+    "pl": "Cześć, to krótka próbka głosu. Mówię wyraźnie i spokojnie.",
+    "tr": "Merhaba, bu kısa bir ses örneği. Açık ve sakin konuşuyorum.",
+    "ru": "Здравствуйте, это короткий пример голоса. Я говорю ясно и спокойно.",
+    "nl": "Hallo, dit is een kort stemvoorbeeld. Ik spreek rustig en duidelijk.",
+    "cs": "Dobrý den, toto je krátká ukázka hlasu. Mluvím klidně a zřetelně.",
+    "ar": "مرحباً، هذه عينة صوتية قصيرة. أتحدث بوضوح وهدوء.",
+    "zh-cn": "你好，这是一段简短的语音示例。我会清晰平静地说话。",
+    "ko": "안녕하세요. 짧은 음성 샘플입니다. 또렷하고 차분하게 말합니다.",
+    "ja": "こんにちは。これは短い音声サンプルです。はっきりと落ち着いて話します。",
+    "hi": "नमस्ते, यह आवाज़ का एक छोटा नमूना है। मैं स्पष्ट और शांत स्वर में बोलता हूँ।",
 }
 
 
@@ -2852,6 +2916,21 @@ class DocumentToAudioWizard:
         self.overall_text = StringVar(value="Idle")
         self.file_text = StringVar(value="")
         self.pause_button_text = StringVar(value="Pause")
+        self.action_icons = {
+            name: make_playback_icon(self.window, kind)
+            for name, kind in {
+                "start": "start",
+                "pause": "pause",
+                "stop": "stop",
+                "close": "close",
+                "add": "add",
+                "remove": "remove",
+                "clear": "clear",
+                "browse": "browse",
+                "preview": "preview",
+                "folder": "folder",
+            }.items()
+        }
 
         self._build_ui()
         self._on_split_chapters_toggled()
@@ -2880,17 +2959,19 @@ class DocumentToAudioWizard:
         header_actions = ttk.Frame(header)
         header_actions.grid(row=0, column=1, sticky="e")
         self.start_button = ttk.Button(
-            header_actions, text="Start", style="Accent.TButton", command=self._start_processing
+            header_actions, text="Start", image=self.action_icons["start"], compound="left",
+            style="Accent.TButton", command=self._start_processing
         )
         self.start_button.pack(side="left")
         self.pause_button = ttk.Button(
-            header_actions, textvariable=self.pause_button_text, command=self._toggle_pause
+            header_actions, textvariable=self.pause_button_text, image=self.action_icons["pause"],
+            compound="left", command=self._toggle_pause
         )
         self.pause_button.pack(side="left", padx=(8, 0))
-        ttk.Button(header_actions, text="Stop", command=self._stop_processing).pack(
+        ttk.Button(header_actions, text="Stop", image=self.action_icons["stop"], compound="left", command=self._stop_processing).pack(
             side="left", padx=(8, 0)
         )
-        ttk.Button(header_actions, text="Close", command=self._on_close).pack(
+        ttk.Button(header_actions, text="Close", image=self.action_icons["close"], compound="left", command=self._on_close).pack(
             side="left", padx=(8, 0)
         )
 
@@ -2904,6 +2985,12 @@ class DocumentToAudioWizard:
         docs_frame.pack(fill="both", expand=True)
         docs_frame.columnconfigure(0, weight=1)
 
+        doc_actions = ttk.Frame(docs_frame)
+        doc_actions.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ttk.Button(doc_actions, text="Add Documents", image=self.action_icons["add"], compound="left", command=self._add_documents).pack(side="left")
+        ttk.Button(doc_actions, text="Remove Selected", image=self.action_icons["remove"], compound="left", command=self._remove_selected).pack(side="left", padx=(8, 0))
+        ttk.Button(doc_actions, text="Clear All", image=self.action_icons["clear"], compound="left", command=self._clear_all).pack(side="right")
+
         columns = ("filename", "format", "size", "status")
         self.tree = ttk.Treeview(docs_frame, columns=columns, show="headings", height=8)
         self.tree.heading("filename", text="Filename")
@@ -2914,17 +3001,11 @@ class DocumentToAudioWizard:
         self.tree.column("format", width=70, anchor="center")
         self.tree.column("size", width=80, anchor="center")
         self.tree.column("status", width=280)
-        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.grid(row=1, column=0, sticky="nsew")
 
         scrollbar = ttk.Scrollbar(docs_frame, orient="vertical", command=self.tree.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        scrollbar.grid(row=1, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=scrollbar.set)
-
-        doc_actions = ttk.Frame(docs_frame)
-        doc_actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        ttk.Button(doc_actions, text="Add Documents", command=self._add_documents).pack(side="left")
-        ttk.Button(doc_actions, text="Remove Selected", command=self._remove_selected).pack(side="left", padx=(8, 0))
-        ttk.Button(doc_actions, text="Clear All", command=self._clear_all).pack(side="right")
 
         settings_frame = ttk.LabelFrame(bottom, text="Output Settings", padding=10)
         settings_frame.pack(fill="x", pady=(10, 0))
@@ -2994,6 +3075,17 @@ class DocumentToAudioWizard:
         ):
             widget.grid(row=0, column=0, sticky="ew")
             widget.grid_remove()
+        self.wizard_voice_preview_button = ttk.Button(
+            wizard_voice_area,
+            text="Preview",
+            image=self.action_icons["preview"],
+            compound="left",
+            command=self.preview_selected_voice,
+        )
+        self.wizard_voice_preview_button.grid(row=0, column=1, padx=(6, 0))
+        self.wizard_voice_preview_button._preview_icon = self.action_icons["preview"]
+        self.wizard_voice_preview_button._stop_icon = self.action_icons["stop"]
+        self.app.voice_preview_buttons.append(self.wizard_voice_preview_button)
 
         ttk.Label(settings_frame, text="Quality").grid(row=1, column=4, sticky="w", pady=4)
         self.quality_box = ttk.Combobox(
@@ -3011,7 +3103,8 @@ class DocumentToAudioWizard:
         )
         self.wizard_speaker_wav_entry.grid(row=2, column=1, columnspan=4, sticky="ew", pady=4)
         self.wizard_speaker_wav_button = ttk.Button(
-            settings_frame, text="Browse", command=self._pick_wizard_reference_wav
+            settings_frame, text="Browse", image=self.action_icons["browse"], compound="left",
+            command=self._pick_wizard_reference_wav
         )
         self.wizard_speaker_wav_button.grid(row=2, column=5, sticky="e", pady=4)
 
@@ -3062,7 +3155,7 @@ class DocumentToAudioWizard:
         ttk.Entry(settings_frame, textvariable=self.output_folder).grid(
             row=7, column=1, columnspan=4, sticky="ew", pady=4
         )
-        ttk.Button(settings_frame, text="Browse...", command=self._pick_output_folder).grid(
+        ttk.Button(settings_frame, text="Browse...", image=self.action_icons["folder"], compound="left", command=self._pick_output_folder).grid(
             row=7, column=5, sticky="e", pady=4, padx=(8, 0)
         )
 
@@ -3227,6 +3320,32 @@ class DocumentToAudioWizard:
         if hasattr(self, "wizard_speaker_wav_entry"):
             self.wizard_speaker_wav_entry.configure(state=clone_state)
             self.wizard_speaker_wav_button.configure(state=clone_state)
+
+    def preview_selected_voice(self) -> None:
+        language = self.wizard_language.get().strip() or "en"
+        engine = self.wizard_engine.get().strip() or ENGINE_AUTO
+        speaker_wav = self.wizard_speaker_wav.get().strip()
+        resolved = select_engine(
+            engine, language, bool(speaker_wav), self.app.piper_voice_options
+        )
+        label = self.wizard_piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL
+        metadata = self.app.piper_voice_options.get(label, get_piper_voice_metadata(label))
+        if resolved == ENGINE_POCKET:
+            speaker_name = self.wizard_pocket_voice.get().strip() or pocket_default_voice(language)
+        else:
+            speaker_name = self.wizard_speaker_name.get().strip() or DEFAULT_SPEAKER
+        request = SynthesisRequest(
+            text=piper_preview_text(language),
+            language=language,
+            output_file=PREVIEW_OUTPUT_PATH,
+            engine=engine,
+            piper_voice_label=label,
+            piper_voice_code=metadata["code"],
+            speaker_name=speaker_name,
+            speaker_wav=speaker_wav,
+            speed=round(self.wizard_speed.get(), 1),
+        )
+        self.app.toggle_voice_preview(request, self.wizard_voice_preview_button)
 
     def _show_wizard_voice_widget(self, resolved: str) -> None:
         specs = {
@@ -4608,9 +4727,9 @@ class App:
         self.lang_learning_wizard: LanguageLearningWizard | None = None
         self.piper_voice_options = discover_local_piper_voices()
 
-        initial_language = self.settings.get("general", {}).get("default_language", "hu")
+        initial_language = self.settings.get("general", {}).get("default_language", "en")
         if initial_language not in available_languages(self.piper_voice_options):
-            initial_language = "hu"
+            initial_language = "en"
         self.language = StringVar(value=initial_language)
         self.language_display = StringVar(value=language_display_name(initial_language))
         initial_engine = self.settings.get("general", {}).get("default_engine", ENGINE_AUTO)
@@ -4633,6 +4752,10 @@ class App:
         self.generation_progress = None
         self.generation_status = StringVar(value="")
         self.generation_result_path: Path | None = None
+        self.generation_cancel_event = threading.Event()
+        self.voice_preview_worker: threading.Thread | None = None
+        self.voice_preview_stop_event = threading.Event()
+        self.voice_preview_buttons: list[ttk.Button] = []
         self.generation_close_button = None
         self.generation_open_file_button = None
         self.generation_open_folder_button = None
@@ -4903,7 +5026,7 @@ class App:
             text="" if compact else "Generate audio",
             image=self.toolbar_icons["generate"] if compact else "",
             style="Accent.TButton",
-            command=self.start_generation,
+            command=self._generate_or_cancel,
         )
         self.generate_button.pack(side="left", padx=2)
         self.read_button = ttk.Button(
@@ -5036,6 +5159,7 @@ class App:
         voice_area = ttk.Frame(controls)
         voice_area.grid(row=2, column=1, sticky="ew", pady=6)
         voice_area.columnconfigure(0, weight=1)
+        voice_area.columnconfigure(1, weight=0)
 
         self.piper_voice_box = ttk.Combobox(
             voice_area,
@@ -5058,6 +5182,21 @@ class App:
         for widget in (self.piper_voice_box, self.pocket_voice_box, self.speaker_name_entry):
             widget.grid(row=0, column=0, sticky="ew")
             widget.grid_remove()
+        self.voice_preview_icons = {
+            "preview": make_playback_icon(self.root, "preview"),
+            "stop": make_playback_icon(self.root, "stop"),
+        }
+        self.voice_preview_button = ttk.Button(
+            voice_area,
+            text="Preview",
+            image=self.voice_preview_icons["preview"],
+            compound="left",
+            command=lambda: self.preview_selected_voice(),
+        )
+        self.voice_preview_button.grid(row=0, column=1, padx=(6, 0))
+        self.voice_preview_button._preview_icon = self.voice_preview_icons["preview"]
+        self.voice_preview_button._stop_icon = self.voice_preview_icons["stop"]
+        self.voice_preview_buttons.append(self.voice_preview_button)
         add_context_menu(self.speaker_name_entry)
 
         # Reference WAV
@@ -5209,7 +5348,9 @@ class App:
         if self.worker and self.worker.is_alive():
             if not ask_yes_no(self.root, "Generation running", "Audio generation is in progress. Stop and exit?"):
                 return
-            self.stop_playback()
+            self.cancel_generation()
+            self.root.after(100, self._exit_after_generation_stops)
+            return
         if self.preview_worker and self.preview_worker.is_alive():
             if not ask_yes_no(self.root, "Preview running", "Read-aloud preview is in progress. Stop and exit?"):
                 return
@@ -5218,6 +5359,12 @@ class App:
             if not ask_yes_no(self.root, "Exit", "Are you sure you want to exit?"):
                 return
         self.root.quit()
+
+    def _exit_after_generation_stops(self) -> None:
+        if self.worker and self.worker.is_alive():
+            self.root.after(100, self._exit_after_generation_stops)
+            return
+        self._confirm_exit()
 
     def new_document(self) -> None:
         """Clear the text area for a new document."""
@@ -5514,6 +5661,137 @@ class App:
             summary = f"Auto → {resolved}. {summary}"
         self.engine_hint.set(summary)
 
+    def preview_selected_voice(self) -> None:
+        language = self.language.get().strip() or "en"
+        engine = self.engine.get().strip() or ENGINE_AUTO
+        speaker_wav = self.speaker_wav.get().strip()
+        label = self.piper_voice_label.get().strip() or DEFAULT_PIPER_VOICE_LABEL
+        metadata = self.piper_voice_options.get(label, get_piper_voice_metadata(label))
+        resolved = select_engine(engine, language, bool(speaker_wav), self.piper_voice_options)
+        speaker_name = (
+            self.pocket_voice.get().strip() or pocket_default_voice(language)
+            if resolved == ENGINE_POCKET
+            else self.speaker_name.get().strip() or DEFAULT_SPEAKER
+        )
+        request = SynthesisRequest(
+            text=piper_preview_text(language),
+            language=language,
+            output_file=PREVIEW_OUTPUT_PATH,
+            engine=engine,
+            piper_voice_label=label,
+            piper_voice_code=metadata["code"],
+            speaker_name=speaker_name,
+            speaker_wav=speaker_wav,
+            speed=round(self.speed.get(), 1),
+        )
+        self.toggle_voice_preview(request, self.voice_preview_button)
+
+    def toggle_voice_preview(self, request: SynthesisRequest, button: ttk.Button) -> None:
+        worker = getattr(self, "voice_preview_worker", None)
+        if worker is not None and worker.is_alive():
+            self.voice_preview_stop_event.set()
+            self.player.stop(quiet=True)
+            self.enqueue_log("Stopping voice preview...")
+            return
+        if self.service.resolve_engine(request) == ENGINE_XTTS and not self.ensure_xtts_license_acceptance():
+            return
+        self.voice_preview_stop_event = threading.Event()
+        self.voice_preview_buttons = [
+            candidate for candidate in getattr(self, "voice_preview_buttons", [])
+            if candidate.winfo_exists()
+        ]
+        if button not in self.voice_preview_buttons:
+            self.voice_preview_buttons.append(button)
+        for candidate in self.voice_preview_buttons:
+            candidate.configure(
+                text="Stop preview",
+                image=getattr(candidate, "_stop_icon", make_playback_icon(self.root, "stop")),
+                state="normal",
+            )
+        stop_event = self.voice_preview_stop_event
+        self.voice_preview_worker = threading.Thread(
+            target=self._run_voice_preview,
+            args=(request, stop_event),
+            daemon=True,
+        )
+        self.voice_preview_worker.start()
+
+    def _run_voice_preview(self, request: SynthesisRequest, stop_event: threading.Event) -> None:
+        preview_path: Path | None = None
+        try:
+            preview_dir = PREVIEW_OUTPUT_PATH.resolve().parent
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            preview_path = preview_dir / f"voice-preview-{time.time_ns()}.wav"
+            segments = []
+            for _chunk, segment in self.service.iter_segments(request):
+                if stop_event.is_set():
+                    return
+                segments.append(segment)
+            if not segments or stop_event.is_set():
+                return
+            combined = AudioSegment.silent(duration=0)
+            for index, segment in enumerate(segments):
+                combined += segment
+                if index < len(segments) - 1:
+                    combined += AudioSegment.silent(duration=PAUSE_MS)
+            export_audio_segment(combined, preview_path)
+            if not stop_event.is_set():
+                self.player.play_blocking(preview_path, stop_event)
+        except MissingDependencyError as exc:
+            self.enqueue_log(f"Error: {exc}")
+            self.root.after(0, lambda e=exc: self._show_missing_dependency(e.package, e.install_cmd, e.extra))
+        except MissingPiperVoiceError as exc:
+            self.enqueue_log(f"Error: {exc}")
+            self.root.after(0, lambda e=exc: self._show_missing_piper_voice(e.voice_code))
+        except Exception as exc:
+            self.enqueue_log(f"Voice preview failed: {exc}")
+            self.root.after(0, lambda message=str(exc): show_error(self.root, "Voice preview failed", message))
+        finally:
+            if preview_path is not None:
+                try:
+                    preview_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            self.root.after(0, self._finish_voice_preview)
+
+    def _finish_voice_preview(self) -> None:
+        for button in getattr(self, "voice_preview_buttons", []):
+            try:
+                if button.winfo_exists():
+                    button.configure(
+                        text="Preview",
+                        image=getattr(button, "_preview_icon", ""),
+                        state="normal",
+                    )
+            except Exception:
+                continue
+
+    def _generate_or_cancel(self) -> None:
+        if self.worker and self.worker.is_alive():
+            self.cancel_generation()
+            return
+        self.start_generation()
+
+    def _set_generation_active(self, active: bool) -> None:
+        if not hasattr(self, "generate_button"):
+            return
+        compact = bool(self.settings.get("ui", {}).get("toolbar_compact", False))
+        self.generate_button.configure(
+            text="" if compact else ("Stop generation" if active else "Generate audio"),
+            image=(self.playback_icons["stop"] if compact and active else self.toolbar_icons["generate"] if compact else ""),
+            state="normal",
+        )
+        if compact:
+            add_tooltip(self.generate_button, "Stop generation" if active else "Generate audio")
+
+    def cancel_generation(self) -> None:
+        if self.worker is None or not self.worker.is_alive():
+            return
+        self.generation_cancel_event.set()
+        self.generation_status.set("Cancelling after the current synthesis chunk...")
+        if getattr(self, "generation_cancel_button", None) is not None:
+            self.generation_cancel_button.configure(state="disabled", text="Cancelling…")
+
     def _show_voice_widget(self, resolved: str) -> None:
         # (widget, label, active-state) per engine. The active control is shown
         # and enabled; the others are hidden and disabled.
@@ -5661,6 +5939,15 @@ class App:
         buttons.pack(fill="x", side="bottom", pady=(8, 0))
         self.generation_close_button = ttk.Button(buttons, text="Close", command=self.close_generation_modal, state="disabled")
         self.generation_close_button.pack(side="right")
+        self.generation_cancel_icon = make_playback_icon(self.root, "cancel")
+        self.generation_cancel_button = ttk.Button(
+            buttons,
+            text="Cancel",
+            image=self.generation_cancel_icon,
+            compound="left",
+            command=self.cancel_generation,
+        )
+        self.generation_cancel_button.pack(side="right", padx=(0, 8))
         self.generation_open_folder_button = ttk.Button(
             buttons,
             text="Open Folder",
@@ -5695,11 +5982,24 @@ class App:
         self.generation_progress["value"] = progress
         self.generation_status.set(message)
 
-    def finish_generation_modal(self, result: Path | None, error: str | None = None) -> None:
+    def finish_generation_modal(
+        self, result: Path | None, error: str | None = None, *, cancelled: bool = False
+    ) -> None:
+        self._set_generation_active(False)
+        if hasattr(self, "generation_cancel_button"):
+            self.generation_cancel_button.configure(state="disabled")
         if self.generation_modal is None or not self.generation_modal.winfo_exists() or self.generation_progress is None:
             return
 
-        if error is None and result is not None:
+        if cancelled:
+            self.generation_progress["value"] = 0
+            self.generation_status.set("Generation cancelled. No audio file was exported.")
+            self.generation_result_path = None
+            self.generation_modal.protocol("WM_DELETE_WINDOW", self.close_generation_modal)
+            self.generation_close_button.configure(state="normal")
+            self.generation_open_file_button.configure(state="disabled")
+            self.generation_open_folder_button.configure(state="disabled")
+        elif error is None and result is not None:
             self.generation_progress["value"] = 100
             self.generation_status.set(f"Audio created: {result}")
             self.generation_result_path = result
@@ -5914,7 +6214,9 @@ class App:
                 if not self.ensure_xtts_license_acceptance():
                     return
             self.enqueue_log("Starting bilingual synthesis job.")
+            self.generation_cancel_event = threading.Event()
             self.show_generation_modal(request.output_file)
+            self._set_generation_active(True)
             self.worker = threading.Thread(
                 target=self.run_practice_generation,
                 args=(requests, request.output_file),
@@ -5927,7 +6229,9 @@ class App:
             return
 
         self.enqueue_log("Starting synthesis job.")
+        self.generation_cancel_event = threading.Event()
         self.show_generation_modal(request.output_file)
+        self._set_generation_active(True)
         self.worker = threading.Thread(target=self.run_generation, args=(request,), daemon=True)
         self.worker.start()
 
@@ -6239,6 +6543,9 @@ class App:
 
             combined = AudioSegment.silent(duration=0)
             for index, (_chunk, segment) in enumerate(self.service.iter_segments(request), start=1):
+                if self.generation_cancel_event.is_set():
+                    self.root.after(0, lambda: self.finish_generation_modal(None, cancelled=True))
+                    return
                 combined += segment
                 if index < total_chunks:
                     combined += AudioSegment.silent(duration=PAUSE_MS)
@@ -6251,6 +6558,9 @@ class App:
                     ),
                 )
 
+            if self.generation_cancel_event.is_set():
+                self.root.after(0, lambda: self.finish_generation_modal(None, cancelled=True))
+                return
             self.root.after(0, lambda: self.generation_status.set("Saving audio file..."))
             self.enqueue_log(f"Exporting audio to {request.output_file}")
             export_audio_with_fallback(
@@ -6263,15 +6573,22 @@ class App:
         except MissingDependencyError as exc:
             self.enqueue_log(f"Error: {exc}")
             self.root.after(0, lambda e=exc: self._show_missing_dependency(e.package, e.install_cmd, e.extra))
+            self.root.after(0, lambda message=str(exc): self.finish_generation_modal(None, error=message))
+            return
         except MissingPiperVoiceError as exc:
             self.enqueue_log(f"Error: {exc}")
             self.root.after(0, lambda e=exc: self._show_missing_piper_voice(e.voice_code))
+            self.root.after(0, lambda message=str(exc): self.finish_generation_modal(None, error=message))
+            return
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
             error_message = str(exc)
             self.root.after(0, lambda message=error_message: self.finish_generation_modal(None, error=message))
             return
 
+        if self.generation_cancel_event.is_set():
+            self.root.after(0, lambda: self.finish_generation_modal(None, cancelled=True))
+            return
         self.enqueue_log(f"Saved audio: {result}")
         self.root.after(0, lambda path=result: self.finish_generation_modal(path))
 
@@ -6285,10 +6602,14 @@ class App:
             combined = AudioSegment.silent(duration=0)
             total = len(requests)
             for index, (item, request) in enumerate(requests, start=1):
-                segments = list(self.service.iter_segments(request))
-                for chunk_index, (_chunk, segment) in enumerate(segments, start=1):
+                chunk_count = 0
+                for _chunk, segment in self.service.iter_segments(request):
+                    if self.generation_cancel_event.is_set():
+                        self.root.after(0, lambda: self.finish_generation_modal(None, cancelled=True))
+                        return
                     combined += segment
-                    if chunk_index < len(segments):
+                    chunk_count += 1
+                    if chunk_count < max(1, len(chunk_text_with_offsets(request.text))):
                         combined += AudioSegment.silent(duration=PAUSE_MS)
                 if item.pause_after_ms:
                     combined += AudioSegment.silent(duration=item.pause_after_ms)
@@ -6300,6 +6621,9 @@ class App:
                         f"Synthesizing {language_display_name(language)} line {current}/{count}...",
                     ),
                 )
+            if self.generation_cancel_event.is_set():
+                self.root.after(0, lambda: self.finish_generation_modal(None, cancelled=True))
+                return
             self.root.after(0, lambda: self.generation_status.set("Saving audio file..."))
             export_audio_with_fallback(
                 combined,
@@ -6309,12 +6633,19 @@ class App:
         except MissingDependencyError as exc:
             self.enqueue_log(f"Error: {exc}")
             self.root.after(0, lambda e=exc: self._show_missing_dependency(e.package, e.install_cmd, e.extra))
+            self.root.after(0, lambda message=str(exc): self.finish_generation_modal(None, error=message))
+            return
         except MissingPiperVoiceError as exc:
             self.enqueue_log(f"Error: {exc}")
             self.root.after(0, lambda e=exc: self._show_missing_piper_voice(e.voice_code))
+            self.root.after(0, lambda message=str(exc): self.finish_generation_modal(None, error=message))
+            return
         except Exception as exc:
             self.enqueue_log(f"Error: {exc}")
             self.root.after(0, lambda message=str(exc): self.finish_generation_modal(None, error=message))
+            return
+        if self.generation_cancel_event.is_set():
+            self.root.after(0, lambda: self.finish_generation_modal(None, cancelled=True))
             return
         self.enqueue_log(f"Saved audio: {output_file}")
         self.root.after(0, lambda: self.finish_generation_modal(output_file))
