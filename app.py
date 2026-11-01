@@ -1605,6 +1605,7 @@ DEFAULT_GENERAL_SETTINGS: dict[str, object] = {
     "confirm_on_exit": True,
     "xtts_license_accepted": False,
 }
+DEFAULT_PIPER_VOICE_BY_LANGUAGE: dict[str, str] = {}
 
 def get_default_music_folder() -> Path:
     if sys.platform == "win32":
@@ -1671,6 +1672,7 @@ def _default_settings_dict() -> dict:
         "general": general,
         "paths": DEFAULT_PATHS_SETTINGS.copy(),
         "document_conversion": DEFAULT_DOCUMENT_CONVERSION_SETTINGS.copy(),
+        "default_piper_voice_by_language": DEFAULT_PIPER_VOICE_BY_LANGUAGE.copy(),
     }
 
 
@@ -1708,6 +1710,37 @@ def system_language_code(locale_name: str | None = None) -> str:
     return base if base in LANGUAGE_NAMES else "en"
 
 
+def normalize_piper_voice_defaults(value: object) -> dict[str, str]:
+    """Normalize language-code to Piper-label preferences from settings JSON."""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, str] = {}
+    for raw_language, raw_label in value.items():
+        language = str(raw_language).strip().lower().replace("_", "-")
+        label = raw_label.strip() if isinstance(raw_label, str) else ""
+        if re.fullmatch(r"[a-z]{2,3}(?:-[a-z0-9]+)*", language) and label:
+            result[language] = label
+    return result
+
+
+def default_piper_voice_for_language(
+    settings: dict,
+    language: str,
+    voice_options: dict[str, dict[str, str]],
+) -> str | None:
+    """Return the saved Piper voice for a language, then a compatible fallback."""
+    labels = piper_voices_for_language(voice_options, language)
+    saved = normalize_piper_voice_defaults(
+        settings.get("default_piper_voice_by_language", {})
+    ).get(language)
+    if saved in labels:
+        return saved
+    legacy = settings.get("default_piper_voice_label")
+    if isinstance(legacy, str) and legacy in labels:
+        return legacy
+    return labels[0] if labels else None
+
+
 def normalize_app_settings(raw_settings: object) -> dict:
     """Merge untrusted persisted JSON with defaults and migrate old values."""
     raw = raw_settings if isinstance(raw_settings, dict) else {}
@@ -1740,6 +1773,9 @@ def normalize_app_settings(raw_settings: object) -> dict:
         else None
     )
     settings["general"]["default_language"] = normalize_general_language(saved_language)
+    settings["default_piper_voice_by_language"] = normalize_piper_voice_defaults(
+        raw.get("default_piper_voice_by_language")
+    )
     return settings
 
 
@@ -3309,7 +3345,10 @@ class DocumentToAudioWizard:
             )
             self.wizard_piper_voice_box.configure(values=labels)
             if self.wizard_piper_voice_label.get() not in labels and labels:
-                self.wizard_piper_voice_label.set(labels[0])
+                preferred_label = default_piper_voice_for_language(
+                    self.app.settings, language, self.app.piper_voice_options
+                )
+                self.wizard_piper_voice_label.set(preferred_label or labels[0])
 
         if resolved == ENGINE_POCKET and is_pocket_default_voice(self.wizard_pocket_voice.get().strip()):
             self.wizard_pocket_voice.set(pocket_default_voice(language))
@@ -4736,7 +4775,9 @@ class App:
         initial_engine = self.settings.get("general", {}).get("default_engine", ENGINE_AUTO)
         self.engine = StringVar(value=initial_engine if initial_engine in ENGINE_SUMMARIES else ENGINE_AUTO)
         self._syncing_voice_settings = False
-        initial_piper_voice = self.settings.get("default_piper_voice_label", DEFAULT_PIPER_VOICE_LABEL)
+        initial_piper_voice = default_piper_voice_for_language(
+            self.settings, initial_language, self.piper_voice_options
+        ) or self.settings.get("default_piper_voice_label", DEFAULT_PIPER_VOICE_LABEL)
         if initial_piper_voice not in self.piper_voice_options:
             initial_piper_voice = DEFAULT_PIPER_VOICE_LABEL
         self.piper_voice_label = StringVar(value=initial_piper_voice)
@@ -4773,7 +4814,7 @@ class App:
         self._build_ui()
         self.language_display.trace_add("write", self._on_language_display_changed)
         self.engine.trace_add("write", self.on_voice_settings_changed)
-        self.piper_voice_label.trace_add("write", self.on_voice_settings_changed)
+        self.piper_voice_label.trace_add("write", self._on_piper_voice_label_changed)
         self.speaker_wav.trace_add("write", self.on_voice_settings_changed)
         self.on_voice_settings_changed()
         self._bind_shortcuts()
@@ -4783,6 +4824,29 @@ class App:
         self.language.set(language_code_from_display(self.language_display.get()))
         self.on_voice_settings_changed()
         self._rebuild_engine_submenu()
+
+    def _on_piper_voice_label_changed(self, *_args) -> None:
+        if not getattr(self, "_syncing_voice_settings", False):
+            self._remember_piper_voice_for_language(
+                self.language.get(), self.piper_voice_label.get()
+            )
+        self.on_voice_settings_changed()
+
+    def _remember_piper_voice_for_language(self, language: str, label: str) -> None:
+        metadata = self.piper_voice_options.get(label)
+        if metadata is None or piper_language_of_code(metadata["code"]) != language:
+            return
+        preferences = normalize_piper_voice_defaults(
+            self.settings.get("default_piper_voice_by_language", {})
+        )
+        changed = preferences.get(language) != label
+        preferences[language] = label
+        self.settings["default_piper_voice_by_language"] = preferences
+        if self.settings.get("default_piper_voice_label") != label:
+            self.settings["default_piper_voice_label"] = label
+            changed = True
+        if changed:
+            save_app_settings(self.settings)
 
     def _rebuild_engine_submenu(self) -> None:
         """Rebuild the Engine submenu to show only engines supporting the current language."""
@@ -5603,9 +5667,23 @@ class App:
         return None
 
     def set_default_piper_voice(self, label: str) -> None:
+        metadata = self.piper_voice_options.get(label)
+        if metadata is None:
+            return
+        language = piper_language_of_code(metadata["code"])
+        preferences = normalize_piper_voice_defaults(
+            self.settings.get("default_piper_voice_by_language", {})
+        )
+        preferences[language] = label
+        self.settings["default_piper_voice_by_language"] = preferences
         self.settings["default_piper_voice_label"] = label
         save_app_settings(self.settings)
-        self.piper_voice_label.set(label)
+        if self.language.get() == language:
+            self._syncing_voice_settings = True
+            try:
+                self.piper_voice_label.set(label)
+            finally:
+                self._syncing_voice_settings = False
 
     def on_voice_settings_changed(self, *_args) -> None:
         if getattr(self, "_syncing_voice_settings", False):
@@ -5639,7 +5717,12 @@ class App:
                 self.piper_voice_options.keys()
             )
             self.piper_voice_box.configure(values=labels)
-            if self.piper_voice_label.get() not in labels and labels:
+            preferred_label = default_piper_voice_for_language(
+                self.settings, language, self.piper_voice_options
+            )
+            if preferred_label in labels and self.piper_voice_label.get() != preferred_label:
+                self.piper_voice_label.set(preferred_label)
+            elif self.piper_voice_label.get() not in labels and labels:
                 self.piper_voice_label.set(labels[0])
 
         # 3. Point Pocket at the language's default voice, unless the user has

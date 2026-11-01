@@ -346,8 +346,48 @@ class TestSetDefaultPiperVoice:
         with patch("app.save_app_settings") as mock_save:
             app.set_default_piper_voice("English US | Lessac | medium")
         assert app.settings["default_piper_voice_label"] == "English US | Lessac | medium"
-        assert app.piper_voice_label.get() == "English US | Lessac | medium"
+        assert app.settings["default_piper_voice_by_language"]["en"] == "English US | Lessac | medium"
+        assert app.piper_voice_label.get() == DEFAULT_PIPER_VOICE_LABEL
         mock_save.assert_called_once()
+
+    def test_sets_active_selection_when_default_voice_matches_current_language(self):
+        app = _make_app()
+        app.language.set("en")
+        app.set_default_piper_voice("English US | Lessac | medium")
+        assert app.piper_voice_label.get() == "English US | Lessac | medium"
+
+
+class TestPerLanguagePiperVoiceDefaults:
+    def test_language_switch_restores_each_saved_voice(self):
+        app = _make_app()
+        app.settings = {
+            "default_piper_voice_by_language": {
+                "hu": "Hungarian | Anna | medium",
+                "en": "English US | Lessac | medium",
+            }
+        }
+
+        app.language.set("en")
+        app._sync_voice_settings()
+        assert app.piper_voice_label.get() == "English US | Lessac | medium"
+
+        app.language.set("hu")
+        app._sync_voice_settings()
+        assert app.piper_voice_label.get() == "Hungarian | Anna | medium"
+
+    def test_options_selection_is_saved_for_current_language(self):
+        app = _make_app()
+        app.language.set("en")
+        app.piper_voice_label.set("English US | Lessac | medium")
+
+        with patch("app.save_app_settings") as save:
+            app._on_piper_voice_label_changed()
+
+        assert app.settings["default_piper_voice_by_language"] == {
+            "en": "English US | Lessac | medium",
+        }
+        assert app.settings["default_piper_voice_label"] == "English US | Lessac | medium"
+        save.assert_called_once_with(app.settings)
 
 
 class TestUpdatePlaybackToggleLabel:
