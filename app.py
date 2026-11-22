@@ -6008,7 +6008,7 @@ class App:
             "Dubbing Studio — local EN to HU dubbing.\n\n"
             "Phase 1a (audio-only): import MP3/WAV, faster-whisper small (~466MB) "
             "transcribes, NLLB-200-1.3B (~2.5GB, CC-BY-NC, local download only, "
-            "never vendored) translates, cyhunspell checks HU spelling, "
+            "never vendored) translates, spylls checks HU spelling (pure-Python wheel, "
             "Piper/XTTS synthesizes, atempo fits each segment (0.85-1.15 accept, "
             "chain 0.5-2.0, overflow flagged if >2.5x).\n\n"
             "Phase 1b (video, opt-in): MP4/MKV mux, soft subs (mp4 mov_text, mkv srt), "

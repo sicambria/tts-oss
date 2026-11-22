@@ -99,6 +99,15 @@ def has_separator() -> bool:
         return False
 
 
+def has_spellcheck() -> bool:
+    """True when any no-sudo spell backend works (spylls primary, cyhunspell legacy)."""
+    try:
+        from . import spellcheck
+        return spellcheck.backend() is not None
+    except Exception:
+        return False
+
+
 def has_cyhunspell() -> bool:
     try:
         import hunspell  # noqa: F401  # cyhunspell installs as hunspell
@@ -132,23 +141,21 @@ def missing_dependencies(separation_enabled: bool = False) -> list[dict]:
         "hint": "pip install -r requirements-dubbing.txt (model ~2.5GB downloads after confirm)",
     })
     items.append({
-        "key": "cyhunspell", "label": "Spellcheck (cyhunspell, optional)",
-        "ok": has_cyhunspell(), "pip": "cyhunspell==1.3.4",
+        "key": "spellcheck", "label": "Spellcheck (spylls, pure-Python wheel)",
+        "ok": has_spellcheck(), "pip": "spylls==0.1.7",
         "needs_sudo": False,
-        "hint": "One-click pip; if the build fails (autopoint/hunspell.pc) run: sudo apt install gettext libhunspell-dev pkg-config — dubbing works without it.",
+        "hint": "pip install -r requirements-dubbing.txt (reads system hunspell-hu dicts, no build).",
     })
     try:
         from . import spellcheck
         dict_ok = spellcheck.available("hu_HU")
     except Exception:
         dict_ok = False
-    if not has_cyhunspell():
-        dict_ok = False
     items.append({
         "key": "hu_dict", "label": "Hungarian dictionary (hu_HU)",
         "ok": dict_ok, "pip": "",
         "needs_sudo": True,
-        "hint": "Linux: sudo apt install hunspell-hu | Fedora: sudo dnf install hunspell-hu | macOS: brew install hunspell + magyarispell dict",
+        "hint": "Usually preinstalled; if missing: sudo apt install hunspell-hu (reads /usr/share/hunspell/hu_HU.dic).",
     })
     if separation_enabled:
         items.append({
