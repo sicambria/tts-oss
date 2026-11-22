@@ -57,6 +57,23 @@ rg <pattern>                      # search (never grep .venv manually)
 9. **Linux system deps.** `python3-tk` + SDL audio libs are outside pip. Document new machine deps in `README.md`, pitfalls in `KNOWN_ISSUES.md`.
 10. **Don't commit generated noise.** `settings.json` / `settings.json.bak` churn polluted history — they are git-ignored; don't force-add them.
 
+## Session-start invariants (violation = blocker)
+
+1. **Before ANY edit:** run `git branch --show-current` and `git status --short`. Know whether you are on `main` and whether the tree is dirty.
+2. **Keep `main` clean.** Substantive multi-step (non-docs) work goes on a branch/worktree first, then merges when clean and green. Only docs/config (`*.md`, settings templates, hooks config) may commit directly to `main`.
+3. **After context compaction:** re-read this file and the active plan before continuing.
+4. **After ANY `git push`:** verify with `git rev-list --left-right --count origin/<branch>...<branch>`. AHEAD must be 0. If the command timed out, the push did NOT complete — re-verify.
+
+## Verify and gates (never bypass)
+
+- The gates are the product: `.githooks/pre-commit` (ruff + pytest cov≥50), `.githooks/pre-push` (ruff + pytest cov≥85). **Never use `--no-verify`, never bypass hooks.** A bypass that reaches `main` is a defect.
+- If a gate is wrong, fix the gate (and log the decision in the commit message and/or `KNOWN_ISSUES.md`) — don't skip it. Any override must leave a trace; a silent override is forbidden.
+
+## Plan before code and learning loop
+
+- Non-trivial work gets a plan file under `plans/` before implementation (follow the existing `YYYY-MM_*` naming and RCA format). Reference it while implementing.
+- On any real bug: check `KNOWN_ISSUES.md` and `plans/` RCAs first, do RCA, then close the loop with a real prevention artifact — a regression test plus a `KNOWN_ISSUES.md` / `ANTIPATTERNS.md` update. Never a prose-only fix.
+
 ## Before committing
 
 - Always commit when the task is done. Do not leave changes uncommitted in the working tree.
