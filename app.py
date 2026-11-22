@@ -416,6 +416,79 @@ def ask_yes_no(parent: Tk | Toplevel, title: str, message: str) -> bool:
         owner.attributes("-topmost", False)
 
 
+def _prepare_file_parent(parent: Tk | Toplevel) -> Tk | Toplevel:
+    """Make a file dialog's owner visible and temporarily frontmost.
+
+    Native file dialogs open as children of ``parent`` — without this they can
+    land below another Toplevel (e.g. a wizard) where the user never sees them.
+    Mirrors :func:`_prepare_message_parent`.
+    """
+    try:
+        parent.deiconify()
+    except Exception:
+        pass
+    try:
+        parent.lift()
+    except Exception:
+        pass
+    try:
+        parent.attributes("-topmost", True)
+    except Exception:
+        pass
+    try:
+        parent.update_idletasks()
+    except Exception:
+        pass
+    return parent
+
+
+def _restore_file_parent(parent: Tk | Toplevel) -> None:
+    try:
+        parent.attributes("-topmost", False)
+    except Exception:
+        pass
+    try:
+        parent.lift()
+    except Exception:
+        pass
+
+
+def ask_open_file_top(parent: Tk | Toplevel, **kwargs) -> str:
+    """askopenfilename that always opens above every app window."""
+    owner = _prepare_file_parent(parent)
+    try:
+        return filedialog.askopenfilename(parent=owner, **kwargs)
+    finally:
+        _restore_file_parent(owner)
+
+
+def ask_open_files_top(parent: Tk | Toplevel, **kwargs) -> tuple[str, ...]:
+    """askopenfilenames that always opens above every app window."""
+    owner = _prepare_file_parent(parent)
+    try:
+        return filedialog.askopenfilenames(parent=owner, **kwargs)
+    finally:
+        _restore_file_parent(owner)
+
+
+def ask_save_file_top(parent: Tk | Toplevel, **kwargs) -> str:
+    """asksaveasfilename that always opens above every app window."""
+    owner = _prepare_file_parent(parent)
+    try:
+        return filedialog.asksaveasfilename(parent=owner, **kwargs)
+    finally:
+        _restore_file_parent(owner)
+
+
+def ask_directory_top(parent: Tk | Toplevel, **kwargs) -> str:
+    """askdirectory that always opens above every app window."""
+    owner = _prepare_file_parent(parent)
+    try:
+        return filedialog.askdirectory(parent=owner, **kwargs)
+    finally:
+        _restore_file_parent(owner)
+
+
 def sanitize_filename(name: str) -> str:
     return re.sub(r'[<>:"/\\|?*]', '_', name).strip().rstrip('.')
 
@@ -3454,8 +3527,8 @@ class DocumentToAudioWizard:
 
     def _add_documents(self) -> None:
         formats = " ".join(f"*{ext}" for ext in DocumentExtractor.SUPPORTED)
-        paths = filedialog.askopenfilenames(
-            parent=self.window,
+        paths = ask_open_files_top(
+            self.window,
             title="Select documents",
             filetypes=[
                 ("All supported documents", formats),
@@ -3499,8 +3572,8 @@ class DocumentToAudioWizard:
         self._refresh_tree()
 
     def _pick_output_folder(self) -> None:
-        folder = filedialog.askdirectory(
-            parent=self.window,
+        folder = ask_directory_top(
+            self.window,
             title="Choose output folder",
             initialdir=self.output_folder.get(),
         )
@@ -3530,8 +3603,8 @@ class DocumentToAudioWizard:
         return False
 
     def _pick_wizard_reference_wav(self) -> None:
-        path = filedialog.askopenfilename(
-            parent=self.window,
+        path = ask_open_file_top(
+            self.window,
             title="Choose reference voice WAV",
             filetypes=[("Audio files", "*.wav *.mp3 *.m4a *.flac"), ("All files", "*.*")],
         )
@@ -4599,7 +4672,7 @@ class SettingsDialog:
         ttk.Checkbutton(frame, text="Confirm on exit", variable=self.general_confirm_exit_var).grid(row=row, column=0, columnspan=2, sticky="w", pady=6)
 
     def _pick_output_folder(self) -> None:
-        folder = filedialog.askdirectory(parent=self.window, title="Choose Default Output Folder", initialdir=self.general_output_var.get())
+        folder = ask_directory_top(self.window, title="Choose Default Output Folder", initialdir=self.general_output_var.get())
         if folder:
             self.general_output_var.set(folder)
 
@@ -4676,7 +4749,7 @@ class SettingsDialog:
         ttk.Button(frame, text="Reset All Settings to Defaults", command=self._on_reset).grid(row=row, column=0, columnspan=2, pady=(12, 0))
 
     def _pick_dir(self, var: StringVar) -> None:
-        folder = filedialog.askdirectory(parent=self.window, title="Choose Directory", initialdir=var.get())
+        folder = ask_directory_top(self.window, title="Choose Directory", initialdir=var.get())
         if folder:
             var.set(folder)
 
@@ -5543,8 +5616,8 @@ class App:
     def _save_language_pairs(self, fmt: str, dialog: Toplevel | None = None) -> None:
         pairs = self.current_language_pairs()
         extension = ".txt" if fmt == "Text" else ".csv" if fmt == "Anki CSV" else ".json"
-        path = filedialog.asksaveasfilename(
-            parent=self.root,
+        path = ask_save_file_top(
+            self.root,
             title="Save language pairs",
             defaultextension=extension,
             filetypes=[("All files", "*.*")],
@@ -5581,8 +5654,8 @@ class App:
 
     def export_log(self) -> None:
         """Export the status log to a file."""
-        path = filedialog.asksaveasfilename(
-            parent=self.root,
+        path = ask_save_file_top(
+            self.root,
             title="Export Log",
             defaultextension=".txt",
             filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
@@ -5930,8 +6003,8 @@ class App:
         self.root.after(150, self.flush_logs)
 
     def pick_reference_wav(self) -> None:
-        path = filedialog.askopenfilename(
-            parent=self.root,
+        path = ask_open_file_top(
+            self.root,
             title="Choose reference voice WAV",
             filetypes=[("Audio files", "*.wav *.mp3 *.m4a *.flac"), ("All files", "*.*")],
         )
@@ -5946,8 +6019,8 @@ class App:
         initial_file = f"speech{defaultext}"
 
         # Separate filters per format so selected filter determines extension
-        path = filedialog.asksaveasfilename(
-            parent=self.root,
+        path = ask_save_file_top(
+            self.root,
             title="Save output audio",
             defaultextension=defaultext,
             filetypes=[
@@ -5980,6 +6053,10 @@ class App:
         if self.dub_wizard is not None:
             try:
                 if self.dub_wizard.window.winfo_exists():
+                    try:
+                        self.dub_wizard.window.deiconify()
+                    except Exception:
+                        pass
                     self.dub_wizard.window.lift()
                     self.dub_wizard.window.focus_force()
                     return
@@ -6171,8 +6248,8 @@ class App:
     def load_text_file(self) -> None:
         if not self._check_dirty_and_confirm():
             return
-        path = filedialog.askopenfilename(
-            parent=self.root,
+        path = ask_open_file_top(
+            self.root,
             title="Open text file",
             filetypes=[("Text files", "*.txt *.md"), ("All files", "*.*")],
         )

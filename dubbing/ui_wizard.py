@@ -22,6 +22,41 @@ from .config import DEFAULT_DUBBING_SETTINGS
 from .config import DubJob
 
 
+def _file_dialog_top(window, func, **kwargs):
+    """Run a filedialog as a child of the wizard, forced above all windows.
+
+    Native file dialogs without ``parent`` (or with a buried parent) can open
+    below the wizard where the user never sees them.
+    """
+    try:
+        window.deiconify()
+    except Exception:
+        pass
+    try:
+        window.lift()
+    except Exception:
+        pass
+    try:
+        window.attributes("-topmost", True)
+    except Exception:
+        pass
+    try:
+        window.update_idletasks()
+    except Exception:
+        pass
+    try:
+        return func(parent=window, **kwargs)
+    finally:
+        try:
+            window.attributes("-topmost", False)
+        except Exception:
+            pass
+        try:
+            window.lift()
+        except Exception:
+            pass
+
+
 class DubbingWizard:
     def __init__(self, app) -> None:
         self.app = app
@@ -44,6 +79,8 @@ class DubbingWizard:
         self.stop_event = threading.Event()
         self.log_lines: list[str] = []
         self._log_queue: queue.Queue[str] = queue.Queue()
+        self._deps_visible = True
+        self._deps_user_shown = False
         self._build_ui()
         self._poll_log_queue()
         self.window.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -113,7 +150,64 @@ class DubbingWizard:
                     self.install_status.set("Pip deps OK. System item(s) still missing (need sudo, see hint — copy the command).")
                 else:
                     self.install_status.set("All dependencies OK.")
+            self._update_deps_visibility(deps)
             self._refresh()
+        except Exception:
+            pass
+
+    def _update_deps_visibility(self, deps: list[dict]) -> None:
+        try:
+            all_ok = bool(deps) and all(d.get("ok") for d in deps)
+        except Exception:
+            return
+        if not all_ok:
+            try:
+                self._deps_user_shown = False
+            except Exception:
+                pass
+            self._set_deps_visible(True, show_toggle=False)
+        else:
+            if getattr(self, "_deps_user_shown", False):
+                self._set_deps_visible(True, show_toggle=True)
+            else:
+                self._set_deps_visible(False, show_toggle=True)
+
+    def _set_deps_visible(self, visible: bool, show_toggle: bool = True) -> None:
+        self._deps_visible = visible
+        try:
+            frame = getattr(self, "dep_frame", None)
+            if frame is not None:
+                if visible:
+                    frame.pack(fill="x", pady=(0, 8))
+                else:
+                    frame.pack_forget()
+        except Exception:
+            pass
+        try:
+            btn = getattr(self, "dep_toggle_btn", None)
+            if btn is not None:
+                if show_toggle and not visible:
+                    btn.pack(side="right")
+                    try:
+                        btn.configure(text="Show dependencies")
+                    except Exception:
+                        pass
+                elif show_toggle and visible and getattr(self, "_deps_user_shown", False):
+                    btn.pack(side="right")
+                    try:
+                        btn.configure(text="Hide dependencies")
+                    except Exception:
+                        pass
+                elif not show_toggle:
+                    btn.pack_forget()
+        except Exception:
+            pass
+
+    def _toggle_deps(self) -> None:
+        try:
+            visible = not bool(getattr(self, "_deps_visible", True))
+            self._deps_user_shown = visible
+            self._set_deps_visible(visible, show_toggle=True)
         except Exception:
             pass
 
@@ -183,16 +277,26 @@ class DubbingWizard:
             self.window.after(0, self._refresh_deps)
         except Exception:
             pass
+        try:
+            self.window.after(0, self._on_job_done)
+        except Exception:
+            pass
 
     def _build_ui(self) -> None:  # pragma: no cover
         f = ttk.Frame(self.window, padding=12)
         f.pack(fill="both", expand=True)
-        ttk.Label(f, text="Dubbing Studio", font=("TkDefaultFont", 14, "bold")).pack(anchor="w")
+        header = ttk.Frame(f)
+        header.pack(fill="x")
+        ttk.Label(header, text="Dubbing Studio", font=("TkDefaultFont", 14, "bold")).pack(side="left", anchor="w")
+        self.dep_toggle_btn = ttk.Button(header, text="Show dependencies", command=self._toggle_deps)
+        self.dep_toggle_btn.pack(side="right")
+        self.dep_toggle_btn.pack_forget()
         ttk.Label(f, text="EN to HU local dub. Phase 1a: audio-only. Enable Phase 1b for video mux + burn-in.",
                   wraplength=900).pack(anchor="w", pady=(0, 8))
 
         dep_frame = ttk.LabelFrame(f, text="Dependencies (one-click pip install, no sudo)", padding=8)
         dep_frame.pack(fill="x", pady=(0, 8))
+        self.dep_frame = dep_frame
         self.dep_tree = ttk.Treeview(dep_frame, columns=("component", "status", "hint"),
                                      show="headings", height=5)
         self.dep_tree.heading("component", text="Component")
@@ -239,8 +343,14 @@ class DubbingWizard:
         self.output_folder = StringVar(value=default_out)
         ttk.Entry(out_row, textvariable=self.output_folder).pack(side="left", fill="x", expand=True, padx=6)
         ttk.Button(out_row, text="Browse…", command=self._browse_out).pack(side="left")
-        ttk.Button(f, text="Transcribe + Translate (dry run)", command=self._start_dry).pack(anchor="w", pady=4)
-        ttk.Button(f, text="Generate dubbed version (full)", command=self._start_full).pack(anchor="w", pady=4)
+        run_row = ttk.Frame(f)
+        run_row.pack(fill="x", pady=4)
+        self.dry_btn = ttk.Button(run_row, text="Transcribe + Translate (dry run)", command=self._start_dry)
+        self.dry_btn.pack(side="left")
+        self.full_btn = ttk.Button(run_row, text="Generate dubbed version (full)", command=self._start_full)
+        self.full_btn.pack(side="left", padx=6)
+        self.stop_btn = ttk.Button(run_row, text="Stop", command=self._on_stop)
+        self.stop_btn.pack(side="left", padx=6)
 
         log_frame = ttk.LabelFrame(f, text="Log — every error lands here, Copy all messages copies it", padding=6)
         log_frame.pack(fill="both", expand=True, pady=4)
@@ -252,6 +362,7 @@ class DubbingWizard:
 
         ttk.Label(f, textvariable=self.status, wraplength=900).pack(anchor="w", pady=2)
         ttk.Button(f, text="Close", command=self._on_close).pack(anchor="e")
+        self._update_run_buttons()
         self._refresh()
 
     def _refresh(self) -> None:
@@ -266,14 +377,15 @@ class DubbingWizard:
 
     def _browse(self) -> None:
         exts = " ".join(f"*{e}" for e in sorted(SUPPORTED_INPUT_EXTS))
-        p = filedialog.askopenfilename(filetypes=[("Media", exts), ("All", "*.*")])
+        p = _file_dialog_top(self.window, filedialog.askopenfilename,
+                             filetypes=[("Media", exts), ("All", "*.*")])
         if p:
             self.input_path.set(p)
             self._log(f"Input: {p}")
             self._refresh()
 
     def _browse_out(self) -> None:
-        p = filedialog.askdirectory()
+        p = _file_dialog_top(self.window, filedialog.askdirectory)
         if p:
             self.output_folder.set(p)
 
@@ -302,8 +414,46 @@ class DubbingWizard:
             return
         self.stop_event.clear()
         self._log("Working… (models download on first use after confirmation)")
+        self._update_run_buttons()
         self.worker = threading.Thread(target=self._run_job, args=(job, full), daemon=True)
         self.worker.start()
+
+    def _job_running(self) -> bool:
+        try:
+            return bool(self.worker is not None and self.worker.is_alive())
+        except Exception:
+            return False
+
+    def _installer_running(self) -> bool:
+        try:
+            return bool(self.installer is not None and self.installer.is_alive())
+        except Exception:
+            return False
+
+    def _update_run_buttons(self) -> None:
+        running = self._job_running()
+        for name, enabled_when in (("dry_btn", not running), ("full_btn", not running),
+                                   ("stop_btn", running)):
+            try:
+                btn = getattr(self, name, None)
+                if btn is not None:
+                    btn.state(["!disabled"] if enabled_when else ["disabled"])
+            except Exception:
+                pass
+
+    def _on_stop(self) -> None:
+        self.stop_event.set()
+        self._log("Stopping… (finishes the current step, then stops)")
+
+    def _on_job_done(self) -> None:
+        self._update_run_buttons()
+        try:
+            if self._job_running() or self._installer_running():
+                self.window.title("Dubbing Studio — working… (close hides, job keeps running)")
+            else:
+                self.window.title("Dubbing Studio — audio/video to dubbed version")
+        except Exception:
+            pass
 
     def _app_synthesizer(self, work_dir: Path):
         """Build text->wav using the host app's TTS services (no app import)."""
@@ -366,22 +516,42 @@ class DubbingWizard:
             with tempfile.TemporaryDirectory(prefix="dub-") as tmp:
                 tmp_path = Path(tmp)
                 synth = self._app_synthesizer(tmp_path) if full else None
-                pipe = DubPipeline(job, log=self._log_threadsafe)
+                pipe = DubPipeline(job, log=self._log_threadsafe, stopper=self.stop_event)
                 out = pipe.run(tmp_path, synthesize=synth, full=full)
             self._log(f"Done: {out} (also wrote dub.srt next to it)")
         except InterruptedError:
             self._log("Stopped.")
         except Exception as exc:
             self._log(f"ERROR: {exc}")
+        finally:
+            try:
+                self.window.after(0, self._on_job_done)
+            except Exception:
+                pass
 
     def _log_threadsafe(self, msg: str) -> None:
         try:
             self.window.after(0, lambda m=msg: self._log(m))
         except Exception:
-            self._log(msg)
+            try:
+                self._log(msg)
+            except Exception:
+                pass
 
     def _on_close(self) -> None:
-        self.stop_event.set()
+        # A running job/install keeps going in the background: hide the window
+        # instead of destroying it so reopening picks up live progress.
+        if self._job_running() or self._installer_running():
+            self._log("Window hidden — job keeps running in the background. Reopen Dubbing Studio to follow progress.")
+            try:
+                self.window.title("Dubbing Studio — working… (close hides, job keeps running)")
+            except Exception:
+                pass
+            try:
+                self.window.withdraw()
+            except Exception:
+                pass
+            return
         try:
             if self.app is not None and isinstance(getattr(self.app, "settings", None), dict):
                 self.app.settings.setdefault("dubbing", {}).update({
@@ -398,5 +568,10 @@ class DubbingWizard:
             pass
         try:
             self.window.destroy()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "app", None) is not None and getattr(self.app, "dub_wizard", None) is self:
+                self.app.dub_wizard = None
         except Exception:
             pass
