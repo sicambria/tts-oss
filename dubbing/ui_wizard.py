@@ -69,7 +69,7 @@ class DubbingWizard:
         self.target_lang = StringVar(value=str(s.get("target_lang", DEFAULT_DUBBING_SETTINGS["target_lang"])))
         self.engine = StringVar(value=str(app.engine.get()) if hasattr(app, "engine") else "Auto")
         self.input_path = StringVar(value="")
-        self.burn_in = BooleanVar(value=False)
+        self.burn_in = BooleanVar(value=True)
         self.separation = BooleanVar(value=bool(s.get("separation_enabled", False)))
         self.phase_1b = BooleanVar(value=bool(s.get("phase_1b_enabled", False)))
         self.status = StringVar(value="Idle — pick an audio/video file.")

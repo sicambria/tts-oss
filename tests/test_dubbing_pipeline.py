@@ -85,7 +85,7 @@ def test_pipeline_full_mocked(tmp_path, monkeypatch):
         return dst
 
     def fake_transcribe(vocal):
-        return [Segment(0.0, 1.0, text="hello"), Segment(1.0, 2.0, text="bye")]
+        return [Segment(0.0, 1.0, text="hello"), Segment(3.0, 4.0, text="bye")]
 
     def fake_translate(segs, src, tgt):
         for s in segs:
