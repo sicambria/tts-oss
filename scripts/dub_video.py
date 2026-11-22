@@ -122,6 +122,20 @@ def main(argv: list[str] | None = None) -> int:
                     pass
     print(f"DONE: {out}")
     print(f"WORK: {keep}")
+    # Deliverable audit: prove the OUTPUT file carries the dub, not the
+    # original audio (the burn-in path once shipped English audio while all
+    # work-dir gates were green). Fail loudly, never silently.
+    try:
+        from dubbing.quality import mux_audit
+        mixed = keep / "dub_mixed.wav"
+        audit = mux_audit(out, mixed) if mixed.is_file() else {"ok": False, "reason": "no dub_mixed.wav"}
+        print(f"MUX_AUDIT: {audit}")
+        if not audit.get("ok"):
+            print("MUX_AUDIT FAILED: output audio is not the dub. Do not ship this file.")
+            return 1
+    except Exception as exc:
+        print(f"MUX_AUDIT ERROR: {exc}")
+        return 1
     return 0
 
 
