@@ -3,6 +3,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VENV="$SCRIPT_DIR/.venv"
 
+echo "=== doc freshness ==="
+"$VENV/bin/python" "$SCRIPT_DIR/scripts/check_doc_freshness.py"
+
+echo ""
 echo "=== ruff check ==="
 "$VENV/bin/ruff" check "$SCRIPT_DIR/app.py" "$SCRIPT_DIR/tests/"
 
