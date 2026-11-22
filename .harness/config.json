@@ -130,9 +130,9 @@
     }
   },
   "verify": {
-    "test": "pytest",
-    "lint": "ruff check .",
-    "build": "python -c \"import compileall,sys; sys.exit(0 if compileall.compile_dir('.', quiet=1) else 1)\"",
+    "test": ".venv/bin/python -m pytest",
+    "lint": ".venv/bin/ruff check app.py tests/",
+    "build": ".venv/bin/python -c \"import compileall,sys; sys.exit(0 if compileall.compile_dir('.', quiet=1) else 1)\"",
     "e2e": "",
     "healthcheck": ""
   },
