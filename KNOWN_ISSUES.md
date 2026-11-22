@@ -48,6 +48,10 @@ This file records issues and learnings discovered during development so they do 
 
 ## Learnings
 
+- Dubbing music+speech: never default Whisper VAD on for songs. Silero VAD drops sung vocals with the music (real case: 5/52 segments kept, whole sung body lost) and `no_speech_prob` cannot post-filter (real sung segs scored 0.75–0.94). Use VAD-off + `condition_on_previous_text=False` + `hallucination_silence_threshold≈2s`; vocal separation (opt-in) is the proper music-content path.
+- NLLB needs FLORES codes on both sides. Passing short codes (`hu`) to `forced_bos_token_id` silently yields a wrong token (300 vs 256071 for `hun_Latn`) and gibberish output — map via a `nllb_code()` helper and set `tok.src_lang` too.
+- Wire new pipeline inputs end to end. The Dubbing Studio `separation` checkbox was saved to settings but never reached `DubJob` (no field), and `mix_with_bg` was always called with `bg=None`, so background music was silently dropped. A checkbox that reaches no job field is a dead control — test the wiring, not just the widget.
+
 - Confirm GUI type from code before assuming a web address. In this repo, `Tk()` in `app.py` is definitive.
 - Prefer reading the launcher script before answering how to run the app. `run.ps1` and `run.sh` show the real entrypoint.
 - Search the repo source, not the virtual environment. Installed package results are usually irrelevant here.

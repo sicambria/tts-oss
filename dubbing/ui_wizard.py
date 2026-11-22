@@ -401,10 +401,18 @@ class DubbingWizard:
         try:
             out_dir = Path(self.output_folder.get()).expanduser()
             out_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                stored = dict(self.app.settings.get("dubbing", {})) if isinstance(
+                    getattr(self.app, "settings", {}), dict) else {}
+            except Exception:
+                stored = {}
             job = DubJob(input=Path(self.input_path.get()), source_lang="en",
                          target_lang=self.target_lang.get(), engine=self.engine.get(),
                          burn_in=self.burn_in.get(), output_dir=out_dir,
-                         allow_video=bool(self.phase_1b.get()))
+                         allow_video=bool(self.phase_1b.get()),
+                         separation_enabled=bool(self.separation.get()),
+                         whisper_model=str(stored.get("whisper_model", DEFAULT_DUBBING_SETTINGS["whisper_model"])),
+                         keep_bg_ratio=float(stored.get("keep_bg_ratio", DEFAULT_DUBBING_SETTINGS["keep_bg_ratio"])))
             job.validate()
             if full and is_video_input(str(job.input)) and not self.phase_1b.get():
                 self._log("ERROR: video input needs Phase 1b enabled (checkbox above).")
@@ -554,11 +562,14 @@ class DubbingWizard:
             return
         try:
             if self.app is not None and isinstance(getattr(self.app, "settings", None), dict):
-                self.app.settings.setdefault("dubbing", {}).update({
+                current = self.app.settings.setdefault("dubbing", {})
+                current.update({
                     "target_lang": self.target_lang.get(),
                     "separation_enabled": bool(self.separation.get()),
                     "phase_1b_enabled": bool(self.phase_1b.get()),
                 })
+                current.setdefault("whisper_model", str(DEFAULT_DUBBING_SETTINGS["whisper_model"]))
+                current.setdefault("keep_bg_ratio", float(DEFAULT_DUBBING_SETTINGS["keep_bg_ratio"]))
                 try:
                     from app import save_app_settings
                     save_app_settings(self.app.settings)
