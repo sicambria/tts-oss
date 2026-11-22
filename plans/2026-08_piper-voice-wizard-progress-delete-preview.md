@@ -120,7 +120,7 @@ Implemented as planned, with the advisor's four nits folded in. Final locations:
 
 ## Verification results
 
-- GREEN: `/home/arsvivendi/git/tts-oss/.venv/bin/python -m pytest` passed **515 tests**; coverage **87.7%** (pre-push gate 85%). Focused set `test_piper_voice_wizard.py test_piper_service.py test_app_logic.py test_wizard_logic.py test_ui_helpers.py`: 207 passed.
+- GREEN: `.venv/bin/python -m pytest` passed **515 tests**; coverage **87.7%** (pre-push gate 85%). Focused set `test_piper_voice_wizard.py test_piper_service.py test_app_logic.py test_wizard_logic.py test_ui_helpers.py`: 207 passed.
 - GREEN: `.venv/bin/ruff check app.py tests/` passed; `git diff --check` clean.
 - GREEN: `import app` sanity check; `piper_sample_url` returns the verified official URL and `piper_preview_text` returns the Hungarian sample sentence.
 - GREEN (post-review): `piper_sample_url` derivation validated against all **171** catalog voices and the live piper-samples tree — 171/171 exact path match; every sampled voice with a sample dir also has `speaker_0.mp3`. Only `cs_CZ-kasandra-medium` has no sample upstream at all (known upstream gap, not a code issue).

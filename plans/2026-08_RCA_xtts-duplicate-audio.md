@@ -101,5 +101,5 @@ Revision 1 was blocked at 78/100 because it overreached from a proven risk facto
 ## Verification results
 
 - RED: before the parser change, `tests/test_text_chunking.py` failed the committed chapter-boundary assertion with old spans `0-272`, `273-548`, `549-670` rather than the required complete-sentence spans, and failed the paragraph-boundary assertion.
-- GREEN: `/home/arsvivendi/git/tts-oss/.venv/bin/python -m pytest` passed **472 tests**; `/home/arsvivendi/git/tts-oss/.venv/bin/ruff check .` and `git diff --check` passed.
+- GREEN: `.venv/bin/python -m pytest` passed **472 tests**; `.venv/bin/ruff check .` and `git diff --check` passed.
 - GREEN optional diagnostic: with cached XTTS v2, `Ana Florence`, English, `split_sentences=True`, and `torch.manual_seed(20260801)`, the corrected fixture formed three chunks ending after `library.`, `cabinet.`, and `field.`. Whisper tiny transcribed all eight unique marker sentences in source order with no duplicate marker. Environment: Python 3.11.9, transformers 4.46.3. The generated WAV/transcript are retained only under `/tmp/tts-boundary-audit.pOLzx4`, outside the repository.
