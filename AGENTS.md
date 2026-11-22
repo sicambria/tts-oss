@@ -17,8 +17,8 @@ Canonical instructions for AI coding agents in this repo. Read this first, then 
 - Launch: `./run.sh` (Linux/macOS), `.\run.ps1` (Windows). Setup: `./setup.sh [cpu|cu121]`, `.\setup.ps1 [-TorchChannel cu121]`.
 - Engines: `Auto` (default) / `Piper` / `XTTS v2` / `Pocket TTS`. XTTS model: `tts_models/multilingual/multi-dataset/xtts_v2`.
 - Core TTS app lives in `app.py`: `SynthesisCoordinator`, `PiperService`, `XTTSService`, `PocketTTSService`, `AudioPlayer` (pygame), `App` (Tk root), `PiperVoiceWizard`, `DocumentToAudioWizard`, `LanguageLearningWizard`, `SettingsDialog`.
-- Dubbing Studio lives in `dubbing/` (`pipeline`, `stages`, `subtitles`, `video`, `spellcheck`, `config`, `ui_wizard`).
-- Tests: `tests/` (pytest, 27 files). Hooks: `.githooks/pre-commit` (ruff + pytest cov≥50), `.githooks/pre-push` (ruff + pytest cov≥85). Coverage exclusions in `pyproject.toml`.
+- Dubbing Studio lives in `dubbing/` (`pipeline`, `stages`, `subtitles`, `video`, `spellcheck`, `config`; wizard UI `DubbingWizard` in `ui_wizard`).
+- Tests: `tests/` (pytest suite). Hooks: `.githooks/pre-commit` (ruff + pytest cov≥50), `.githooks/pre-push` (ruff + pytest cov≥85). Coverage exclusions in `pyproject.toml`.
 
 ## Commands
 
@@ -65,6 +65,7 @@ rg <pattern>                      # search (never grep .venv manually)
 - **Verify commands are venv-scoped** (`.harness/config.json → verify`): `.venv/bin/python -m pytest`, `.venv/bin/ruff check app.py tests/`. System `pytest` is the wrong interpreter and `ruff` is not on `PATH` — never "fix" the contract by un-scoping them. Run the whole contract with `node .harness/scripts/verify.mjs`.
 - **Plans:** history and RCAs live in `plans/` (`YYYY-MM_*` naming). New non-trivial work gets a gated plan per the managed contract (`docs/plans`, evidence citations must resolve or the commit hard-fails).
 - **Learning loop:** every real bug closes with a regression test plus a `KNOWN_ISSUES.md` / `ANTIPATTERNS.md` update — never a prose-only fix.
+- **Doc-freshness gate:** `scripts/check_doc_freshness.py` runs first in `.githooks/pre-commit` and fails the commit if a service/wizard class or root package is unnamed in `AGENTS.md`/`CLAUDE.md`. Keep counts and line numbers out of the docs — the gate checks structure, not numbers.
 - **Committed overlays (scoped `.gitignore` exceptions):** `CLAUDE.md` is the thin kaizen overlay; `.claude/settings.json` is harness hook config. The app's runtime `settings.json` / `settings.json.bak` stay ignored — never force-add them.
 
 ## Before committing
