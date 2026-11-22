@@ -22,16 +22,19 @@ The app is a native `tkinter` desktop window — there is no browser UI, no loca
 
 ## Architecture
 
-Everything lives in `app.py`. There is no module split, no test suite, and no build step.
+Core TTS app lives in `app.py`. Dubbing Studio lives in the `dubbing/` package. `tests/` holds the pytest suite (ruff + coverage-gated hooks).
 
 **Class hierarchy:**
 
-- `SynthesisCoordinator` — top-level engine router. Resolves `Auto` to Piper or XTTS based on whether a reference WAV is provided, then delegates to the right service.
+- `SynthesisCoordinator` — top-level engine router. Resolves `Auto` to Piper, XTTS, or Pocket based on language, reference WAV, and installed voices (via `select_engine()`), then delegates to the right service.
 - `PiperService` — runs Piper TTS locally. Loads `.onnx` voice models from `voices/piper/`. Caches loaded voices in memory.
 - `XTTSService` — loads and runs the Coqui XTTS v2 model (`tts_models/multilingual/multi-dataset/xtts_v2`). Lazy-loaded on first synthesis. Patches `torch.load` to set `weights_only=False` for compatibility.
+- `PocketTTSService` — runs the Pocket TTS engine. Voice must come from `POCKET_PREDEFINED_VOICES`.
 - `AudioPlayer` — wraps `pygame.mixer` for read-aloud playback with pause/resume/stop.
 - `App` — the `Tk` root window. Owns all UI state, spawns synthesis on background threads, routes log messages through a `queue.Queue` flushed by a periodic `root.after` callback.
 - `PiperVoiceWizard` — a `Toplevel` dialog for browsing and downloading additional Piper voices from the official catalog.
+- `DocumentToAudioWizard`, `LanguageLearningWizard`, `SettingsDialog` — additional `Toplevel` dialogs (document conversion, language learning, app settings).
+- Dubbing Studio engine code lives in the `dubbing/` package (`pipeline`, `stages`, `subtitles`, `video`, `spellcheck`, `config`); its wizard UI is `dubbing/ui_wizard.py`.
 
 **Text chunking:**
 
@@ -47,7 +50,7 @@ Piper voices (`.onnx` + `.onnx.json`) are stored under `voices/piper/`. The thre
 
 ## Key conventions
 
-- Use `rg` for search; `.rgignore` excludes `.venv`, `output`, and `__pycache__`. Never infer project structure from `.venv`.
+- Use `rg` for search; `.rgignore` excludes `.venv`, `output`, `__pycache__`, and `voices/`. Never infer project structure from `.venv`.
 - **Language-first UI:** the user picks a Language, then the Engine dropdown is filtered to engines that can speak it (see `engines_supporting_language()`), and the voice control adapts. This is the entry point — don't reintroduce an engine-first flow.
 - **Capability registry** (module-level, single source of truth): `LANGUAGE_NAMES`, `XTTS_LANGUAGES`, `POCKET_LANGUAGES`, `POCKET_PREDEFINED_VOICES`, `ENGINE_SUMMARIES`. Piper's language coverage is **derived at runtime** from installed voices via `piper_languages()` / `piper_language_of_code()` — never hardcode a Piper language list.
 - Engine resolution is unified in `select_engine(engine, language, has_wav, piper_options)`; `Auto` is language-aware (won't pick Piper for a language with no installed voice). `SynthesisCoordinator.resolve_engine`, `App.resolved_engine`, and the wizard all route through it.

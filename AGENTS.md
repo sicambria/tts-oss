@@ -6,7 +6,7 @@ Canonical instructions for AI coding agents in this repo. Read this first, then 
 
 1. `README.md` — what the app is and how users run it.
 2. `run.sh` / `run.ps1`, `setup.sh` / `setup.ps1` — the real entrypoints. Read them before answering how to run/install.
-3. `app.py` — the entire app (~6900 lines, single file, no module split).
+3. `app.py` — the core TTS app (~6900 lines: engines, wizards, main window).
 4. `KNOWN_ISSUES.md` — confirmed behavior, environment pitfalls, past misdiagnoses. Check before changing setup/runtime.
 5. `ANTIPATTERNS.md` — mandatory code-review checklist. Check during planning and before committing.
 6. `AI_DEVELOPMENT_NOTES.md` — handoff notes for AI contributors.
@@ -16,8 +16,9 @@ Canonical instructions for AI coding agents in this repo. Read this first, then 
 - Native `tkinter` desktop GUI (`Tk()` in `app.py`). **No browser UI, no localhost server, no HTTP endpoint. Never suggest one.**
 - Launch: `./run.sh` (Linux/macOS), `.\run.ps1` (Windows). Setup: `./setup.sh [cpu|cu121]`, `.\setup.ps1 [-TorchChannel cu121]`.
 - Engines: `Auto` (default) / `Piper` / `XTTS v2` / `Pocket TTS`. XTTS model: `tts_models/multilingual/multi-dataset/xtts_v2`.
-- Everything lives in `app.py`: `SynthesisCoordinator`, `PiperService`, `XTTSService`, `PocketTTSService`, `AudioPlayer` (pygame), `App` (Tk root), `PiperVoiceWizard`, `DocumentToAudioWizard`, `DubbingWizard`, `LanguageLearningWizard`.
-- Tests: `tests/` (pytest). Hooks: `.githooks/pre-commit` (ruff + pytest cov≥50), `.githooks/pre-push` (ruff + pytest cov≥85). Coverage exclusions in `pyproject.toml`.
+- Core TTS app lives in `app.py`: `SynthesisCoordinator`, `PiperService`, `XTTSService`, `PocketTTSService`, `AudioPlayer` (pygame), `App` (Tk root), `PiperVoiceWizard`, `DocumentToAudioWizard`, `LanguageLearningWizard`, `SettingsDialog`.
+- Dubbing Studio lives in `dubbing/` (`pipeline`, `stages`, `subtitles`, `video`, `spellcheck`, `config`, `ui_wizard`).
+- Tests: `tests/` (pytest, 27 files). Hooks: `.githooks/pre-commit` (ruff + pytest cov≥50), `.githooks/pre-push` (ruff + pytest cov≥85). Coverage exclusions in `pyproject.toml`.
 
 ## Commands
 
@@ -59,7 +60,7 @@ rg <pattern>                      # search (never grep .venv manually)
 
 ## tts-oss supplements (managed kaizen contract below is canonical)
 
-- **Worktree-first is strict.** Substantive changes while on `main` → STOP, create a worktree, merge when clean and green. Only `branchGuard.exemptPaths` (`*.md`, `.gitignore`, `.harness/memory/`, `.harness/archive/`) may commit directly to `main`.
+- **Worktree-first is strict.** Substantive changes while on `main` → STOP, create a worktree, merge when clean and green. Only `branchGuard.exemptPaths` (`*.md`, `^docs/`, `.gitignore`, `.harness/memory/`, `.harness/archive/`) may commit directly to `main`.
 - **Chained controls (install never weakened them):** `.githooks/pre-commit` = ruff + pytest cov≥50; `.githooks/pre-push` = ruff + pytest cov≥85. They run fail-closed under the kaizen drivers.
 - **Verify commands are venv-scoped** (`.harness/config.json → verify`): `.venv/bin/python -m pytest`, `.venv/bin/ruff check app.py tests/`. System `pytest` is the wrong interpreter and `ruff` is not on `PATH` — never "fix" the contract by un-scoping them. Run the whole contract with `node .harness/scripts/verify.mjs`.
 - **Plans:** history and RCAs live in `plans/` (`YYYY-MM_*` naming). New non-trivial work gets a gated plan per the managed contract (`docs/plans`, evidence citations must resolve or the commit hard-fails).
