@@ -70,6 +70,47 @@ def vocal_coverage(work_dir: Path, floor: float = 0.01) -> dict:
             "silent": silent, "total": total}
 
 
+def _extract_mono16k(media: Path, out: Path) -> Path:
+    import subprocess as _sp
+
+    from . import ffmpeg_path
+    _sp.run([ffmpeg_path(), "-hide_banner", "-y", "-i", str(media),
+             "-map", "0:a:0", "-ar", "16000", "-ac", "1",
+             "-c:a", "pcm_s16le", str(out)],
+            check=True, capture_output=True, timeout=600)
+    return out
+
+
+def mux_audit(output_media: Path, mixed_wav: Path) -> dict:
+    """Prove the DELIVERABLE's audio track is the dub, not the original.
+
+    Extracts the output's audio track and correlates it against the dub mix.
+    A correct mux scores ~0.99 (lossy-codec only); the classic burn-in bug
+    (original audio kept) scores low because the signals differ. Fails closed
+    on any extraction error.
+    """
+    import tempfile as _tf
+    try:
+        import numpy as _np
+    except Exception as exc:
+        return {"ok": False, "correlation": 0.0, "reason": f"numpy missing: {exc}"}
+    try:
+        with _tf.TemporaryDirectory(prefix="mux-audit-") as tmp:
+            got = _extract_mono16k(Path(output_media), Path(tmp) / "got.wav")
+            want = _extract_mono16k(Path(mixed_wav), Path(tmp) / "want.wav")
+            a = _np.asarray(_wav_samples(got)[0], dtype=_np.float64)
+            b = _np.asarray(_wav_samples(want)[0], dtype=_np.float64)
+        n = min(len(a), len(b))
+        if n < 16000:
+            return {"ok": False, "correlation": 0.0, "reason": "too short to audit"}
+        a, b = a[:n] - a[:n].mean(), b[:n] - b[:n].mean()
+        denom = float((_np.dot(a, a) * _np.dot(b, b)) ** 0.5)
+        r = float(_np.dot(a, b) / denom) if denom > 0 else 0.0
+        return {"ok": bool(r >= 0.90), "correlation": round(r, 4)}
+    except Exception as exc:
+        return {"ok": False, "correlation": 0.0, "reason": str(exc)[:300]}
+
+
 def repeated_ngram_ratio(texts: list[str], n: int = 4) -> float:
     grams: Counter[str] = Counter()
     total = 0

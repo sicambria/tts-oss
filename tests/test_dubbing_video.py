@@ -5,6 +5,112 @@ import subprocess
 import sys
 
 
+def _capture_cmd(monkeypatch, libass_ok: bool = True) -> list:
+    import dubbing.video as video_mod
+    seen: list = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(video_mod, "has_libass", lambda: libass_ok)
+    monkeypatch.setattr(video_mod, "subprocess",
+                        __import__("types").SimpleNamespace(run=fake_run))
+    return seen
+
+
+def _maps(cmd: list, *wanted: str) -> bool:
+    flat = [str(p) for p in cmd]
+    for i in range(len(flat) - len(wanted) + 1):
+        if flat[i:i + len(wanted)] == list(wanted):
+            return True
+    return False
+
+
+def test_mux_burn_maps_dub_audio(tmp_path, monkeypatch):
+    """Regression: the burn-in path once shipped the ORIGINAL audio because
+    ffmpeg's automatic stream selection ignores the dub wav without -map."""
+    from dubbing.video import mux_video
+    seen = _capture_cmd(monkeypatch, libass_ok=True)
+    mux_video(tmp_path / "v.mp4", tmp_path / "a.wav", tmp_path / "s.srt",
+              tmp_path / "out.mp4", True)
+    assert _maps(seen[0], "-map", "0:v:0"), seen[0]
+    assert _maps(seen[0], "-map", "1:a:0"), seen[0]
+
+
+def test_mux_softsub_maps_dub_audio(tmp_path, monkeypatch):
+    from dubbing.video import mux_video
+    seen = _capture_cmd(monkeypatch, libass_ok=True)
+    mux_video(tmp_path / "v.mp4", tmp_path / "a.wav", tmp_path / "s.srt",
+              tmp_path / "out.mp4", False)
+    assert _maps(seen[0], "-map", "0:v:0"), seen[0]
+    assert _maps(seen[0], "-map", "1:a:0"), seen[0]
+    assert _maps(seen[0], "-map", "2:0"), seen[0]
+
+
+def _tone_wav(path, freq: float, seconds: float = 2.0, rate: int = 16000):
+    import math
+    import struct
+    import wave
+    n = int(seconds * rate)
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(struct.pack("<%dh" % n,
+                                   *[int(10000 * math.sin(2 * math.pi * freq * i / rate))
+                                     for i in range(n)]))
+    return path
+
+
+def test_mux_burn_audio_is_dub_integration(tmp_path):
+    """End-to-end proof with real ffmpeg: 440 Hz source + 880 Hz dub must
+    yield 880 Hz in the output (this exact repro caught the English-audio bug)."""
+    from dubbing import ffmpeg_path
+    from dubbing.quality import mux_audit
+    from dubbing.video import mux_video
+    ff = ffmpeg_path()
+    src = tmp_path / "src.mp4"
+    r = subprocess.run([ff, "-hide_banner", "-y", "-f", "lavfi",
+                        "-i", "color=c=red:s=160x120:d=2:r=10",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                        "-shortest", str(src)], capture_output=True)
+    assert r.returncode == 0
+    dub = _tone_wav(tmp_path / "dub.wav", 880.0)
+    srt = tmp_path / "t.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nE\n", encoding="utf-8")
+    try:
+        from dubbing import has_libass
+        if not has_libass():
+            import pytest
+            pytest.skip("libass missing")
+    except Exception:
+        pass
+    for burn in (True, False):
+        out = tmp_path / f"out_{int(burn)}.mp4"
+        mux_video(src, dub, srt, out, burn)
+        audit = mux_audit(out, dub)
+        assert audit["ok"], (burn, audit)
+
+
+def test_mux_audit_rejects_original_audio(tmp_path):
+    """mux_audit must FAIL when the deliverable carries the wrong track."""
+    from dubbing import ffmpeg_path
+    from dubbing.quality import mux_audit
+    ff = ffmpeg_path()
+    src = tmp_path / "src.mp4"
+    r = subprocess.run([ff, "-hide_banner", "-y", "-f", "lavfi",
+                        "-i", "color=c=red:s=160x120:d=2:r=10",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                        "-shortest", str(src)], capture_output=True)
+    assert r.returncode == 0
+    other = _tone_wav(tmp_path / "other.wav", 880.0)
+    audit = mux_audit(src, other)
+    assert not audit["ok"], audit
+
+
 def test_mux_refuses_existing_output(tmp_path):
     from dubbing.video import mux_video
     out = tmp_path / "out.mp4"
