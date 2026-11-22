@@ -16,7 +16,7 @@ DEFAULT_DUBBING_SETTINGS: dict[str, object] = {
     "whisper_model": "small",
     "audio_output_format": "mp3",
     "video_output_format": "mp4",
-    "phase_1b_enabled": False,
+    "phase_1b_enabled": True,  # 1b verified e2e 2026-11-22 (mp3 + mp4 burn-in green)
 }
 
 

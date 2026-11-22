@@ -34,9 +34,9 @@ def test_burn_in_rejected_for_audio():
 
 def test_separation_default_off():
     from dubbing.config import DEFAULT_DUBBING_SETTINGS
-    assert DEFAULT_DUBBING_SETTINGS["separation_enabled"] is False
+    assert DEFAULT_DUBBING_SETTINGS["separation_enabled"] is False  # separation stays opt-in (CPU 10-50x)
     assert DEFAULT_DUBBING_SETTINGS["audio_output_format"] == "mp3"
-    assert DEFAULT_DUBBING_SETTINGS["phase_1b_enabled"] is False
+    assert DEFAULT_DUBBING_SETTINGS["phase_1b_enabled"] is True  # 1b verified e2e
 
 
 def test_phase_isolation_subprocess():

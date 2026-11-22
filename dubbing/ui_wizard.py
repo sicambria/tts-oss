@@ -229,6 +229,16 @@ class DubbingWizard:
                         command=self._refresh).pack(side="left", padx=6)
         self.burn_btn = ttk.Checkbutton(f, text="Burn subtitles into video", variable=self.burn_in)
         self.burn_btn.pack(anchor="w", pady=4)
+        out_row = ttk.Frame(f)
+        out_row.pack(fill="x", pady=4)
+        ttk.Label(out_row, text="Output folder").pack(side="left")
+        try:
+            default_out = str(self.app.settings.get("paths", {}).get("output_folder", Path.cwd() / "output"))
+        except Exception:
+            default_out = str(Path.cwd() / "output")
+        self.output_folder = StringVar(value=default_out)
+        ttk.Entry(out_row, textvariable=self.output_folder).pack(side="left", fill="x", expand=True, padx=6)
+        ttk.Button(out_row, text="Browse…", command=self._browse_out).pack(side="left")
         ttk.Button(f, text="Transcribe + Translate (dry run)", command=self._start_dry).pack(anchor="w", pady=4)
         ttk.Button(f, text="Generate dubbed version (full)", command=self._start_full).pack(anchor="w", pady=4)
 
@@ -262,6 +272,11 @@ class DubbingWizard:
             self._log(f"Input: {p}")
             self._refresh()
 
+    def _browse_out(self) -> None:
+        p = filedialog.askdirectory()
+        if p:
+            self.output_folder.set(p)
+
     def _start_dry(self) -> None:
         self._start(full=False)
 
@@ -272,9 +287,11 @@ class DubbingWizard:
         if self.worker and self.worker.is_alive():
             return
         try:
+            out_dir = Path(self.output_folder.get()).expanduser()
+            out_dir.mkdir(parents=True, exist_ok=True)
             job = DubJob(input=Path(self.input_path.get()), source_lang="en",
                          target_lang=self.target_lang.get(), engine=self.engine.get(),
-                         burn_in=self.burn_in.get(), output_dir=Path.cwd() / "output",
+                         burn_in=self.burn_in.get(), output_dir=out_dir,
                          allow_video=bool(self.phase_1b.get()))
             job.validate()
             if full and is_video_input(str(job.input)) and not self.phase_1b.get():

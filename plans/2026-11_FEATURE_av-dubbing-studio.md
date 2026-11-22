@@ -47,6 +47,8 @@ Out of scope: pyannote, MADLAD/EuroLLM, lip-sync.
 - libass proven on bundled ffmpeg 7.0.2 (`-h filter=subtitles` + functional 1s burn-in 2725B MP4).
 - Pins verified via pip index 2026-11-22: faster-whisper 1.2.1, audio-separator 0.48.0, cyhunspell 1.3.4.
 - GREEN: `python -m compileall -q app.py dubbing tests`; `ruff` on changed files; `pytest -q` 532 passed (incl. 12 new dubbing + 4 updated settings); `git diff --check`.
+- Spellcheck fix: cyhunspell has no wheel (needs sudo build tools) -> spylls==0.1.7 pure wheel reading system hu_HU.dic; `pytest` 534 passed.
+- Phase 1b e2e 2026-11-22 (`scripts/e2e_dub_clip.py`, real models, 21 min on CPU): faster-whisper-small transcribed Piper EN clip; NLLB-1.3B translated to HU; spylls available; Piper hu_HU-anna-medium dub -> mp3 2.01s + sidecar SRT; 12s color mp4 + burn-in mux 115KB. `pytest` 536 passed. phase_1b_enabled default flipped to True.
 
 ## Risks and rollback
 
