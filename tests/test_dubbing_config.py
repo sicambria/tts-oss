@@ -45,3 +45,14 @@ def test_phase_isolation_subprocess():
     code = "import dubbing.pipeline, sys; sys.exit(1 if 'dubbing.video' in sys.modules else 0)"
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True)
     assert proc.returncode == 0, "Phase 1a must not import dubbing.video"
+
+
+def test_missing_deps_structure():
+    from dubbing import missing_dependencies
+    from dubbing import pip_missing_specs
+    plain = missing_dependencies(False)
+    assert "separator" not in [d["key"] for d in plain]
+    with_sep = missing_dependencies(True)
+    assert "separator" in [d["key"] for d in with_sep]
+    assert all(set(d) >= {"key", "label", "ok", "pip", "needs_sudo", "hint"} for d in plain)
+    assert isinstance(pip_missing_specs(False), list)

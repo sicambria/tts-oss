@@ -109,3 +109,71 @@ def has_cyhunspell() -> bool:
             return True
         except Exception:
             return False
+
+
+def missing_dependencies(separation_enabled: bool = False) -> list[dict]:
+    """Structured dep status for the wizard. pip items need no sudo; dicts may."""
+    items: list[dict] = []
+    items.append({
+        "key": "faster-whisper", "label": "Transcription (faster-whisper)",
+        "ok": has_faster_whisper(), "pip": "faster-whisper==1.2.1",
+        "needs_sudo": False,
+        "hint": "pip install -r requirements-dubbing.txt",
+    })
+    try:
+        import transformers  # noqa: F401
+        nllb_ok = True
+    except Exception:
+        nllb_ok = False
+    items.append({
+        "key": "nllb", "label": "Translation (transformers + NLLB-200-1.3B)",
+        "ok": nllb_ok, "pip": "transformers==4.46.3 sentencepiece",
+        "needs_sudo": False,
+        "hint": "pip install -r requirements-dubbing.txt (model ~2.5GB downloads after confirm)",
+    })
+    items.append({
+        "key": "cyhunspell", "label": "Spellcheck (cyhunspell)",
+        "ok": has_cyhunspell(), "pip": "cyhunspell==1.3.4",
+        "needs_sudo": False,
+        "hint": "pip install -r requirements-dubbing.txt",
+    })
+    try:
+        from . import spellcheck
+        dict_ok = spellcheck.available("hu_HU")
+    except Exception:
+        dict_ok = False
+    if not has_cyhunspell():
+        dict_ok = False
+    items.append({
+        "key": "hu_dict", "label": "Hungarian dictionary (hu_HU)",
+        "ok": dict_ok, "pip": "",
+        "needs_sudo": True,
+        "hint": "Linux: sudo apt install hunspell-hu | Fedora: sudo dnf install hunspell-hu | macOS: brew install hunspell + magyarispell dict",
+    })
+    if separation_enabled:
+        items.append({
+            "key": "separator", "label": "Separation (audio-separator, optional)",
+            "ok": has_separator(), "pip": "audio-separator==0.48.0",
+            "needs_sudo": False,
+            "hint": "pip install -r requirements-dubbing.txt (checkpoint ~300MB)",
+        })
+    items.append({
+        "key": "libass", "label": "Subtitle burn-in (libass, bundled ffmpeg)",
+        "ok": has_libass(), "pip": "",
+        "needs_sudo": False,
+        "hint": "Bundled imageio-ffmpeg 7.0.2 includes libass; if missing, use soft subs + sidecar.",
+    })
+    return items
+
+
+def pip_missing_specs(separation_enabled: bool = False) -> list[str]:
+    out: list[str] = []
+    for item in missing_dependencies(separation_enabled):
+        if not item["ok"] and item["pip"] and not item["needs_sudo"]:
+            out.append(item["pip"])
+    seen: list[str] = []
+    for spec in out:
+        for part in spec.split():
+            if part not in seen:
+                seen.append(part)
+    return seen
