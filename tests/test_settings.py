@@ -6,6 +6,7 @@ import pytest
 
 from app import DEFAULT_AUDIO_SETTINGS
 from app import DEFAULT_DOCUMENT_CONVERSION_SETTINGS
+from app import DEFAULT_DUBBING_SETTINGS
 from app import DEFAULT_GENERAL_SETTINGS
 from app import DEFAULT_LANG_LEARNING_SETTINGS
 from app import DEFAULT_PATHS_SETTINGS
@@ -28,6 +29,7 @@ DEFAULT_SECTIONS = {
     "paths": DEFAULT_PATHS_SETTINGS,
     "document_conversion": DEFAULT_DOCUMENT_CONVERSION_SETTINGS,
     "default_piper_voice_by_language": DEFAULT_PIPER_VOICE_BY_LANGUAGE,
+    "dubbing": DEFAULT_DUBBING_SETTINGS,
 }
 DEFAULT_SECTIONS["general"] = {
     **DEFAULT_GENERAL_SETTINGS,

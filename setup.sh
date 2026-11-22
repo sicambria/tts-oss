@@ -83,6 +83,10 @@ fi
 
 "${PIP_INSTALL[@]}" torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url "$TORCH_INDEX_URL"
 "${PIP_INSTALL[@]}" -r requirements.txt
+if [[ "${1:-}" == "--with-dubbing" ]]; then
+  "${PIP_INSTALL[@]}" -r requirements-dubbing.txt
+  echo "Dubbing extras installed (faster-whisper, NLLB deps, cyhunspell, audio-separator)."
+fi
 mkdir -p "$PIPER_VOICE_DIR"
 "$VENV_PYTHON" -m piper.download_voices hu_HU-anna-medium en_US-lessac-medium en_GB-alan-medium --download-dir "$PIPER_VOICE_DIR"
 

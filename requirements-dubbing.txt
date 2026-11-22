@@ -1,0 +1,6 @@
+faster-whisper==1.2.1
+transformers==4.46.3
+sentencepiece
+srt
+cyhunspell==1.3.4
+audio-separator==0.48.0

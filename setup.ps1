@@ -39,6 +39,10 @@ try {
     }
 
     & $VenvPython -m pip install -r requirements.txt
+    if ($args -contains "--with-dubbing") {
+        & $VenvPython -m pip install -r requirements-dubbing.txt
+        Write-Host "Dubbing extras installed (faster-whisper, NLLB deps, cyhunspell, audio-separator)."
+    }
     New-Item -ItemType Directory -Force -Path $PiperVoiceDir | Out-Null
     & $VenvPython -m piper.download_voices hu_HU-anna-medium en_US-lessac-medium en_GB-alan-medium --download-dir $PiperVoiceDir
 
