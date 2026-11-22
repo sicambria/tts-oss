@@ -115,5 +115,47 @@ def mix_with_bg(dub: Path, bg: Path | None, keep_bg_ratio: float, out: Path) -> 
     return out
 
 
+def concat_timeline(placed: list[tuple[Path, float]], total_dur: float, out: Path) -> Path:
+    """Mix per-segment wavs at start offsets into one timeline wav."""
+    import subprocess as _sp
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if not placed:
+        raise ValueError("No segments to mix.")
+    if len(placed) == 1 and placed[0][1] <= 0.01:
+        _ffmpeg("-y", "-i", str(placed[0][0]), "-c:a", "pcm_s16le", str(out))
+        return out
+    cmd: list[str] = [ffmpeg_path(), "-hide_banner", "-y"]
+    filter_inputs: list[str] = []
+    for idx, (wav, start) in enumerate(placed):
+        cmd += ["-i", str(wav)]
+        ms = max(0, int(round(start * 1000)))
+        filter_inputs.append(f"[{idx}:a]adelay={ms}|{ms}[a{idx}]")
+    mixed = "".join(f"[a{idx}]" for idx in range(len(placed)))
+    filt = ";".join(filter_inputs) + (
+        f";{mixed}amix=inputs={len(placed)}:duration=longest:normalize=0,"
+        f"apad=whole_dur={total_dur:.3f},atrim=0:{total_dur:.3f}[out]"
+    )
+    cmd += ["-filter_complex", filt, "-map", "[out]", "-c:a", "pcm_s16le", str(out)]
+    proc = _sp.run(cmd, capture_output=True, text=True, timeout=900)
+    if proc.returncode != 0:
+        raise RuntimeError(f"Timeline mix failed: {(proc.stderr or proc.stdout)[-2000:]}")
+    return out
+
+
+def export_audio(wav: Path, out: Path, bitrate: str = "192k") -> Path:
+    """Export timeline wav to mp3/wav/ogg."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    ext = out.suffix.lower()
+    if ext == ".wav":
+        _ffmpeg("-y", "-i", str(wav), "-c:a", "pcm_s16le", str(out))
+    elif ext == ".mp3":
+        _ffmpeg("-y", "-i", str(wav), "-codec:a", "libmp3lame", "-b:a", bitrate, str(out))
+    elif ext == ".ogg":
+        _ffmpeg("-y", "-i", str(wav), "-codec:a", "libvorbis", "-q:a", "5", str(out))
+    else:
+        raise ValueError(f"Unsupported audio output '{ext}'.")
+    return out
+
+
 def make_tmp(prefix: str = "dub-") -> tempfile.TemporaryDirectory:
     return tempfile.TemporaryDirectory(prefix=prefix)

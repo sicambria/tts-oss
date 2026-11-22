@@ -47,6 +47,7 @@ class DubJob:
     output_dir: Path = field(default_factory=lambda: Path.cwd() / "output")
     audio_output_format: str = "mp3"
     video_output_format: str = "mp4"
+    allow_video: bool = False  # Phase 1b gate: wizard sets True when enabled
 
     def validate(self) -> None:
         from . import SUPPORTED_AUDIO_EXTS

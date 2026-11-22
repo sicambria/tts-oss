@@ -229,7 +229,8 @@ class DubbingWizard:
                         command=self._refresh).pack(side="left", padx=6)
         self.burn_btn = ttk.Checkbutton(f, text="Burn subtitles into video", variable=self.burn_in)
         self.burn_btn.pack(anchor="w", pady=4)
-        ttk.Button(f, text="Transcribe + Translate (dry run)", command=self._start).pack(anchor="w", pady=4)
+        ttk.Button(f, text="Transcribe + Translate (dry run)", command=self._start_dry).pack(anchor="w", pady=4)
+        ttk.Button(f, text="Generate dubbed version (full)", command=self._start_full).pack(anchor="w", pady=4)
 
         log_frame = ttk.LabelFrame(f, text="Log — every error lands here, Copy all messages copies it", padding=6)
         log_frame.pack(fill="both", expand=True, pady=4)
@@ -261,31 +262,96 @@ class DubbingWizard:
             self._log(f"Input: {p}")
             self._refresh()
 
-    def _start(self) -> None:
+    def _start_dry(self) -> None:
+        self._start(full=False)
+
+    def _start_full(self) -> None:
+        self._start(full=True)
+
+    def _start(self, full: bool) -> None:
         if self.worker and self.worker.is_alive():
             return
         try:
             job = DubJob(input=Path(self.input_path.get()), source_lang="en",
                          target_lang=self.target_lang.get(), engine=self.engine.get(),
-                         burn_in=self.burn_in.get(), output_dir=Path.cwd() / "output")
+                         burn_in=self.burn_in.get(), output_dir=Path.cwd() / "output",
+                         allow_video=bool(self.phase_1b.get()))
             job.validate()
+            if full and is_video_input(str(job.input)) and not self.phase_1b.get():
+                self._log("ERROR: video input needs Phase 1b enabled (checkbox above).")
+                return
         except Exception as exc:
             self._log(f"ERROR: {exc}")
             return
         self.stop_event.clear()
         self._log("Working… (models download on first use after confirmation)")
-        self.worker = threading.Thread(target=self._run_job, args=(job,), daemon=True)
+        self.worker = threading.Thread(target=self._run_job, args=(job, full), daemon=True)
         self.worker.start()
 
-    def _run_job(self, job: DubJob) -> None:
+    def _app_synthesizer(self, work_dir: Path):
+        """Build text->wav using the host app's TTS services (no app import)."""
+        from app import DEFAULT_PIPER_VOICE_LABEL
+        from app import ENGINE_POCKET
+        from app import SynthesisRequest
+        from app import get_piper_voice_metadata
+        from app import pocket_default_voice
+        from app import select_engine
+        app = self.app
+        language = self.target_lang.get()
+        engine = self.engine.get()
+        label = ""
+        code = ""
+        try:
+            label = app.piper_voice_label.get().strip()
+            metadata = app.piper_voice_options.get(label, get_piper_voice_metadata(label))
+            code = metadata["code"]
+        except Exception:
+            label, code = DEFAULT_PIPER_VOICE_LABEL, "hu_HU-anna-medium"
+        try:
+            resolved = select_engine(engine, language, bool(app.speaker_wav.get().strip()), app.piper_voice_options)
+        except Exception:
+            resolved = engine
+        try:
+            speaker_name = (
+                app.pocket_voice.get().strip() or pocket_default_voice(language)
+                if resolved == ENGINE_POCKET
+                else app.speaker_name.get().strip() or "Ana Florence"
+            )
+        except Exception:
+            speaker_name = "Ana Florence"
+        try:
+            speaker_wav = app.speaker_wav.get().strip()
+        except Exception:
+            speaker_wav = ""
+        try:
+            speed = round(float(app.speed.get()), 1)
+        except Exception:
+            speed = 1.0
+        counter = {"n": 0}
+
+        def synth(text: str, out_hint: Path) -> Path:
+            out = out_hint.parent / f"tts_{counter['n']:03d}.wav"
+            counter["n"] += 1
+            request = SynthesisRequest(
+                text=text, language=language, output_file=out,
+                engine=engine, piper_voice_label=label, piper_voice_code=code,
+                speaker_name=speaker_name, speaker_wav=speaker_wav, speed=speed,
+            )
+            return Path(app.service.synthesize(request))
+
+        return synth
+
+    def _run_job(self, job: DubJob, full: bool = False) -> None:
         import tempfile
 
         from .pipeline import DubPipeline
         try:
             with tempfile.TemporaryDirectory(prefix="dub-") as tmp:
+                tmp_path = Path(tmp)
+                synth = self._app_synthesizer(tmp_path) if full else None
                 pipe = DubPipeline(job, log=self._log_threadsafe)
-                srt = pipe.run(Path(tmp))
-            self._log(f"Done: {srt.name} (see output dir for full export)")
+                out = pipe.run(tmp_path, synthesize=synth, full=full)
+            self._log(f"Done: {out} (also wrote dub.srt next to it)")
         except InterruptedError:
             self._log("Stopped.")
         except Exception as exc:

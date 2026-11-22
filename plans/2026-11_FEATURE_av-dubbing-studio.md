@@ -2,7 +2,7 @@
 
 **Type:** Feature plan
 **Date:** 2026-11-22
-**Status:** Implemented and verified
+**Status:** Implemented and verified (Phase 1a + 1b audio path; video mux behind phase_1b gate)
 **Branch:** `feature/av-dubbing-studio`
 
 ## Summary

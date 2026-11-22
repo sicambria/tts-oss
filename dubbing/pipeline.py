@@ -11,6 +11,13 @@ from .config import Segment
 ExtractFn = Callable[[Path, Path], Path]
 
 
+def unique_output(base: Path) -> Path:
+    if not base.exists():
+        return base
+    import time
+    return base.with_name(f"{base.stem}_{time.strftime('%Y%m%d-%H%M%S')}{base.suffix}")
+
+
 class DubPipeline:
     def __init__(self, job: DubJob, log: Callable[[str], None] = print,
                  pauser: threading.Event | None = None,
@@ -28,7 +35,9 @@ class DubPipeline:
 
     def run(self, work_dir: Path,
             extract=None, transcribe=None, translate=None,
-            synthesize=None) -> Path:
+            synthesize=None, full: bool = False) -> Path:
+        """Dry run (full=False) returns the SRT path. Full run returns final media."""
+        from . import is_video_input
         from . import stages
         from . import subtitles
         self.job.validate()
@@ -41,12 +50,6 @@ class DubPipeline:
         self._check("extract")
 
         vocal = wav
-        if self.job.keep_bg_ratio > 0:
-            from .stages import separate_background
-            try:
-                vocal, _bg = separate_background(wav, work_dir, False)
-            except RuntimeError:
-                vocal = wav
 
         transcribe = transcribe or stages.transcribe
         try:
@@ -62,5 +65,49 @@ class DubPipeline:
         self._check("translate")
 
         srt = subtitles.write_srt(segments, work_dir / "dub.srt", translated=True)
-        self.log(f"SRT: {srt.name}")
-        return srt
+        self.log(f"SRT: {srt.name} ({srt_norm_short(segments)})")
+        if not full:
+            return srt
+
+        if synthesize is None:
+            raise RuntimeError("Full dub needs a TTS synthesizer (pick an engine in the wizard).")
+        if is_video_input(str(self.job.input)) and not getattr(self.job, "allow_video", False):
+            raise RuntimeError("Video input needs Phase 1b enabled in the wizard.")
+
+        placed: list[tuple[Path, float]] = []
+        total_dur = max((s.end for s in segments), default=0.0)
+        for idx, seg in enumerate(segments):
+            self._check(f"synthesize {idx + 1}/{len(segments)}")
+            raw = synthesize(seg.translated or seg.text, work_dir / f"seg_{idx:03d}.wav")
+            fitted, overflow = stages.fit_to_slot(Path(raw), seg.duration, work_dir)
+            seg.overflow = overflow
+            if overflow:
+                self.log(f"Segment {idx + 1} overflows its slot even squeezed — edit the translation shorter.")
+            placed.append((fitted, seg.start))
+        self.log(f"Synthesized + time-fit {len(placed)} segments")
+
+        timeline = stages.concat_timeline(placed, max(total_dur, 0.1), work_dir / "dub_timeline.wav")
+        self._check("timeline")
+        mixed = stages.mix_with_bg(timeline, None, self.job.keep_bg_ratio, work_dir / "dub_mixed.wav")
+
+        if is_video_input(str(self.job.input)):
+            from . import video as video_mod
+            ext = (self.job.video_output_format or "mp4").lower().lstrip(".")
+            if ext not in {"mp4", "mkv"}:
+                ext = "mp4"
+            out = unique_output(self.job.output_dir / f"{self.job.input.stem}_dubbed_{self.job.target_lang}.{ext}")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            self.log(f"Muxing video (burn-in={'on' if self.job.burn_in else 'off'})…")
+            return video_mod.mux_video(self.job.input, mixed, srt, out, self.job.burn_in)
+
+        ext = (self.job.audio_output_format or "mp3").lower().lstrip(".")
+        if ext not in {"mp3", "wav", "ogg"}:
+            ext = "mp3"
+        out = unique_output(self.job.output_dir / f"{self.job.input.stem}_dubbed_{self.job.target_lang}.{ext}")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        return stages.export_audio(mixed, out)
+
+
+def srt_norm_short(segments: list[Segment]) -> str:
+    from .subtitles import srt_norm_hash
+    return srt_norm_hash(segments)[:12]
