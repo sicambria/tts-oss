@@ -121,6 +121,7 @@ The **Help** menu includes an About dialog and a link to the project's
   app stays open and shows setup instructions instead of closing. For an editable
   companion checkout, install it with `pip install -e ../language-practice`.
 - `Voice Wizard` loads the official Piper voice catalog, lets you download additional voice models, and can set a default Piper voice for the app.
+- `Dubbing Studio` (`File > Dub Audio/Video…`, `Tools > Dubbing Studio…`) creates a dubbed EN→HU version: faster-whisper STT, NLLB-200-1.3B translation, cyhunspell check, existing TTS voices, atempo fit, SRT sidecar + optional burn-in. Phase 1b video is opt-in. Extras: `./setup.sh --with-dubbing`. See `Help > Dubbing Guide…`.
   - Downloads show a live progress bar; completed voices can be deleted from the wizard (the three bundled voices are kept).
   - `Play Sample` synthesizes a short preview with an installed voice; `Open Sample Page` opens the official sample in your browser for any catalog voice.
 - `XTTS v2` is the option that supports built-in speaker selection and reference voice cloning.

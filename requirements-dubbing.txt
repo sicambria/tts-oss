@@ -1,0 +1,8 @@
+faster-whisper==1.2.1
+transformers==4.46.3
+sentencepiece
+srt
+# Pure-Python Hunspell (wheel, no sudo, no C build). Reads system
+# /usr/share/hunspell/hu_HU.dic (hunspell-hu, usually preinstalled).
+spylls==0.1.7
+audio-separator==0.48.0

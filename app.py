@@ -1641,6 +1641,17 @@ DEFAULT_PATHS_SETTINGS: dict[str, object] = {
 DEFAULT_DOCUMENT_CONVERSION_SETTINGS: dict[str, object] = {
     "skip_page_range_conversion_warning": False,
 }
+DEFAULT_DUBBING_SETTINGS: dict[str, object] = {
+    "target_lang": "hu",
+    "engine": ENGINE_AUTO,
+    "burn_in": False,
+    "keep_bg_ratio": 0.2,
+    "separation_enabled": False,
+    "whisper_model": "small",
+    "audio_output_format": "mp3",
+    "video_output_format": "mp4",
+    "phase_1b_enabled": True,  # 1b verified e2e 2026-11-22 (mp3 + mp4 burn-in green)
+}
 
 
 def load_app_settings() -> dict:
@@ -1673,6 +1684,7 @@ def _default_settings_dict() -> dict:
         "paths": DEFAULT_PATHS_SETTINGS.copy(),
         "document_conversion": DEFAULT_DOCUMENT_CONVERSION_SETTINGS.copy(),
         "default_piper_voice_by_language": DEFAULT_PIPER_VOICE_BY_LANGUAGE.copy(),
+        "dubbing": DEFAULT_DUBBING_SETTINGS.copy(),
     }
 
 
@@ -1752,6 +1764,7 @@ def normalize_app_settings(raw_settings: object) -> dict:
         "general": DEFAULT_GENERAL_SETTINGS,
         "paths": DEFAULT_PATHS_SETTINGS,
         "document_conversion": DEFAULT_DOCUMENT_CONVERSION_SETTINGS,
+        "dubbing": DEFAULT_DUBBING_SETTINGS,
     }
     for name, defaults in sections.items():
         current = raw.get(name)
@@ -4764,6 +4777,7 @@ class App:
         POCKET_VOICE_DIR = Path(self.settings.get("paths", {}).get("pocket_voice_dir", "voices/pocket"))
         self.voice_wizard: PiperVoiceWizard | None = None
         self.doc_wizard: DocumentToAudioWizard | None = None
+        self.dub_wizard = None
         self.lang_learning_wizard: LanguageLearningWizard | None = None
         self.piper_voice_options = discover_local_piper_voices()
 
@@ -5065,6 +5079,7 @@ class App:
         if language_practice_module_exists():
             file_menu.add_command(label="Language Learning…", command=self.open_language_learning)
         file_menu.add_command(label="Document Converter…", command=self.open_document_wizard)
+        file_menu.add_command(label="Dub Audio/Video…", command=self.open_dubbing_wizard)
         file_menu.add_separator()
         file_menu.add_command(label="Exit\t\tCtrl+Q", command=self._confirm_exit)
         file_mb = ttk.Menubutton(toolbar, text="File", menu=file_menu, direction="below")
@@ -5154,12 +5169,14 @@ class App:
             tools_menu.add_command(label="Language Learning…", command=self.open_language_learning)
             tools_menu.add_command(label="Export Language Pairs…", command=self.export_language_pairs)
         tools_menu.add_command(label="Document Converter…", command=self.open_document_wizard)
+        tools_menu.add_command(label="Dubbing Studio…", command=self.open_dubbing_wizard)
         tools_mb = ttk.Menubutton(toolbar, text="Tools", menu=tools_menu, direction="below")
         tools_mb.grid(row=0, column=3, padx=4)
 
         # Help menubutton
         help_menu = Menu(toolbar, tearoff=0)
         help_menu.add_command(label="About…\tF1", command=self.show_about)
+        help_menu.add_command(label="Dubbing Guide…", command=self.show_dubbing_guide)
         help_menu.add_command(label="Engine Speed Reference…", command=self.show_engine_performance_reference)
         help_menu.add_command(label="GitHub Repository", command=self.open_repository)
         help_mb = ttk.Menubutton(toolbar, text="Help", menu=help_menu, direction="below")
@@ -5958,6 +5975,50 @@ class App:
             self.doc_wizard.window.focus_force()
             return
         self.doc_wizard = DocumentToAudioWizard(self)
+
+    def open_dubbing_wizard(self) -> None:
+        if self.dub_wizard is not None:
+            try:
+                if self.dub_wizard.window.winfo_exists():
+                    self.dub_wizard.window.lift()
+                    self.dub_wizard.window.focus_force()
+                    return
+            except Exception:
+                pass
+        try:
+            from dubbing.ui_wizard import DubbingWizard
+        except Exception as exc:
+            show_error(
+                self.root, "Dubbing Studio unavailable",
+                f"Could not load the Dubbing Studio module: {exc}\n\n"
+                "For full dubbing install: ./setup.sh --with-dubbing",
+            )
+            return
+        self.dub_wizard = DubbingWizard(self)
+        try:
+            self.settings.setdefault("dubbing", {}).update({
+                "target_lang": self.dub_wizard.target_lang.get(),
+            })
+        except Exception:
+            pass
+
+    def show_dubbing_guide(self) -> None:
+        show_info(
+            self.root, "Dubbing Guide",
+            "Dubbing Studio — local EN to HU dubbing.\n\n"
+            "Phase 1a (audio-only): import MP3/WAV, faster-whisper small (~466MB) "
+            "transcribes, NLLB-200-1.3B (~2.5GB, CC-BY-NC, local download only, "
+            "never vendored) translates, spylls checks HU spelling (pure-Python wheel, "
+            "Piper/XTTS synthesizes, atempo fits each segment (0.85-1.15 accept, "
+            "chain 0.5-2.0, overflow flagged if >2.5x).\n\n"
+            "Phase 1b (video, opt-in): MP4/MKV mux, soft subs (mp4 mov_text, mkv srt), "
+            "burn-in only if the bundled ffmpeg reports libass "
+            "(verified on ffmpeg 7.0.2). Separation toggle uses audio-separator "
+            "(~300MB, default OFF, CPU 10-50x realtime).\n\n"
+            "Pocket TTS has no Hungarian voice — disabled for hu. "
+            "Full deps: pip install -r requirements-dubbing.txt or ./setup.sh --with-dubbing.\n"
+            "Model caches: ~/.cache/huggingface, ~/.cache/audio-separator.",
+        )
 
     def open_language_learning(self) -> None:
         if self.lang_learning_wizard is not None and self.lang_learning_wizard.window.winfo_exists():
