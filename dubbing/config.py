@@ -48,6 +48,8 @@ class DubJob:
     audio_output_format: str = "mp3"
     video_output_format: str = "mp4"
     allow_video: bool = False  # Phase 1b gate: wizard sets True when enabled
+    separation_enabled: bool = False  # vocal/stem split (opt-in, CPU-heavy)
+    whisper_model: str = "small"
 
     def validate(self) -> None:
         from . import SUPPORTED_AUDIO_EXTS
@@ -57,6 +59,14 @@ class DubJob:
             raise ValueError(f"Unsupported input '{ext}'. Choose from: {sorted(SUPPORTED_INPUT_EXTS)}.")
         if self.target_lang.strip().lower() == "hu" and "pocket" in self.engine.lower():
             raise ValueError("Pocket TTS has no Hungarian voice. Use Piper or XTTS v2 for 'hu'.")
+        if self.whisper_model not in {"tiny", "base", "small", "medium", "large-v3"}:
+            raise ValueError(f"Unsupported whisper model '{self.whisper_model}'.")
+        try:
+            ratio = float(self.keep_bg_ratio)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"keep_bg_ratio must be a number: {self.keep_bg_ratio!r}") from exc
+        if not 0.0 <= ratio <= 1.0:
+            raise ValueError(f"keep_bg_ratio must be within [0, 1]: {ratio}")
         out_ext = (self.video_output_format if ext in SUPPORTED_VIDEO_EXTS else self.audio_output_format).lower().lstrip(".")
         if self.burn_in and ext in SUPPORTED_AUDIO_EXTS:
             raise ValueError("Burn-in subtitles require a video input/output. Disable burn-in for audio-only.")

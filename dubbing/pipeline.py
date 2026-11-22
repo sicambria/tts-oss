@@ -49,11 +49,32 @@ class DubPipeline:
         self.log(f"Extracted: {wav.name}")
         self._check("extract")
 
-        vocal = wav
+        separate = getattr(stages, "separate_background", None)
+        if separate is not None:
+            vocal, bg = separate(wav, work_dir, bool(getattr(self.job, "separation_enabled", False)))
+        else:  # pragma: no cover - very old stages module
+            vocal, bg = wav, None
+        self.log(f"Vocal: {vocal.name}" + (f" + bg {bg.name}" if bg is not None else " (no separation)"))
+        self._check("separate")
 
         transcribe = transcribe or stages.transcribe
         try:
-            segments: list[Segment] = transcribe(vocal)
+            import inspect as _inspect
+            params = set(_inspect.signature(transcribe).parameters)
+            if params >= {"model_size", "language", "vad_filter"} or transcribe is stages.transcribe:
+                segments: list[Segment] = transcribe(
+                    vocal,
+                    model_size=getattr(self.job, "whisper_model", "small"),
+                    language=getattr(self.job, "source_lang", "en"),
+                    # VAD off by default: it drops sung vocals with the music.
+                    # Vocal separation (opt-in) is the music-content path; VAD
+                    # stays available for spoken-only content via API.
+                    vad_filter=False,
+                )
+            elif "model_size" in params:
+                segments = transcribe(vocal, getattr(self.job, "whisper_model", "small"))
+            else:
+                segments = transcribe(vocal)
         except RuntimeError as exc:
             raise RuntimeError(str(exc)) from exc
         self.log(f"Transcribed {len(segments)} segments")
@@ -88,7 +109,7 @@ class DubPipeline:
 
         timeline = stages.concat_timeline(placed, max(total_dur, 0.1), work_dir / "dub_timeline.wav")
         self._check("timeline")
-        mixed = stages.mix_with_bg(timeline, None, self.job.keep_bg_ratio, work_dir / "dub_mixed.wav")
+        mixed = stages.mix_with_bg(timeline, bg, self.job.keep_bg_ratio, work_dir / "dub_mixed.wav")
 
         if is_video_input(str(self.job.input)):
             from . import video as video_mod
