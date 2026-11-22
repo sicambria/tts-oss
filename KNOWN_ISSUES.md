@@ -48,8 +48,14 @@ This file records issues and learnings discovered during development so they do 
 
 ## Learnings
 
-- Dubbing music+speech: never default Whisper VAD on for songs. Silero VAD drops sung vocals with the music (real case: 5/52 segments kept, whole sung body lost) and `no_speech_prob` cannot post-filter (real sung segs scored 0.75–0.94). Use VAD-off + `condition_on_previous_text=False` + `hallucination_silence_threshold≈2s`; vocal separation (opt-in) is the proper music-content path.
+- Dubbing music+speech: never default Whisper VAD on for songs. Silero VAD drops sung vocals along with the music (real case: 5/52 segments kept, whole sung body lost) and `no_speech_prob` cannot post-filter (real sung segs scored 0.75–0.94). Use VAD-off + `condition_on_previous_text=False` + `hallucination_silence_threshold≈2s`; vocal separation (opt-in) is the proper music-content path.
 - NLLB needs FLORES codes on both sides. Passing short codes (`hu`) to `forced_bos_token_id` silently yields a wrong token (300 vs 256071 for `hun_Latn`) and gibberish output — map via a `nllb_code()` helper and set `tok.src_lang` too.
+- Song-dub timing: never time-stretch TTS to fill melodic slots (measured: 33/49 slowed, worst 5x). Place at natural speed from slot start; squeeze at most 1.5x, then spill. Fuse sub-1.5 s micro-slots pre-translate (capped span) — better fit and better MT context.
+- NLLB loops on long merged inputs: `no_repeat_ngram_size=3` + `repetition_penalty=1.2` (verified: runaway tail gone, style intact). Greedy Whisper loops need the same treatment on the STT side (`defuse_repetition`, keep refrains).
+- Deterministic STT needs open confidence floors: temperature=0.0 alone dropped 10 quiet tail verses; log_prob -2.0 + no_speech 1.0 recovered them with gaps staying clean.
+- Transcribe the MIX for songs, not the vocal stem: separator artifacts hallucinate confidently ("coffee/sunflower" at stem RMS 0.033, same band as real singing) while VAD-on-stem drops quiet real verses. The stem feeds only the bg mix + clone reference.
+- audio-separator filename trap: stems are `name_(Vocals)_Model.wav` and the MODEL name contains "vocal" (Kim_Vocal_2) — match the parenthesized label, never a bare substring, or every stem matches.
+- audio-separator 0.48 cannot live in this repo's venv (needs numpy>=2 + beartype<0.19; repo pins numpy 1.26.4 for gruut/Piper and pocket-tts needs beartype>=0.22.5). Run it from an isolated `~/.cache/tts-oss-sep` venv via subprocess (`scripts/setup_separator_env.sh`); in-process import stays as the fast path for numpy>=2 envs.
 - Wire new pipeline inputs end to end. The Dubbing Studio `separation` checkbox was saved to settings but never reached `DubJob` (no field), and `mix_with_bg` was always called with `bg=None`, so background music was silently dropped. A checkbox that reaches no job field is a dead control — test the wiring, not just the widget.
 
 - Confirm GUI type from code before assuming a web address. In this repo, `Tk()` in `app.py` is definitive.

@@ -33,6 +33,43 @@ def _wav_duration(path: Path) -> float:
         return wf.getnframes() / float(wf.getframerate() or 44100)
 
 
+def _wav_samples(path: Path, max_seconds: float = 3600.0) -> tuple[list[float], int]:
+    import struct
+    with wave.open(str(path), "rb") as wf:
+        rate, width, n = wf.getframerate(), wf.getsampwidth(), wf.getnframes()
+        frames = min(n, int(max_seconds * rate))
+        raw = wf.readframes(frames)
+    fmt = {1: "b", 2: "h", 4: "i"}.get(width, "h")
+    full = float(2 ** (8 * width - 1))
+    return [v / full for (v,) in struct.iter_unpack(f"<{fmt}", raw[:len(raw) // width * width])], rate
+
+
+def vocal_coverage(work_dir: Path, floor: float = 0.01) -> dict:
+    """Per-segment dubbed-energy coverage: for each SRT span, is there voice?
+
+    Returns {'ratio': covered/total, 'silent': [idx,...]}. A silent span where
+    the original sings is a dropped line (transcription miss or empty synth).
+    """
+    segs = parse_srt(work_dir / "dub.srt")
+    tl = work_dir / "dub_timeline.wav"
+    if not segs or not tl.is_file():
+        return {"ratio": 0.0, "silent": [], "total": len(segs)}
+    samples, rate = _wav_samples(tl)
+    silent: list[int] = []
+    for i, s in enumerate(segs):
+        a, b = max(0, int(s.start * rate)), min(len(samples), int(s.end * rate))
+        if b - a < rate // 20:
+            b = min(len(samples), a + rate // 20)
+        window = samples[a:b] if b > a else []
+        import math
+        rms = math.sqrt(sum(v * v for v in window) / len(window)) if window else 0.0
+        if rms < floor:
+            silent.append(i)
+    total = len(segs)
+    return {"ratio": (total - len(silent)) / total if total else 0.0,
+            "silent": silent, "total": total}
+
+
 def repeated_ngram_ratio(texts: list[str], n: int = 4) -> float:
     grams: Counter[str] = Counter()
     total = 0
@@ -84,6 +121,18 @@ def check(work_dir: Path, source_media: Path | None = None) -> dict:
         return {"ok": False, "failures": [f"srt parse failed: {exc}"], "work_dir": str(work_dir)}
     # parse_srt stores text in .translated; also accept .text
     texts = [(s.translated or s.text or "") for s in segs]
+    # EN sources live in dub_transcript.json (written by the pipeline); the
+    # SRT carries only the translation. Truncation audit needs both.
+    sources: list[str] = [(s.text or "") for s in segs]
+    try:
+        import json as _json
+        tj = work_dir / "dub_transcript.json"
+        if tj.is_file():
+            rows = _json.loads(tj.read_text(encoding="utf-8"))
+            if isinstance(rows, list) and len(rows) == len(segs):
+                sources = [str(r.get("text") or "") for r in rows]
+    except Exception:
+        pass
     result["segments"] = len(segs)
     if not segs:
         result["ok"] = False
@@ -98,6 +147,13 @@ def check(work_dir: Path, source_media: Path | None = None) -> dict:
     if ngram > 0.35:
         result["ok"] = False
         result["failures"].append(f"hallucination suspected: repeated {4}-gram ratio {ngram:.2f} > 0.35")
+    truncated: list[int] = []
+    for i, (src, tgt) in enumerate(zip(sources, texts)):
+        if len(src) > 20 and len(tgt.strip()) < 0.5 * len(src):
+            truncated.append(i)
+    if truncated:
+        result["ok"] = False
+        result["failures"].append(f"truncated translations at segments {truncated[:8]} (HU <50% of EN chars)")
     spell = spell_unknown_rate([t for t in texts if t.strip()])
     result["spell"] = {k: v for k, v in spell.items() if k in ("rate", "checked", "total", "reason")}
     if spell.get("checked") and spell.get("rate", 0.0) > 0.40:
@@ -117,6 +173,17 @@ def check(work_dir: Path, source_media: Path | None = None) -> dict:
             result["failures"].append(f"timeline near-silence (peak {peak:.4f})")
     else:
         result["timeline_peak"] = None
+    try:
+        cov = vocal_coverage(work_dir)
+    except Exception:
+        cov = {"ratio": 0.0, "silent": [], "total": 0}
+    result["vocal_coverage"] = round(cov.get("ratio", 0.0), 3)
+    if cov.get("total"):
+        result["silent_segments"] = cov.get("silent", [])
+        if cov["ratio"] < 0.85:
+            result["ok"] = False
+            result["failures"].append(
+                f"vocal coverage {cov['ratio']:.2f} < 0.85 (silent segs {cov['silent'][:8]})")
     if source_media is not None and tl.is_file():
         try:
             import subprocess

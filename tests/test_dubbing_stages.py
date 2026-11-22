@@ -104,12 +104,25 @@ def test_separate_disabled_identity(tmp_path):
     assert separate_background(wav, tmp_path, False) == (wav, None)
 
 
-def test_separate_enabled_missing_dep(tmp_path):
+def test_separate_enabled_missing_dep(tmp_path, monkeypatch):
+    import builtins
+
     import pytest
 
-    from dubbing.stages import separate_background
+    from dubbing import stages as stages_mod
+    # Hermetic: simulate a machine with neither the package nor the
+    # isolated CLI env, regardless of what this dev machine has installed.
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name.startswith("audio_separator"):
+            raise ImportError("nope")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(stages_mod, "_separator_cli", lambda: None)
     with pytest.raises(RuntimeError, match="audio-separator"):
-        separate_background(tmp_path / "v.wav", tmp_path, True)
+        stages_mod.separate_background(tmp_path / "v.wav", tmp_path, True)
 
 
 def test_transcribe_missing_dep(monkeypatch, tmp_path):

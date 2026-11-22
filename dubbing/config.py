@@ -10,7 +10,7 @@ from . import SUPPORTED_INPUT_EXTS
 DEFAULT_DUBBING_SETTINGS: dict[str, object] = {
     "target_lang": "hu",
     "engine": "Auto",
-    "burn_in": False,
+    "burn_in": True,
     "keep_bg_ratio": 0.2,
     "separation_enabled": False,
     "whisper_model": "small",

@@ -45,40 +45,56 @@ class DubPipeline:
         self._check("start")
 
         extract = extract or stages.extract_audio
-        wav = extract(self.job.input, work_dir / "extracted.wav")
+        sep_enabled = bool(getattr(self.job, "separation_enabled", False))
+        try:
+            import inspect as _inspect2
+            _params = set(_inspect2.signature(extract).parameters)
+            if "channels" in _params or extract is stages.extract_audio:
+                wav = extract(self.job.input, work_dir / "extracted.wav",
+                              channels=2 if sep_enabled else 1)
+            else:
+                wav = extract(self.job.input, work_dir / "extracted.wav")
+        except (TypeError, ValueError):
+            wav = extract(self.job.input, work_dir / "extracted.wav")
         self.log(f"Extracted: {wav.name}")
         self._check("extract")
 
         separate = getattr(stages, "separate_background", None)
         if separate is not None:
-            vocal, bg = separate(wav, work_dir, bool(getattr(self.job, "separation_enabled", False)))
+            _vocal, bg = separate(wav, work_dir, bool(getattr(self.job, "separation_enabled", False)))
         else:  # pragma: no cover - very old stages module
-            vocal, bg = wav, None
-        self.log(f"Vocal: {vocal.name}" + (f" + bg {bg.name}" if bg is not None else " (no separation)"))
+            _vocal, bg = wav, None
+        self.log(f"Vocal: {Path(_vocal).name}" + (f" + bg {bg.name}" if bg is not None else " (no separation)"))
         self._check("separate")
 
+        # NOTE: STT runs on the MIX, not the stem. Stem transcription
+        # hallucinates on separator artifacts ("coffee/sunflower" in gaps)
+        # while VAD-on-stem drops quiet real verses; the mix is complete
+        # with clean gaps. The stem feeds only the bg mix + clone reference.
         transcribe = transcribe or stages.transcribe
         try:
             import inspect as _inspect
             params = set(_inspect.signature(transcribe).parameters)
             if params >= {"model_size", "language", "vad_filter"} or transcribe is stages.transcribe:
                 segments: list[Segment] = transcribe(
-                    vocal,
+                    wav,
                     model_size=getattr(self.job, "whisper_model", "small"),
                     language=getattr(self.job, "source_lang", "en"),
-                    # VAD off by default: it drops sung vocals with the music.
-                    # Vocal separation (opt-in) is the music-content path; VAD
-                    # stays available for spoken-only content via API.
                     vad_filter=False,
                 )
             elif "model_size" in params:
-                segments = transcribe(vocal, getattr(self.job, "whisper_model", "small"))
+                segments = transcribe(wav, getattr(self.job, "whisper_model", "small"))
             else:
-                segments = transcribe(vocal)
+                segments = transcribe(wav)
         except RuntimeError as exc:
             raise RuntimeError(str(exc)) from exc
         self.log(f"Transcribed {len(segments)} segments")
         self._check("transcribe")
+
+        merged = stages.merge_short_segments(segments)
+        if len(merged) != len(segments):
+            self.log(f"Merged {len(segments)} -> {len(merged)} singable phrases")
+        segments = merged
 
         translate = translate or stages.translate_segments
         segments = translate(segments, self.job.source_lang, self.job.target_lang)
@@ -86,6 +102,11 @@ class DubPipeline:
         self._check("translate")
 
         srt = subtitles.write_srt(segments, work_dir / "dub.srt", translated=True)
+        import json as _json
+        (work_dir / "dub_transcript.json").write_text(_json.dumps(
+            [{"start": s.start, "end": s.end, "text": s.text,
+              "translated": s.translated} for s in segments],
+            ensure_ascii=False, indent=1), encoding="utf-8")
         self.log(f"SRT: {srt.name} ({srt_norm_short(segments)})")
         if not full:
             return srt
