@@ -133,3 +133,5 @@ input/*
 # .claude/settings.json is harness hook config (NOT app runtime settings).
 !CLAUDE.md
 !.claude/settings.json
+# kaizen hook runtime (blanket lib/ rule above would orphan hooks in worktrees/fresh clones).
+!.harness/scripts/lib/
