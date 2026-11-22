@@ -10,6 +10,7 @@ exclude_lines = [
     "def open_path_in_system\\(",
     "class PiperVoiceWizard:",
     "class DocumentToAudioWizard:",
+    "class DubbingWizard:",
     "class LanguageLearningWizard:",
     "class SettingsDialog:",
     "class App:",
