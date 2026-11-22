@@ -1,0 +1,21 @@
+# kaizen CI backstop for Bitbucket — mirrors .harness/ci/kaizen-gate.yml's logic (Current-Debt #2:
+# forge lock-in). Local hooks can be bypassed (--no-verify); this job cannot. Copied to
+# bitbucket-pipelines.yml at the repo root by `kaizen init` (never clobbers an existing one).
+# Pair with a Bitbucket branch-permission "require passing builds" rule for the same un-bypassable
+# guarantee GitHub gets from branch protection on kaizen-gate.yml.
+image: node:20
+
+pipelines:
+  default:
+    - step:
+        name: kaizen-gate
+        script:
+          - node .harness/scripts/doctor.mjs
+          - node .harness/scripts/verify.mjs --phase full
+  pull-requests:
+    '**':
+      - step:
+          name: kaizen-gate
+          script:
+            - node .harness/scripts/doctor.mjs
+            - node .harness/scripts/verify.mjs --phase full

@@ -1,0 +1,26 @@
+# OSV dependency-vulnerability scan (kaizen portable secret-governance kit, ROADMAP P1-8).
+# Independent of the local secret-scan gate: this flags known-vulnerable dependencies against the
+# OSV database. Pinned to a released tag. upload-sarif:false so it runs without GitHub code-scanning
+# (Advanced Security) enabled; the action's default fail-on-vuln keeps it enforcing. A dependency-free
+# repo simply reports nothing and passes.
+name: osv-scan
+on:
+  push:
+    branches: ["**"]
+  pull_request: {}
+  schedule:
+    - cron: "30 12 * * 1" # weekly, Mondays 12:30 UTC
+permissions:
+  contents: read
+jobs:
+  scan:
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8
+    with:
+      upload-sarif: false # run without GitHub code-scanning (Advanced Security); fail-on-vuln defaults to true
+      scan-args: |-
+        --recursive
+        ./

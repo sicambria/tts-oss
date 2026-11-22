@@ -1,0 +1,30 @@
+# Secret-scan expiry allowlist (kaizen portable secret-governance kit).
+#
+# A TEMPORARY suppression list for the pure-Node fallback scanner. Unlike .secrets.baseline
+# (permanent), every entry here MUST carry an `expires:` date:
+#
+#   - an UNEXPIRED entry suppresses its fingerprint (the finding is treated as accepted);
+#   - an EXPIRED entry FAILS the gate — forcing you to rotate the secret and delete the entry.
+#
+# This is the anti-rot mechanism: a suppression cannot silently live forever.
+#
+# Each entry is a flat mapping (no nesting):
+#   fingerprint  REQUIRED  sha256 fingerprint printed by the scanner (`fingerprint=…`).
+#   expires      REQUIRED  ISO date (YYYY-MM-DD). Past dates fail the gate.
+#   reason       optional  why this finding is temporarily accepted.
+#   owner        optional  who is accountable for rotating it.
+#   added        optional  when the entry was created.
+#
+# Obtain a fingerprint by scanning the file and copying the printed value:
+#   node .harness/scripts/audits/verify-secrets.mjs path/to/file
+#     ✗ ... [rule] ***  fingerprint=<sha256-hex>
+#
+# Example (commented out — a live entry with a real fingerprint goes here):
+#
+# - fingerprint: <paste-sha256-hex-here>
+#   expires: 2099-01-01
+#   reason: "documented test fixture, tracked for rotation"
+#   owner: security-team
+#   added: 2026-07-02
+
+# (no active entries)

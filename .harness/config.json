@@ -1,0 +1,191 @@
+{
+  "version": 1,
+  "defaultBranch": "main",
+  "repo": {
+    "name": "tts-oss"
+  },
+  "docs": {
+    "core": [
+      {
+        "path": "AGENTS.md",
+        "required": true
+      },
+      {
+        "path": "README.md",
+        "required": false
+      }
+    ],
+    "markdownRoots": [
+      "docs"
+    ],
+    "learningLoop": {
+      "errorsDir": "docs/errors",
+      "auditsDir": "docs/audits",
+      "requiredMetadata": [
+        "Date",
+        "Type",
+        "Area",
+        "Status",
+        "Trigger",
+        "Guardrail Links",
+        "Automation Links"
+      ],
+      "requiredSections": [
+        "## Summary",
+        "## Root Cause",
+        "## Prevention",
+        "## Guardrail Updates",
+        "## Automation Follow-Up"
+      ],
+      "allowedTypes": [
+        "incident",
+        "reference"
+      ],
+      "allowedStatuses": [
+        "active",
+        "monitoring",
+        "resolved"
+      ]
+    }
+  },
+  "plan": {
+    "planTypes": [
+      "FEATURE",
+      "BUG",
+      "RCA",
+      "TECHDEBT",
+      "IMPROVEMENT",
+      "SPIKE",
+      "CHORE",
+      "TEST"
+    ],
+    "dirs": {
+      "active": "docs/plans",
+      "worktrees": "docs/plans/worktrees",
+      "done": "docs/plans/done"
+    },
+    "claimsFile": "docs/plans/worktree-current-state.md",
+    "evidenceHeading": "## Standards & Guardrails Evidence",
+    "dimensions": [
+      {
+        "key": "Tests / shift-left",
+        "match": "test",
+        "core": true
+      },
+      {
+        "key": "Reused patterns / grounding",
+        "match": "reuse|pattern|grounding",
+        "core": true
+      },
+      {
+        "key": "Security",
+        "match": "security|privacy",
+        "core": true
+      }
+    ],
+    "requiredDocumentation": [],
+    "evidenceMode": "grounding"
+  },
+  "branchGuard": {
+    "exemptPaths": [
+      "^docs/",
+      "\\.md$",
+      "^\\.gitignore$",
+      "^\\.harness/memory/",
+      "^\\.harness/archive/"
+    ],
+    "substantivePaths": []
+  },
+  "worktree": {
+    "base": null,
+    "dirPrefix": null,
+    "sharedLinks": [
+      "node_modules"
+    ]
+  },
+  "guard": {
+    "sessionTokenName": "harness-session-token",
+    "maxCalls": 40,
+    "staleMinutes": 30,
+    "docs": [],
+    "scaffolderCommands": [
+      "incident:new",
+      "audit:finding",
+      "next:execute"
+    ]
+  },
+  "hooks": {
+    "requiredBinaries": [],
+    "prePushLogDir": ".prepush-logs",
+    "priorHooksPath": ".githooks",
+    "managed": true,
+    "mode": "override",
+    "chained": {
+      "pre-commit": [
+        ".githooks/pre-commit"
+      ],
+      "pre-push": [
+        ".githooks/pre-push"
+      ]
+    }
+  },
+  "verify": {
+    "test": "pytest",
+    "lint": "ruff check .",
+    "build": "python -c \"import compileall,sys; sys.exit(0 if compileall.compile_dir('.', quiet=1) else 1)\"",
+    "e2e": "",
+    "healthcheck": ""
+  },
+  "gates": {
+    "core": "core",
+    "adapters": []
+  },
+  "audits": {
+    "testGaming": {
+      "enabled": true
+    },
+    "slopcheck": {
+      "enabled": true,
+      "allowlist": []
+    }
+  },
+  "review": {
+    "providerDiversity": "soft"
+  },
+  "security": {
+    "secretScanner": "none",
+    "allowlistPath": ".harness/security/allowlist.yaml",
+    "baselinePath": ".harness/security/.secrets.baseline",
+    "identity": {
+      "enabled": true
+    }
+  },
+  "memory": {
+    "sourceAwarePilot": {
+      "enabled": false
+    }
+  },
+  "mcp": {
+    "registry": []
+  },
+  "agents": [
+    "claude"
+  ],
+  "overlays": [
+    "claude",
+    "cursor",
+    "codex",
+    "opencode",
+    "copilot"
+  ],
+  "mode": "full",
+  "fingerprint": {
+    "language": "python",
+    "framework": null,
+    "orm": null,
+    "db": null,
+    "e2e": null
+  },
+  "adapter": "python",
+  "harnessVersion": "0.1.0"
+}

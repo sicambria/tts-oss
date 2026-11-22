@@ -1,0 +1,3 @@
+#!/bin/sh
+# kaizen-managed-hook v1
+exec node "$(git rev-parse --show-toplevel)/.harness/scripts/pre-push.mjs" "$@"

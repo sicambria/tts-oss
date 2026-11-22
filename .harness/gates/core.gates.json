@@ -1,0 +1,30 @@
+{
+  "name": "core",
+  "chains": {
+    "pre-commit": [
+      { "id": "plan-evidence", "run": ["node", ".harness/scripts/audits/verify-plan-evidence.mjs"] },
+      { "id": "secret-scan", "run": ["node", ".harness/scripts/audits/verify-secrets.mjs", "--staged"] },
+      { "id": "identity-scan", "run": ["node", ".harness/scripts/audits/verify-identity.mjs", "--staged"] },
+      { "id": "test-gaming", "run": ["node", ".harness/scripts/audits/verify-test-gaming.mjs", "--staged"] },
+      { "id": "slopcheck", "run": ["node", ".harness/scripts/audits/verify-slopcheck.mjs"] },
+      { "id": "decision-log", "run": ["node", ".harness/scripts/audits/verify-decision-log.mjs"] },
+      { "id": "learning-loop", "run": ["node", ".harness/scripts/audits/verify-learning-loop.mjs"] },
+      { "id": "script-parity", "run": ["node", ".harness/scripts/audits/verify-script-parity.mjs"] },
+      { "id": "ci-gate-parity", "run": ["node", ".harness/scripts/audits/verify-ci-gate-parity.mjs"] },
+      { "id": "prompt-hygiene", "run": ["node", ".harness/scripts/audits/verify-prompt-hygiene.mjs", "--advisory"] },
+      { "id": "harness-surface", "run": ["node", ".harness/scripts/audits/verify-harness-surface.mjs"] },
+      { "id": "catch-ledger", "run": ["node", ".harness/scripts/audits/verify-catch-ledger.mjs"] }
+    ],
+    "pre-push": [
+      { "id": "secret-scan", "run": ["node", ".harness/scripts/audits/verify-secrets.mjs"] },
+      { "id": "identity-scan", "run": ["node", ".harness/scripts/audits/verify-identity.mjs"] },
+      { "id": "slopcheck", "run": ["node", ".harness/scripts/audits/verify-slopcheck.mjs"] },
+      { "id": "learning-loop", "run": ["node", ".harness/scripts/audits/verify-learning-loop.mjs"] },
+      { "id": "verify", "run": ["node", ".harness/scripts/verify.mjs", "--phase", "prepush"] }
+    ],
+    "guardrails": [
+      { "id": "plan-evidence", "run": ["node", ".harness/scripts/audits/verify-plan-evidence.mjs"] },
+      { "id": "learning-loop", "run": ["node", ".harness/scripts/audits/verify-learning-loop.mjs"] }
+    ]
+  }
+}

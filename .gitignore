@@ -124,3 +124,12 @@ marimo/_lsp/
 __marimo__/
 
 input/*
+.prepush-logs/
+.harness/state/
+.worktrees/
+
+# kaizen overlays are committed (scoped exceptions to the rules above):
+# CLAUDE.md is the thin kaizen overlay importing AGENTS.md;
+# .claude/settings.json is harness hook config (NOT app runtime settings).
+!CLAUDE.md
+!.claude/settings.json

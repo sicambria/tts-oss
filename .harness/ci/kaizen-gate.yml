@@ -1,0 +1,78 @@
+# kaizen CI backstop — the un-bypassable enforcement anchor (gate this with branch protection).
+# Local hooks can be bypassed (--no-verify); this job cannot. Copied to .github/workflows/ by init.
+#
+# C3 (Fellow review): the pre-commit-only gates run here too, in their whole-tree (non-staged) forms,
+# so a --no-verify-bypassed commit that plants a secret / identity leak / slop dependency / gamed test /
+# a dual-tree divergence is still caught. Each gate is its OWN step (chain-independent): removing a gate
+# from a local chain cannot strip it from CI.
+#
+# decision-log has TWO modes with different CI semantics (see verify-decision-log.mjs). The STAGED
+# default (bare scan: an override and its decision record must land in ONE commit) stays a local
+# pre-commit gate — same-commit atomicity does not map onto a CI invocation, so the bare scan is
+# never run here. The --range commit-range mode (per-commit atomicity preserved per commit) IS
+# wired below over the push range, so a --no-verify-bypassed override commit is still caught in CI.
+# Its primary override class (removing/neutering a gate) is covered twice: every security gate below
+# runs as an independent CI step regardless of local core.gates.json composition, AND the range step
+# audits committed gate removals. Residual: an adopter who sets audits.<gate>.enabled=false in
+# config.json also skips that config-driven step (caught only locally, at authoring time).
+name: kaizen-gate
+on:
+  push: { branches: ["**"] }
+  pull_request: {}
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the decision-log --range step resolves before..sha rev-lists.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: Doctor (enforcement integrity)
+        run: node .harness/scripts/doctor.mjs
+      - name: Core guardrails chain (plan-evidence + learning-loop)
+        run: node .harness/scripts/gates/run-gates.mjs guardrails
+      - name: Secret scan (whole tree — non-staged detect mode)
+        run: node .harness/scripts/audits/verify-secrets.mjs
+      - name: Identity scan (whole tree — non-staged detect mode)
+        run: node .harness/scripts/audits/verify-identity.mjs
+      - name: Supply-chain slopcheck
+        run: node .harness/scripts/audits/verify-slopcheck.mjs
+      - name: Dual-tree script parity (C4)
+        run: node .harness/scripts/audits/verify-script-parity.mjs
+      - name: Manifest-CI gate parity (every manifest gate is enforced in this backstop)
+        run: node .harness/scripts/audits/verify-ci-gate-parity.mjs
+      - name: Prompt hygiene (advisory — warns, never blocks; promotion is a later wave)
+        run: node .harness/scripts/audits/verify-prompt-hygiene.mjs --advisory
+      - name: Harness surface (advisory — warns, never blocks; promotion is a later wave)
+        run: node .harness/scripts/audits/verify-harness-surface.mjs
+      - name: Catch ledger (advisory — warns, never blocks; promotion is a later wave)
+        run: node .harness/scripts/audits/verify-catch-ledger.mjs
+      - name: Decision log (commit-range audit over the push range; staged mode stays local)
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            # New branch/tag push: no before-SHA exists, so audit the tip commit alone. (Multi-commit
+            # new branches are covered per-commit by the local pre-commit gate at authoring time.)
+            RANGE="${{ github.sha }}^!"
+          else
+            RANGE="${{ github.event.before }}..${{ github.sha }}"
+          fi
+          node .harness/scripts/audits/verify-decision-log.mjs --range "$RANGE"
+      - name: Test-gaming (every tracked test file — the gate has no non-staged mode; scan each via --file)
+        shell: bash
+        run: |
+          set -uo pipefail
+          fail=0
+          while IFS= read -r f; do
+            case "$f" in
+              *.mjs|*.js|*.cjs) node .harness/scripts/audits/verify-test-gaming.mjs --file "$f" || fail=1 ;;
+            esac
+          done < <(git ls-files -- 'test/')
+          exit $fail
+      - name: Verify contract
+        run: node .harness/scripts/verify.mjs --phase prepush
