@@ -132,10 +132,10 @@ def missing_dependencies(separation_enabled: bool = False) -> list[dict]:
         "hint": "pip install -r requirements-dubbing.txt (model ~2.5GB downloads after confirm)",
     })
     items.append({
-        "key": "cyhunspell", "label": "Spellcheck (cyhunspell)",
+        "key": "cyhunspell", "label": "Spellcheck (cyhunspell, optional)",
         "ok": has_cyhunspell(), "pip": "cyhunspell==1.3.4",
         "needs_sudo": False,
-        "hint": "pip install -r requirements-dubbing.txt",
+        "hint": "One-click pip; if the build fails (autopoint/hunspell.pc) run: sudo apt install gettext libhunspell-dev pkg-config — dubbing works without it.",
     })
     try:
         from . import spellcheck
@@ -164,6 +164,19 @@ def missing_dependencies(separation_enabled: bool = False) -> list[dict]:
         "hint": "Bundled imageio-ffmpeg 7.0.2 includes libass; if missing, use soft subs + sidecar.",
     })
     return items
+
+
+CYHUNSPELL_SUDO_HINT = (
+    "cyhunspell needs C build tools (no wheel on this platform): "
+    "sudo apt install gettext libhunspell-dev pkg-config autoconf automake libtool, "
+    "then retry. Dubbing works without it — spellcheck stays disabled."
+)
+
+
+def is_cyhunspell_build_failure(output: str) -> bool:
+    markers = ("autopoint", "autoreconf", "hunspell.pc", "build_hunspell_package", "cyhunspell")
+    low = output.lower()
+    return any(m in low for m in markers)
 
 
 def pip_missing_specs(separation_enabled: bool = False) -> list[str]:

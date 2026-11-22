@@ -135,25 +135,50 @@ class DubbingWizard:
         self.installer.start()
 
     def _run_pip_install(self, specs: list[str]) -> None:
+        from . import CYHUNSPELL_SUDO_HINT
+        from . import is_cyhunspell_build_failure
         try:
             self.window.after(0, lambda: self.install_btn.state(["disabled"]))
         except Exception:
             pass
-        try:
-            proc = subprocess.Popen(
-                [sys.executable, "-m", "pip", "install", *specs],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            )
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                self._log_queue.put("pip: " + line.rstrip())
-            proc.wait(timeout=1800)
-            if proc.returncode == 0:
-                self._log("INSTALL OK — re-checking dependencies.")
+        failed: list[str] = []
+        for spec in specs:
+            self._log(f"INSTALL: {spec}")
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "pip", "install", "--progress-bar", "off",
+                     "--no-input", *spec.split()],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                )
+                output_lines: list[str] = []
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    clean = line.rstrip()
+                    if clean:
+                        output_lines.append(clean)
+                        self._log_queue.put("pip: " + clean[-500:])
+                proc.wait(timeout=1800)
+                if proc.returncode == 0:
+                    self._log(f"OK: {spec} installed.")
+                else:
+                    failed.append(spec)
+                    tail = "\n".join(output_lines[-15:])
+                    self._log(f"ERROR: pip exited code {proc.returncode} for {spec}.")
+                    if tail:
+                        self._log(f"pip tail for {spec}: ... {tail[-2000:]}")
+                    if "cyhunspell" in spec and is_cyhunspell_build_failure(tail):
+                        self._log(f"CYHUNSPELL BUILD FAILURE: {CYHUNSPELL_SUDO_HINT}")
+            except Exception as exc:
+                failed.append(spec)
+                self._log(f"ERROR installing {spec} (no sudo was used): {exc}. Copy this log for help.")
+        if not failed:
+            self._log("INSTALL OK — re-checking dependencies.")
+        else:
+            ok = [s for s in specs if s not in failed]
+            if ok:
+                self._log(f"PARTIAL: installed [{', '.join(ok)}]; failed [{', '.join(failed)}] — dubbing works, failed parts stay disabled.")
             else:
-                self._log(f"ERROR: pip exited with code {proc.returncode}. Copy this log for help.")
-        except Exception as exc:
-            self._log(f"ERROR during pip install (no sudo was used): {exc}. Copy this log for help.")
+                self._log(f"ERROR: all failed [{', '.join(failed)}]. Copy this log for help.")
         try:
             self.window.after(0, self._refresh_deps)
         except Exception:
