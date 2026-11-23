@@ -78,6 +78,16 @@ def _ffmpeg(*args: str, timeout: int = 600) -> None:
         raise RuntimeError(f"ffmpeg failed: {(proc.stderr or proc.stdout)[-2000:]}")
 
 
+def clip_wav(src: Path, start: float, length: float, out: Path) -> Path:
+    """Cut [start, start+length) from audio into out. Shared by CLI + wizard
+    (XTTS clone-reference extraction)."""
+    import subprocess as _sp
+    _sp.run([ffmpeg_path(), "-hide_banner", "-y", "-i", str(src),
+             "-ss", f"{start:.1f}", "-t", f"{length:.1f}", str(out)],
+            check=True, capture_output=True)
+    return out
+
+
 def extract_audio(src: Path, tmp: Path, sr: int = 44100, channels: int = 1) -> Path:
     tmp.parent.mkdir(parents=True, exist_ok=True)
     _ffmpeg("-y", "-i", str(src), "-vn", "-ar", str(sr), "-ac", str(channels), str(tmp))

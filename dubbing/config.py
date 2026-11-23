@@ -14,7 +14,7 @@ DEFAULT_DUBBING_SETTINGS: dict[str, object] = {
     "keep_bg_ratio": 0.5,
     "bg_gap_ratio": 1.0,
     "bg_duck": True,
-    "separation_enabled": False,
+    "separation_enabled": True,
     "whisper_model": "small",
     "audio_output_format": "mp3",
     "video_output_format": "mp4",

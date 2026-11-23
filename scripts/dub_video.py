@@ -18,14 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
-def _clip_wav(src: Path, start: float, length: float, out: Path) -> Path:
-    import subprocess
-
-    from dubbing import ffmpeg_path
-    subprocess.run([ffmpeg_path(), "-hide_banner", "-y", "-i", str(src),
-                    "-ss", f"{start:.1f}", "-t", f"{length:.1f}", str(out)],
-                   check=True, capture_output=True)
-    return out
+def _progress(pct: int, label: str) -> None:
+    print(f"[{pct:3d}%] {label}", flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -106,22 +100,23 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     vocal, _ = stages.separate_background(wav, work / "ref_sep", True)
                     auto_ref = work / "ref_vocal_cut.wav"
-                    _clip_wav(vocal, 0.0, 30.0, auto_ref)
+                    stages.clip_wav(vocal, 0.0, 30.0, auto_ref)
                     ref = str(auto_ref)
                 except Exception as exc:
                     print(f"NOTE: vocal-stem reference failed ({exc}); using intro speech.")
             if not ref:
                 auto_ref = work / "ref_intro.wav"
-                _clip_wav(wav, 1.0, 21.0, auto_ref)
+                stages.clip_wav(wav, 1.0, 21.0, auto_ref)
                 ref = str(auto_ref)
             print(f"Clone reference: {ref}")
         pipe = DubPipeline(job, log=print)
-        out = pipe.run(work, synthesize=synth, full=True)
+        out = pipe.run(work, synthesize=synth, full=True, progress=_progress)
         import shutil
         import time
         keep = Path(args.out) / f"dub_work_{int(time.time())}"
         keep.mkdir(parents=True, exist_ok=True)
-        for name in ("dub.srt", "dub_transcript.json", "dub_timeline.wav", "dub_mixed.wav", "extracted.wav"):
+        for name in ("dub.srt", "dub_transcript.json",
+                     "dub_timeline.wav", "dub_mixed.wav", "extracted.wav"):
             src = work / name
             if src.is_file():
                 try:

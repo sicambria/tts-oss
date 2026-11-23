@@ -509,3 +509,69 @@ def test_pipeline_passes_spans_when_ducking(tmp_path, monkeypatch):
             assert seen["spans"] == [(0.0, 1.0)] and seen["gap"] == gap
         else:
             assert seen["spans"] is None and seen["gap"] is None
+
+
+def test_dub_defaults_best_and_stored():
+    from dubbing.ui_wizard import dub_defaults
+    fresh = dub_defaults({})
+    assert fresh["separation_enabled"] is True
+    assert fresh["engine"] == "XTTS v2"
+    assert fresh["burn_in"] is True
+    assert fresh["allow_video"] is True
+    assert fresh["bg_duck"] is True
+    assert fresh["keep_bg_ratio"] == 0.5 and fresh["bg_gap_ratio"] == 1.0
+    # explicit stored choices (incl. falsy ones) are respected
+    stored = dub_defaults({"separation_enabled": False, "engine": "Piper",
+                           "burn_in": False, "keep_bg_ratio": 0.0,
+                           "bg_duck": False, "whisper_model": "medium"})
+    assert stored["separation_enabled"] is False
+    assert stored["engine"] == "Piper"
+    assert stored["burn_in"] is False
+    assert stored["keep_bg_ratio"] == 0.0
+    assert stored["bg_duck"] is False
+    assert stored["whisper_model"] == "medium"
+
+
+def test_pipeline_progress_monotonic(tmp_path, monkeypatch):
+    from dubbing import stages as stages_mod
+    from dubbing.config import DubJob
+    from dubbing.config import Segment
+    from dubbing.pipeline import DubPipeline
+    job = DubJob(input=tmp_path / "a.mp3", target_lang="hu",
+                 output_dir=tmp_path / "out")
+    job.output_dir.mkdir(exist_ok=True)
+    seen: list[tuple[int, str]] = []
+
+    def fake_synth(text, hint):
+        p = hint.parent / "raw.wav"
+        p.write_bytes(b"wav")
+        return p
+
+    monkeypatch.setattr(stages_mod, "fit_to_slot", lambda wav, dur, wd=None: (wav, False))
+    monkeypatch.setattr(stages_mod, "concat_timeline",
+                        lambda placed, total, out: (out.write_bytes(b"mix"), out)[1])
+    monkeypatch.setattr(stages_mod, "mix_with_bg",
+                        lambda dub, bg, ratio, out, **kw: (out.write_bytes(b"mix"), out)[1])
+    monkeypatch.setattr(stages_mod, "export_audio",
+                        lambda wav, out, bitrate="192k": (out.write_bytes(b"mp3"), out)[1])
+    pipe = DubPipeline(job, log=lambda m: None)
+    out = pipe.run(tmp_path,
+                   extract=lambda s, d: (d.write_bytes(b"x"), d)[1],
+                   transcribe=lambda v: [Segment(0.0, 1.0, text="hi")],
+                   translate=lambda segs, s, t: segs,
+                   synthesize=fake_synth, full=True,
+                   progress=lambda pct, label: seen.append((pct, label)))
+    assert out.suffix == ".mp3"
+    pcts = [p for p, _ in seen]
+    assert pcts and pcts[0] >= 0 and pcts[-1] == 100
+    assert all(b >= a for a, b in zip(pcts, pcts[1:])), seen
+    assert any("voiced 1/1" in label for _, label in seen)
+
+
+def test_clip_wav(tmp_path):
+    from dubbing.stages import clip_wav
+    src = _tiny_wav(tmp_path / "src.wav", seconds=4.0, rate=16000)
+    out = clip_wav(src, 1.0, 2.0, tmp_path / "cut.wav")
+    import wave
+    with wave.open(str(out)) as wf:
+        assert abs(wf.getnframes() / wf.getframerate() - 2.0) < 0.1
