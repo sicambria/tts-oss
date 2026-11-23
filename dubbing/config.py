@@ -11,7 +11,9 @@ DEFAULT_DUBBING_SETTINGS: dict[str, object] = {
     "target_lang": "hu",
     "engine": "Auto",
     "burn_in": True,
-    "keep_bg_ratio": 0.2,
+    "keep_bg_ratio": 0.5,
+    "bg_gap_ratio": 1.0,
+    "bg_duck": True,
     "separation_enabled": False,
     "whisper_model": "small",
     "audio_output_format": "mp3",
@@ -43,7 +45,9 @@ class DubJob:
     ref_wav: str = ""
     segments: list[Segment] = field(default_factory=list)
     burn_in: bool = False
-    keep_bg_ratio: float = 0.2
+    keep_bg_ratio: float = 0.5  # music level UNDER speech
+    bg_gap_ratio: float = 1.0  # music level in instrumental gaps (= original)
+    bg_duck: bool = True  # adaptive: dip under lyrics, swell back in gaps
     output_dir: Path = field(default_factory=lambda: Path.cwd() / "output")
     audio_output_format: str = "mp3"
     video_output_format: str = "mp4"
@@ -67,6 +71,12 @@ class DubJob:
             raise ValueError(f"keep_bg_ratio must be a number: {self.keep_bg_ratio!r}") from exc
         if not 0.0 <= ratio <= 1.0:
             raise ValueError(f"keep_bg_ratio must be within [0, 1]: {ratio}")
+        try:
+            gap = float(self.bg_gap_ratio)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"bg_gap_ratio must be a number: {self.bg_gap_ratio!r}") from exc
+        if not 0.0 <= gap <= 1.0:
+            raise ValueError(f"bg_gap_ratio must be within [0, 1]: {gap}")
         out_ext = (self.video_output_format if ext in SUPPORTED_VIDEO_EXTS else self.audio_output_format).lower().lstrip(".")
         if self.burn_in and ext in SUPPORTED_AUDIO_EXTS:
             raise ValueError("Burn-in subtitles require a video input/output. Disable burn-in for audio-only.")

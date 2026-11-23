@@ -8,6 +8,7 @@ import threading
 import time
 from pathlib import Path
 from tkinter import BooleanVar
+from tkinter import DoubleVar
 from tkinter import StringVar
 from tkinter import Text
 from tkinter import Toplevel
@@ -20,6 +21,14 @@ from . import is_video_input
 from . import missing_dependencies
 from .config import DEFAULT_DUBBING_SETTINGS
 from .config import DubJob
+
+
+def _pct(value: object, default: float = 50.0) -> float:
+    """Settings ratio [0,1] -> Scale percent [0,100], clamped."""
+    try:
+        return max(0.0, min(100.0, float(value) * 100.0))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
 
 
 def _file_dialog_top(window, func, **kwargs):
@@ -72,6 +81,9 @@ class DubbingWizard:
         self.burn_in = BooleanVar(value=True)
         self.separation = BooleanVar(value=bool(s.get("separation_enabled", False)))
         self.phase_1b = BooleanVar(value=bool(s.get("phase_1b_enabled", False)))
+        self.bg_speech = DoubleVar(value=_pct(s.get("keep_bg_ratio", DEFAULT_DUBBING_SETTINGS["keep_bg_ratio"])))
+        self.bg_gap = DoubleVar(value=_pct(s.get("bg_gap_ratio", DEFAULT_DUBBING_SETTINGS["bg_gap_ratio"])))
+        self.bg_duck = BooleanVar(value=bool(s.get("bg_duck", DEFAULT_DUBBING_SETTINGS["bg_duck"])))
         self.status = StringVar(value="Idle — pick an audio/video file.")
         self.install_status = StringVar(value="")
         self.worker: threading.Thread | None = None
@@ -333,6 +345,16 @@ class DubbingWizard:
                         command=self._refresh).pack(side="left", padx=6)
         self.burn_btn = ttk.Checkbutton(f, text="Burn subtitles into video", variable=self.burn_in)
         self.burn_btn.pack(anchor="w", pady=4)
+        mus_row = ttk.Frame(f)
+        mus_row.pack(fill="x", pady=4)
+        ttk.Label(mus_row, text="Music under speech").pack(side="left")
+        ttk.Scale(mus_row, from_=0, to=100, variable=self.bg_speech,
+                  orient="horizontal", length=140).pack(side="left", padx=6)
+        ttk.Label(mus_row, text="Music in gaps").pack(side="left")
+        ttk.Scale(mus_row, from_=0, to=100, variable=self.bg_gap,
+                  orient="horizontal", length=140).pack(side="left", padx=6)
+        ttk.Checkbutton(mus_row, text="Adaptive ducking (dip under voice, swell in gaps)",
+                        variable=self.bg_duck).pack(side="left", padx=6)
         out_row = ttk.Frame(f)
         out_row.pack(fill="x", pady=4)
         ttk.Label(out_row, text="Output folder").pack(side="left")
@@ -412,7 +434,9 @@ class DubbingWizard:
                          allow_video=bool(self.phase_1b.get()),
                          separation_enabled=bool(self.separation.get()),
                          whisper_model=str(stored.get("whisper_model", DEFAULT_DUBBING_SETTINGS["whisper_model"])),
-                         keep_bg_ratio=float(stored.get("keep_bg_ratio", DEFAULT_DUBBING_SETTINGS["keep_bg_ratio"])))
+                         keep_bg_ratio=round(float(self.bg_speech.get()) / 100.0, 2),
+                         bg_gap_ratio=round(float(self.bg_gap.get()) / 100.0, 2),
+                         bg_duck=bool(self.bg_duck.get()))
             job.validate()
             if full and is_video_input(str(job.input)) and not self.phase_1b.get():
                 self._log("ERROR: video input needs Phase 1b enabled (checkbox above).")
@@ -567,9 +591,11 @@ class DubbingWizard:
                     "target_lang": self.target_lang.get(),
                     "separation_enabled": bool(self.separation.get()),
                     "phase_1b_enabled": bool(self.phase_1b.get()),
+                    "keep_bg_ratio": round(float(self.bg_speech.get()) / 100.0, 2),
+                    "bg_gap_ratio": round(float(self.bg_gap.get()) / 100.0, 2),
+                    "bg_duck": bool(self.bg_duck.get()),
                 })
                 current.setdefault("whisper_model", str(DEFAULT_DUBBING_SETTINGS["whisper_model"]))
-                current.setdefault("keep_bg_ratio", float(DEFAULT_DUBBING_SETTINGS["keep_bg_ratio"]))
                 try:
                     from app import save_app_settings
                     save_app_settings(self.app.settings)
