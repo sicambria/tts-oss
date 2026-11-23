@@ -130,7 +130,23 @@ class DubPipeline:
 
         timeline = stages.concat_timeline(placed, max(total_dur, 0.1), work_dir / "dub_timeline.wav")
         self._check("timeline")
-        mixed = stages.mix_with_bg(timeline, bg, self.job.keep_bg_ratio, work_dir / "dub_mixed.wav")
+        _mix = stages.mix_with_bg
+        _duck = bool(getattr(self.job, "bg_duck", True))
+        try:
+            import inspect as _mi
+            _mparams = set(_mi.signature(_mix).parameters)
+        except (TypeError, ValueError):
+            _mparams = set()
+        if _mparams >= {"spans", "gap_level"}:
+            spans = [(s.start, s.end) for s in segments] if _duck else None
+            mixed = _mix(timeline, bg, self.job.keep_bg_ratio, work_dir / "dub_mixed.wav",
+                         spans=spans,
+                         gap_level=float(getattr(self.job, "bg_gap_ratio", 1.0)) if _duck else None)
+            if _duck and bg is not None:
+                self.log(f"Ducking: bed {float(getattr(self.job, 'bg_gap_ratio', 1.0)):.2f} in gaps "
+                         f"-> {self.job.keep_bg_ratio:.2f} under {len(segments)} lyric spans")
+        else:
+            mixed = _mix(timeline, bg, self.job.keep_bg_ratio, work_dir / "dub_mixed.wav")
 
         if is_video_input(str(self.job.input)):
             from . import video as video_mod

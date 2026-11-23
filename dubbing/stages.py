@@ -403,20 +403,118 @@ def fit_to_slot(dub_wav: Path, slot_dur: float, work_dir: Path | None = None) ->
     return out, overflow
 
 
-def mix_with_bg(dub: Path, bg: Path | None, keep_bg_ratio: float, out: Path) -> Path:
+DUCK_ATTACK_S = 0.25  # music fades down just before each lyric
+DUCK_RELEASE_S = 0.9  # ... and swells back after
+
+
+def duck_envelope(total_dur: float, rate: int, spans: list[tuple[float, float]],
+                  speech_level: float, gap_level: float,
+                  attack: float = DUCK_ATTACK_S,
+                  release: float = DUCK_RELEASE_S) -> list[float]:
+    """Sample-exact ducking envelope: gap_level everywhere, cosine ramps down
+    to speech_level around each lyric span. Overlapping spans merge (min)."""
+    import math
+    n = max(1, int(total_dur * rate))
+    env = [gap_level] * n
+    for start, end in spans:
+        a = max(0.0, start - attack)
+        b = max(0.0, min(total_dur, end + release))
+        ia, ib = int(a * rate), max(int(a * rate) + 1, int(b * rate))
+        is_, ie = max(0, int(start * rate)), min(n, int(end * rate))
+        # ramp down [ia, is_), hold speech_level [is_, ie), ramp up [ie, ib)
+        for i in range(ia, min(is_, n)):
+            t = (i - ia) / max(1, is_ - ia)
+            env[i] = min(env[i], gap_level + (speech_level - gap_level) * (0.5 - 0.5 * math.cos(math.pi * t)))
+        for i in range(is_, min(ie, n)):
+            env[i] = min(env[i], speech_level)
+        for i in range(ie, min(ib, n)):
+            t = (i - ie) / max(1, ib - ie)
+            env[i] = min(env[i], speech_level + (gap_level - speech_level) * (0.5 - 0.5 * math.cos(math.pi * t)))
+    return env
+
+
+def _read_stereo44k(wav: Path, tmp_dir: Path) -> tuple[list[float], list[float], int]:
+    """Load wav as (left, right) float lists at 44100 Hz stereo."""
+    import struct
+    import wave as _wave
+    rate, width, ch, raw = 44100, 2, 2, b""
+    try:
+        with _wave.open(str(wav), "rb") as wf:
+            rate, width, ch = wf.getframerate(), wf.getsampwidth(), wf.getnchannels()
+            raw = wf.readframes(wf.getnframes())
+    except Exception as exc:
+        raise RuntimeError(f"Cannot read {wav}: {exc}") from exc
+    if rate != 44100 or width != 2 or ch != 2:
+        conv = tmp_dir / f"{wav.stem}_44k.wav"
+        # Explicit pan (unity gain): bare `-ac 2` applies -3dB per channel.
+        _ffmpeg("-y", "-i", str(wav), "-filter:a",
+                "aresample=44100,pan=stereo|c0=c0|c1=c0", "-c:a", "pcm_s16le", str(conv))
+        with _wave.open(str(conv), "rb") as wf:
+            raw = wf.readframes(wf.getnframes())
+        width, ch, rate = 2, 2, 44100
+    n = len(raw) // (width * ch)
+    vals = struct.unpack(f"<{n * ch}h", raw[:n * ch * width])
+    full = 32768.0
+    if ch == 2:
+        return [v / full for v in vals[0::2]], [v / full for v in vals[1::2]], rate
+    mono = [v / full for v in vals]
+    return list(mono), list(mono), rate
+
+
+def mix_with_bg(dub: Path, bg: Path | None, keep_bg_ratio: float, out: Path,
+                spans: list[tuple[float, float]] | None = None,
+                gap_level: float | None = None) -> Path:
+    """Mix dub timeline over the bg stem.
+
+    Adaptive (ducking) when spans AND gap_level are given: the bed plays at
+    gap_level in instrumental gaps and dips to keep_bg_ratio under lyrics
+    (sample-exact cosine envelope). Otherwise the legacy static mix at
+    keep_bg_ratio. keep_bg_ratio is the under-speech level either way.
+    """
     out.parent.mkdir(parents=True, exist_ok=True)
     if bg is None:
         _ffmpeg("-y", "-i", str(dub), "-c:a", "pcm_s16le", str(out))
         return out
+    if spans is not None and gap_level is not None:
+        return _mix_ducked(dub, bg, spans, keep_bg_ratio, gap_level, out)
     bg_vol = max(0.0, min(1.0, keep_bg_ratio))
-    # Normalize both inputs (dub may be mono 22/24 kHz TTS, bg stereo 44.1 kHz
-    # stems) before amix, which requires identical rate/layout.
+    # Normalize both inputs (explicit unity-gain pan: bare aformat/-ac would
+    # apply -3dB on mono->stereo) before amix, which needs identical layout.
     _ffmpeg("-y", "-i", str(dub), "-i", str(bg),
             "-filter_complex",
-            "[0:a]aresample=44100,aformat=channel_layouts=stereo[du];"
-            f"[1:a]volume={bg_vol},aresample=44100,aformat=channel_layouts=stereo[bg];"
+            "[0:a]aresample=44100,pan=stereo|c0=c0|c1=c0[du];"
+            f"[1:a]volume={bg_vol},aresample=44100,pan=stereo|c0=c0|c1=c0[bg];"
             "[du][bg]amix=inputs=2:duration=longest:normalize=0",
             "-c:a", "pcm_s16le", str(out))
+    return out
+
+
+def _mix_ducked(dub: Path, bg: Path, spans: list[tuple[float, float]],
+                speech_level: float, gap_level: float, out: Path) -> Path:
+    import struct
+    import wave as _wave
+    tmp = out.parent
+    dl, dr, _ = _read_stereo44k(dub, tmp)
+    bl, br, rate = _read_stereo44k(bg, tmp)
+    n = max(len(dl), len(bl))
+    total = n / float(rate)
+    speech = max(0.0, min(1.0, speech_level))
+    gap = max(0.0, min(1.0, gap_level))
+    env = duck_envelope(total, rate, spans, speech, gap)
+
+    def ext(ch: list[float]) -> list[float]:
+        return (ch + [0.0] * (n - len(ch)))[:n]
+
+    dl, dr, bl, br = ext(dl), ext(dr), ext(bl), ext(br)
+    mixed_l = [max(-1.0, min(1.0, d + b * e)) for d, b, e in zip(dl, bl, env)]
+    mixed_r = [max(-1.0, min(1.0, d + b * e)) for d, b, e in zip(dr, br, env)]
+    with _wave.open(str(out), "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(struct.pack(f"<{n * 2}h",
+                                   *[int(max(-1.0, min(1.0, v)) * 32767)
+                                     for pair in zip(mixed_l, mixed_r) for v in pair]))
     return out
 
 

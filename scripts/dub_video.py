@@ -37,7 +37,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--whisper-model", default="small")
     ap.add_argument("--separation", action="store_true",
                     help="split vocals/music (isolated env); keeps music, STT on clean vocals")
-    ap.add_argument("--keep-bg", type=float, default=0.2)
+    ap.add_argument("--keep-bg", type=float, default=0.5,
+                    help="music level UNDER speech (0-1)")
+    ap.add_argument("--bg-gap", type=float, default=1.0,
+                    help="music level in instrumental gaps (0-1, 1=original)")
+    ap.add_argument("--duck", dest="duck", action="store_true", default=True,
+                    help="adaptive ducking: dip under voice, swell in gaps")
+    ap.add_argument("--no-duck", dest="duck", action="store_false",
+                    help="static bed at --keep-bg everywhere (legacy)")
     ap.add_argument("--speaker-wav", default="",
                     help="XTTS reference voice; with --speaker-auto derive from the input")
     ap.add_argument("--speaker-auto", action="store_true",
@@ -56,7 +63,8 @@ def main(argv: list[str] | None = None) -> int:
                  target_lang=args.target, engine=args.engine,
                  burn_in=burn_in, output_dir=Path(args.out),
                  allow_video=True, separation_enabled=args.separation,
-                 whisper_model=args.whisper_model, keep_bg_ratio=args.keep_bg)
+                 whisper_model=args.whisper_model, keep_bg_ratio=args.keep_bg,
+                 bg_gap_ratio=args.bg_gap, bg_duck=args.duck)
     job.validate()
 
     from app import SynthesisRequest

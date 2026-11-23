@@ -374,6 +374,68 @@ def test_vocal_coverage(tmp_path):
     assert cov2["ratio"] == 0.5 and cov2["silent"] == [1]
 
 
+def test_duck_envelope_shape():
+    from dubbing.stages import duck_envelope
+    env = duck_envelope(10.0, 100, [(4.0, 6.0)], 0.2, 1.0)
+    assert abs(env[0] - 1.0) < 1e-9 and abs(env[-1] - 1.0) < 1e-9
+    assert abs(env[500] - 0.2) < 1e-9  # hold region
+    # ramp down monotonic, ramp up monotonic
+    down = env[350:400]
+    assert all(b <= a + 1e-9 for a, b in zip(down, down[1:]))
+    up = env[600:690]
+    assert all(b >= a - 1e-9 for a, b in zip(up, up[1:]))
+    assert min(env) >= 0.2 - 1e-9 and max(env) <= 1.0 + 1e-9
+
+
+def _burst_wav(path, spans, freq=440.0, seconds=4.0, rate=16000):
+    import math
+    import struct
+    import wave
+    n = int(seconds * rate)
+    frames = []
+    for i in range(n):
+        t = i / rate
+        on = any(a <= t < b for a, b in spans)
+        v = int(10000 * math.sin(2 * math.pi * freq * t)) if on else 0
+        frames.append(v)
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(struct.pack("<%dh" % n, *frames))
+    return path
+
+
+def _rms_of(wav_path, a, b):
+    import math
+    import struct
+    import wave
+    with wave.open(str(wav_path), "rb") as wf:
+        rate, n, ch = wf.getframerate(), wf.getnframes(), wf.getnchannels()
+        raw = wf.readframes(n)
+    s = struct.unpack("<%dh" % (len(raw) // 2), raw)
+    mono = s[0::ch] if ch > 1 else s  # deinterleave: time->frame indexing
+    win = mono[int(a * rate):int(b * rate)]
+    return math.sqrt(sum(v * v for v in win) / len(win)) / 32768 if win else 0.0
+
+
+def test_mix_ducked_levels(tmp_path):
+    from dubbing import stages as stages_mod
+    bg = _tiny_wav(tmp_path / "bg.wav", seconds=4.0, rate=16000, freq=220.0)
+    out = tmp_path / "mix.wav"
+    # silent dub isolates the bed: gap must stay full, span ducked to 0.2
+    silent = _burst_wav(tmp_path / "sil.wav", [], freq=880.0)
+    stages_mod.mix_with_bg(silent, bg, 0.2, out, spans=[(1.0, 2.0)], gap_level=1.0)
+    bg_rms = _rms_of(bg, 0, 4)
+    assert abs(_rms_of(out, 0.1, 0.6) - bg_rms) / bg_rms < 0.05
+    assert abs(_rms_of(out, 1.2, 1.8) - 0.2 * bg_rms) / (0.2 * bg_rms) < 0.10
+    # duck off / unset falls back to legacy static path
+    out2 = tmp_path / "mix2.wav"
+    stages_mod.mix_with_bg(silent, bg, 0.2, out2)
+    assert abs(_rms_of(out2, 1.2, 1.8) - 0.2 * bg_rms) / (0.2 * bg_rms) < 0.10
+    assert abs(_rms_of(out2, 0.1, 0.6) - 0.2 * bg_rms) / (0.2 * bg_rms) < 0.10
+
+
 def test_truncation_audit(tmp_path):
     import json
 
@@ -388,3 +450,62 @@ def test_truncation_audit(tmp_path):
     res = check(tmp_path)
     assert res["ok"] is False
     assert any("truncat" in f for f in res["failures"])
+
+
+def test_config_bg_fields(tmp_path):
+    import pytest
+
+    from dubbing.config import DubJob
+    job = DubJob(input=tmp_path / "a.mp3")
+    assert job.bg_gap_ratio == 1.0 and job.bg_duck is True and job.keep_bg_ratio == 0.5
+    job.validate()
+    with pytest.raises(ValueError, match="bg_gap_ratio"):
+        DubJob(input=tmp_path / "a.mp3", bg_gap_ratio=1.5).validate()
+
+
+def test_pct_helper():
+    from dubbing.ui_wizard import _pct
+    assert _pct(0.5) == 50.0
+    assert _pct("bad") == 50.0
+    assert _pct(2.0) == 100.0
+    assert _pct(-1.0) == 0.0
+
+
+def test_pipeline_passes_spans_when_ducking(tmp_path, monkeypatch):
+    from dubbing import stages as stages_mod
+    from dubbing.config import DubJob
+    from dubbing.config import Segment
+    from dubbing.pipeline import DubPipeline
+    for duck, gap in ((True, 1.0), (False, 1.0)):
+        job = DubJob(input=tmp_path / "a.mp3", target_lang="hu",
+                     output_dir=tmp_path / "out", separation_enabled=True,
+                     bg_duck=duck, keep_bg_ratio=0.5, bg_gap_ratio=gap)
+        job.output_dir.mkdir(exist_ok=True)
+        seen: dict = {}
+
+        def fake_mix(dub, bg, ratio, out, spans=None, gap_level=None):
+            seen["spans"] = spans
+            seen["gap"] = gap_level
+            out.write_bytes(b"mix")
+            return out
+
+        monkeypatch.setattr(stages_mod, "separate_background",
+                            lambda wav, tmp, en: (wav, tmp / "bg.wav"))
+        monkeypatch.setattr(stages_mod, "fit_to_slot", lambda wav, dur, wd=None: (wav, False))
+        monkeypatch.setattr(stages_mod, "concat_timeline",
+                            lambda placed, total, out: (out.write_bytes(b"mix"), out)[1])
+        monkeypatch.setattr(stages_mod, "mix_with_bg", fake_mix)
+        monkeypatch.setattr(stages_mod, "export_audio",
+                            lambda wav, out, bitrate="192k": (out.write_bytes(b"mp3"), out)[1])
+        (tmp_path / "bg.wav").write_bytes(b"x")
+        pipe = DubPipeline(job, log=lambda m: None)
+        out = pipe.run(tmp_path,
+                       extract=lambda s, d: (d.write_bytes(b"x"), d)[1],
+                       transcribe=lambda v: [Segment(0.0, 1.0, text="hi")],
+                       translate=lambda segs, s, t: (setattr(segs[0], "translated", "szia"), segs)[1],
+                       synthesize=lambda text, hint: hint, full=True)
+        assert out.suffix == ".mp3"
+        if duck:
+            assert seen["spans"] == [(0.0, 1.0)] and seen["gap"] == gap
+        else:
+            assert seen["spans"] is None and seen["gap"] is None
