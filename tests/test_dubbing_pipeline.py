@@ -112,20 +112,29 @@ def test_pipeline_full_mocked(tmp_path, monkeypatch):
     assert len(made) == 2
 
 
-def test_pipeline_full_video_needs_phase(tmp_path):
+def test_pipeline_full_video_allowed(tmp_path, monkeypatch):
+    from dubbing import stages as stages_mod
     from dubbing.config import DubJob
     from dubbing.config import Segment
     from dubbing.pipeline import DubPipeline
-    job = DubJob(input=tmp_path / "a.mp4", target_lang="hu", allow_video=False)
+    job = DubJob(input=tmp_path / "a.mp4", target_lang="hu", allow_video=False,
+                 output_dir=tmp_path / "out")
+    job.output_dir.mkdir()
+    monkeypatch.setattr(stages_mod, "fit_to_slot", lambda wav, dur, wd=None: (wav, False))
+    monkeypatch.setattr(stages_mod, "concat_timeline",
+                        lambda placed, total, out: (out.write_bytes(b"mix"), out)[1])
+    monkeypatch.setattr(stages_mod, "mix_with_bg",
+                        lambda dub, bg, ratio, out, **kw: (out.write_bytes(b"mix"), out)[1])
+    monkeypatch.setattr(stages_mod, "export_audio",
+                        lambda wav, out, bitrate="192k": (out.write_bytes(b"mp3"), out)[1])
+    import dubbing.video as video_mod
+    monkeypatch.setattr(video_mod, "mux_video",
+                        lambda video, audio, srt, out, burn: (out.write_bytes(b"mp4"), out)[1])
     pipe = DubPipeline(job, log=lambda m: None)
-    try:
-        pipe.run(tmp_path,
-                 extract=lambda s, d: (d.write_bytes(b"x"), d)[1],
-                 transcribe=lambda v: [Segment(0.0, 1.0, text="hi")],
-                 translate=lambda segs, s, t: segs,
-                 synthesize=lambda text, hint: hint,
-                 full=True)
-    except RuntimeError as exc:
-        assert "Phase 1b" in str(exc)
-        return
-    raise AssertionError("expected Phase 1b gate RuntimeError")
+    out = pipe.run(tmp_path,
+                   extract=lambda s, d: (d.write_bytes(b"x"), d)[1],
+                   transcribe=lambda v: [Segment(0.0, 1.0, text="hi")],
+                   translate=lambda segs, s, t: segs,
+                   synthesize=lambda text, hint: hint,
+                   full=True)
+    assert out.suffix == ".mp4" and out.is_file()

@@ -1,4 +1,4 @@
-"""Video-only helpers (Phase 1b). Never imported by Phase 1a audio path."""
+"""Video-only helpers. Imported lazily for video inputs so audio-only dubs stay lightweight."""
 from __future__ import annotations
 
 import subprocess
