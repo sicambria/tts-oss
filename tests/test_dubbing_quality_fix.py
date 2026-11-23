@@ -518,12 +518,17 @@ def test_dub_defaults_best_and_stored():
     assert fresh["engine"] == "XTTS v2"
     assert fresh["burn_in"] is True
     assert fresh["allow_video"] is True
+    assert fresh["source_lang"] == "en"
+    assert fresh["target_lang"] == "hu"
     assert fresh["bg_duck"] is True
     assert fresh["keep_bg_ratio"] == 0.5 and fresh["bg_gap_ratio"] == 1.0
     # explicit stored choices (incl. falsy ones) are respected
-    stored = dub_defaults({"separation_enabled": False, "engine": "Piper",
+    stored = dub_defaults({"source_lang": "fr", "target_lang": "de",
+                           "separation_enabled": False, "engine": "Piper",
                            "burn_in": False, "keep_bg_ratio": 0.0,
                            "bg_duck": False, "whisper_model": "medium"})
+    assert stored["source_lang"] == "fr"
+    assert stored["target_lang"] == "de"
     assert stored["separation_enabled"] is False
     assert stored["engine"] == "Piper"
     assert stored["burn_in"] is False

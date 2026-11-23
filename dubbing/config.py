@@ -8,6 +8,7 @@ from pathlib import Path
 from . import SUPPORTED_INPUT_EXTS
 
 DEFAULT_DUBBING_SETTINGS: dict[str, object] = {
+    "source_lang": "en",
     "target_lang": "hu",
     "engine": "Auto",
     "burn_in": True,
@@ -18,8 +19,11 @@ DEFAULT_DUBBING_SETTINGS: dict[str, object] = {
     "whisper_model": "small",
     "audio_output_format": "mp3",
     "video_output_format": "mp4",
-    "phase_1b_enabled": True,  # 1b verified e2e 2026-11-22 (mp3 + mp4 burn-in green)
 }
+
+# Pocket TTS voices only exist for these languages; dubbing into anything
+# else needs Piper or XTTS v2.
+_POCKET_DUB_LANGUAGES = frozenset({"en", "fr", "de", "pt", "it", "es"})
 
 
 @dataclass
@@ -51,7 +55,7 @@ class DubJob:
     output_dir: Path = field(default_factory=lambda: Path.cwd() / "output")
     audio_output_format: str = "mp3"
     video_output_format: str = "mp4"
-    allow_video: bool = False  # Phase 1b gate: wizard sets True when enabled
+    allow_video: bool = True  # legacy setting, kept for stored configs; video input is always allowed
     separation_enabled: bool = False  # vocal/stem split (opt-in, CPU-heavy)
     whisper_model: str = "small"
 
@@ -61,8 +65,11 @@ class DubJob:
         ext = self.input.suffix.lower()
         if ext not in SUPPORTED_INPUT_EXTS:
             raise ValueError(f"Unsupported input '{ext}'. Choose from: {sorted(SUPPORTED_INPUT_EXTS)}.")
-        if self.target_lang.strip().lower() == "hu" and "pocket" in self.engine.lower():
-            raise ValueError("Pocket TTS has no Hungarian voice. Use Piper or XTTS v2 for 'hu'.")
+        target = self.target_lang.strip().lower().split("_")[0].split("-")[0]
+        if "pocket" in self.engine.lower() and target not in _POCKET_DUB_LANGUAGES:
+            raise ValueError(
+                f"Pocket TTS has no '{self.target_lang.strip()}' voice. Use Piper or XTTS v2."
+            )
         if self.whisper_model not in {"tiny", "base", "small", "medium", "large-v3"}:
             raise ValueError(f"Unsupported whisper model '{self.whisper_model}'.")
         try:

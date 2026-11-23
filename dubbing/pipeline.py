@@ -39,7 +39,10 @@ class DubPipeline:
             extract=None, transcribe=None, translate=None,
             synthesize=None, full: bool = False,
             progress: ProgressFn | None = None) -> Path:
-        """Dry run (full=False) returns the SRT path. Full run returns final media."""
+        """Run transcription + translation; with full=True also synthesize the dub.
+
+        Without ``full`` only the translated SRT (+ transcript JSON) is written
+        and returned. A full run returns the final dubbed media file."""
         from . import is_video_input
         from . import stages
         from . import subtitles
@@ -124,13 +127,11 @@ class DubPipeline:
             ensure_ascii=False, indent=1), encoding="utf-8")
         self.log(f"SRT: {srt.name} ({srt_norm_short(segments)})")
         if not full:
-            prog(100, "dry run complete")
+            prog(100, "transcript ready")
             return srt
 
         if synthesize is None:
             raise RuntimeError("Full dub needs a TTS synthesizer (pick an engine in the wizard).")
-        if is_video_input(str(self.job.input)) and not getattr(self.job, "allow_video", False):
-            raise RuntimeError("Video input needs Phase 1b enabled in the wizard.")
 
         placed: list[tuple[Path, float]] = []
         total_dur = max((s.end for s in segments), default=0.0)

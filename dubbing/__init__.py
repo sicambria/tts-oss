@@ -5,6 +5,52 @@ SUPPORTED_INPUT_EXTS = frozenset({".mp3", ".wav", ".m4a", ".ogg", ".flac", ".mp4
 SUPPORTED_VIDEO_EXTS = frozenset({".mp4", ".mkv", ".avi", ".mov"})
 SUPPORTED_AUDIO_EXTS = frozenset({".mp3", ".wav", ".m4a", ".ogg", ".flac"})
 
+# Languages Dubbing Studio can translate between (NLLB-200 + XTTS v2 cover
+# the same set; Whisper transcribes all of them). Order matches the main
+# app's language menu.
+DUBBING_LANGUAGES: tuple[str, ...] = (
+    "en", "hu", "fr", "de", "pt", "it", "es", "pl",
+    "tr", "ru", "nl", "cs", "ar", "zh", "ko", "ja", "hi",
+)
+
+DUBBING_LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English",
+    "hu": "Hungarian",
+    "fr": "French",
+    "de": "German",
+    "pt": "Portuguese",
+    "it": "Italian",
+    "es": "Spanish",
+    "pl": "Polish",
+    "tr": "Turkish",
+    "ru": "Russian",
+    "nl": "Dutch",
+    "cs": "Czech",
+    "ar": "Arabic",
+    "zh": "Chinese",
+    "ko": "Korean",
+    "ja": "Japanese",
+    "hi": "Hindi",
+}
+
+
+def dub_language_label(code: str) -> str:
+    """Human-readable label for a dubbing language code, e.g. 'Hungarian (hu)'."""
+    code = (code or "").strip().lower()
+    return f"{DUBBING_LANGUAGE_NAMES.get(code, code.upper())} ({code})"
+
+
+def dub_language_code(label: str) -> str:
+    """Parse a label produced by dub_language_label back to its code."""
+    text = (label or "").strip().lower()
+    if text in DUBBING_LANGUAGE_NAMES:
+        return text
+    if text.endswith(")") and "(" in text:
+        inner = text.rsplit("(", 1)[1].rstrip(")").strip()
+        if inner:
+            return inner
+    return text.split("_")[0].split("-")[0] or "en"
+
 __all__ = [
     "SUPPORTED_INPUT_EXTS", "SUPPORTED_VIDEO_EXTS", "SUPPORTED_AUDIO_EXTS",
     "ffmpeg_path", "has_libass", "has_faster_whisper", "has_nllb",

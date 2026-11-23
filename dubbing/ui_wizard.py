@@ -15,7 +15,10 @@ from tkinter import Toplevel
 from tkinter import filedialog
 from tkinter import ttk
 
+from . import DUBBING_LANGUAGES
 from . import SUPPORTED_INPUT_EXTS
+from . import dub_language_code
+from . import dub_language_label
 from . import has_libass
 from . import is_video_input
 from . import missing_dependencies
@@ -34,10 +37,10 @@ def _pct(value: object, default: float = 50.0) -> float:
 def dub_defaults(stored: dict) -> dict:
     """Dubbing Studio settings with best defaults (pure: no Tk, testable).
 
-    Fallbacks (used only when the user never chose): separation ON (music
-    kept), engine XTTS v2 (original voice cloned), burn-in on, adaptive
-    ducking 50/100, video always allowed (phase-1b gate retired). Explicit
-    stored choices are always respected.
+    Fallbacks (used only when the user never chose): source English, target
+    Hungarian, engine XTTS v2 (original voice cloned), music separation on
+    (music kept), burn-in on, adaptive ducking 50/100. Explicit stored
+    choices are always respected.
     """
     s = {str(k): v for k, v in dict(stored or {}).items()}
     d = DEFAULT_DUBBING_SETTINGS
@@ -49,8 +52,13 @@ def dub_defaults(stored: dict) -> dict:
         except (TypeError, ValueError):
             return float(d[key])
 
+    def _lang(key: str, fallback: str) -> str:
+        code = str(s.get(key, d.get(key, fallback))).strip().lower()
+        return code if code in DUBBING_LANGUAGES else str(fallback)
+
     return {
-        "target_lang": str(s.get("target_lang", d["target_lang"])),
+        "source_lang": _lang("source_lang", "en"),
+        "target_lang": _lang("target_lang", "hu"),
         "engine": str(s.get("engine", "XTTS v2")),
         "separation_enabled": bool(s.get("separation_enabled", True)),
         "allow_video": True,
@@ -119,7 +127,8 @@ class DubbingWizard:
 
         s = dict(app.settings.get("dubbing", {})) if isinstance(getattr(app, "settings", {}), dict) else {}
         cfg = dub_defaults(s)
-        self.target_lang = StringVar(value=cfg["target_lang"])
+        self.source_lang = StringVar(value=dub_language_label(cfg["source_lang"]))
+        self.target_lang = StringVar(value=dub_language_label(cfg["target_lang"]))
         self.engine = StringVar(value=cfg["engine"])
         self.input_path = StringVar(value="")
         self.burn_in = BooleanVar(value=cfg["burn_in"])
@@ -379,7 +388,8 @@ class DubbingWizard:
         self.dep_toggle_btn = ttk.Button(header, text="Show dependencies", command=self._toggle_deps)
         self.dep_toggle_btn.pack(side="right")
         self.dep_toggle_btn.pack_forget()
-        ttk.Label(f, text="EN to HU local dub. Phase 1a: audio-only. Enable Phase 1b for video mux + burn-in.",
+        ttk.Label(f, text="Dub audio or video into another language. The original is transcribed, "
+                  "translated, then re-voiced with your chosen TTS engine while the music is kept.",
                   wraplength=900).pack(anchor="w", pady=(0, 8))
 
         dep_frame = ttk.LabelFrame(f, text="Dependencies (one-click pip install, no sudo)", padding=8)
@@ -409,9 +419,15 @@ class DubbingWizard:
         ttk.Button(row, text="Browse…", command=self._browse).pack(side="left", padx=6)
         opts = ttk.Frame(f)
         opts.pack(fill="x", pady=4)
-        ttk.Label(opts, text="Target").pack(side="left")
-        ttk.Combobox(opts, textvariable=self.target_lang, values=["hu", "en"], width=6,
-                     state="readonly").pack(side="left", padx=6)
+        lang_values = [dub_language_label(c) for c in DUBBING_LANGUAGES]
+        ttk.Label(opts, text="From").pack(side="left")
+        self.source_combo = ttk.Combobox(opts, textvariable=self.source_lang, values=lang_values,
+                                         width=18, state="readonly")
+        self.source_combo.pack(side="left", padx=6)
+        ttk.Label(opts, text="To").pack(side="left")
+        self.target_combo = ttk.Combobox(opts, textvariable=self.target_lang, values=lang_values,
+                                         width=18, state="readonly")
+        self.target_combo.pack(side="left", padx=6)
         ttk.Label(opts, text="Engine").pack(side="left")
         ttk.Combobox(opts, textvariable=self.engine, values=["XTTS v2", "Auto", "Piper", "Pocket TTS"],
                      width=12, state="readonly").pack(side="left", padx=6)
@@ -422,10 +438,10 @@ class DubbingWizard:
         self.burn_btn.pack(anchor="w", pady=4)
         mus_row = ttk.Frame(f)
         mus_row.pack(fill="x", pady=4)
-        ttk.Label(mus_row, text="Music under speech").pack(side="left")
+        ttk.Label(mus_row, text="Music level under speech").pack(side="left")
         ttk.Scale(mus_row, from_=0, to=100, variable=self.bg_speech,
                   orient="horizontal", length=140).pack(side="left", padx=6)
-        ttk.Label(mus_row, text="Music in gaps").pack(side="left")
+        ttk.Label(mus_row, text="Music level in gaps").pack(side="left")
         ttk.Scale(mus_row, from_=0, to=100, variable=self.bg_gap,
                   orient="horizontal", length=140).pack(side="left", padx=6)
         ttk.Checkbutton(mus_row, text="Adaptive ducking (dip under voice, swell in gaps)",
@@ -442,10 +458,8 @@ class DubbingWizard:
         ttk.Button(out_row, text="Browse…", command=self._browse_out).pack(side="left")
         run_row = ttk.Frame(f)
         run_row.pack(fill="x", pady=4)
-        self.dry_btn = ttk.Button(run_row, text="Transcribe + Translate (dry run)", command=self._start_dry)
-        self.dry_btn.pack(side="left")
-        self.full_btn = ttk.Button(run_row, text="Generate dubbed version (full)", command=self._start_full)
-        self.full_btn.pack(side="left", padx=6)
+        self.full_btn = ttk.Button(run_row, text="Generate dubbed version", command=self._start)
+        self.full_btn.pack(side="left")
         self.stop_btn = ttk.Button(run_row, text="Stop", command=self._on_stop)
         self.stop_btn.pack(side="left", padx=6)
         self.open_file_btn = ttk.Button(run_row, text="Open file", command=self._open_file)
@@ -459,7 +473,7 @@ class DubbingWizard:
         self.eta_label = ttk.Label(prog_row, text="", width=28)
         self.eta_label.pack(side="left", padx=8)
 
-        log_frame = ttk.LabelFrame(f, text="Log — every error lands here, Copy all messages copies it", padding=6)
+        log_frame = ttk.LabelFrame(f, text="Log", padding=6)
         log_frame.pack(fill="both", expand=True, pady=4)
         self.log_text = Text(log_frame, height=10, wrap="word", state="disabled")
         self.log_text.pack(side="left", fill="both", expand=True)
@@ -496,13 +510,7 @@ class DubbingWizard:
         if p:
             self.output_folder.set(p)
 
-    def _start_dry(self) -> None:
-        self._start(full=False)
-
-    def _start_full(self) -> None:
-        self._start(full=True)
-
-    def _start(self, full: bool) -> None:
+    def _start(self) -> None:
         if self.worker and self.worker.is_alive():
             return
         try:
@@ -513,8 +521,10 @@ class DubbingWizard:
                     getattr(self.app, "settings", {}), dict) else {}
             except Exception:
                 stored = {}
-            job = DubJob(input=Path(self.input_path.get()), source_lang="en",
-                         target_lang=self.target_lang.get(), engine=self.engine.get(),
+            job = DubJob(input=Path(self.input_path.get()),
+                         source_lang=dub_language_code(self.source_lang.get()),
+                         target_lang=dub_language_code(self.target_lang.get()),
+                         engine=self.engine.get(),
                          burn_in=self.burn_in.get(), output_dir=out_dir,
                          allow_video=True,
                          separation_enabled=bool(self.separation.get()),
@@ -535,7 +545,7 @@ class DubbingWizard:
         except Exception:
             pass
         self._update_run_buttons()
-        self.worker = threading.Thread(target=self._run_job, args=(job, full), daemon=True)
+        self.worker = threading.Thread(target=self._run_job, args=(job,), daemon=True)
         self.worker.start()
 
     def _job_running(self) -> bool:
@@ -553,7 +563,7 @@ class DubbingWizard:
     def _update_run_buttons(self) -> None:
         running = self._job_running()
         has_out = bool(getattr(self, "last_output", ""))
-        for name, enabled_when in (("dry_btn", not running), ("full_btn", not running),
+        for name, enabled_when in (("full_btn", not running),
                                    ("stop_btn", running),
                                    ("open_file_btn", not running and has_out),
                                    ("open_folder_btn", not running)):
@@ -700,7 +710,7 @@ class DubbingWizard:
             self._log_threadsafe(f"NOTE: no clone reference ({exc}); using built-in voice.")
             return ""
 
-    def _run_job(self, job: DubJob, full: bool = False) -> None:
+    def _run_job(self, job: DubJob) -> None:
         import tempfile
 
         from .pipeline import DubPipeline
@@ -710,10 +720,10 @@ class DubbingWizard:
                 return
             with tempfile.TemporaryDirectory(prefix="dub-") as tmp:
                 tmp_path = Path(tmp)
-                ref_wav = self._clone_ref(tmp_path, job) if full else ""
-                synth = self._app_synthesizer(tmp_path, job, ref_wav) if full else None
+                ref_wav = self._clone_ref(tmp_path, job)
+                synth = self._app_synthesizer(tmp_path, job, ref_wav)
                 pipe = DubPipeline(job, log=self._log_threadsafe, stopper=self.stop_event)
-                out = pipe.run(tmp_path, synthesize=synth, full=full,
+                out = pipe.run(tmp_path, synthesize=synth, full=True,
                                progress=self._progress_threadsafe)
             self._log(f"Done: {out} (also wrote dub.srt next to it)")
             try:
@@ -784,7 +794,8 @@ class DubbingWizard:
             if self.app is not None and isinstance(getattr(self.app, "settings", None), dict):
                 current = self.app.settings.setdefault("dubbing", {})
                 current.update({
-                    "target_lang": self.target_lang.get(),
+                    "source_lang": dub_language_code(self.source_lang.get()),
+                    "target_lang": dub_language_code(self.target_lang.get()),
                     "engine": self.engine.get(),
                     "separation_enabled": bool(self.separation.get()),
                     "keep_bg_ratio": round(float(self.bg_speech.get()) / 100.0, 2),

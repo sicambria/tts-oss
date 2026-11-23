@@ -1715,6 +1715,7 @@ DEFAULT_DOCUMENT_CONVERSION_SETTINGS: dict[str, object] = {
     "skip_page_range_conversion_warning": False,
 }
 DEFAULT_DUBBING_SETTINGS: dict[str, object] = {
+    "source_lang": "en",
     "target_lang": "hu",
     "engine": ENGINE_AUTO,
     "burn_in": False,
@@ -1723,7 +1724,6 @@ DEFAULT_DUBBING_SETTINGS: dict[str, object] = {
     "whisper_model": "small",
     "audio_output_format": "mp3",
     "video_output_format": "mp4",
-    "phase_1b_enabled": True,  # 1b verified e2e 2026-11-22 (mp3 + mp4 burn-in green)
 }
 
 
@@ -6073,8 +6073,10 @@ class App:
             return
         self.dub_wizard = DubbingWizard(self)
         try:
+            from dubbing import dub_language_code as _dub_code
             self.settings.setdefault("dubbing", {}).update({
-                "target_lang": self.dub_wizard.target_lang.get(),
+                "source_lang": _dub_code(self.dub_wizard.source_lang.get()),
+                "target_lang": _dub_code(self.dub_wizard.target_lang.get()),
             })
         except Exception:
             pass
@@ -6082,17 +6084,19 @@ class App:
     def show_dubbing_guide(self) -> None:
         show_info(
             self.root, "Dubbing Guide",
-            "Dubbing Studio — local EN to HU dubbing.\n\n"
-            "Phase 1a (audio-only): import MP3/WAV, faster-whisper small (~466MB) "
-            "transcribes, NLLB-200-1.3B (~2.5GB, CC-BY-NC, local download only, "
-            "never vendored) translates, spylls checks HU spelling (pure-Python wheel, "
-            "Piper/XTTS synthesizes, atempo fits each segment (0.85-1.15 accept, "
-            "chain 0.5-2.0, overflow flagged if >2.5x).\n\n"
-            "Phase 1b (video, opt-in): MP4/MKV mux, soft subs (mp4 mov_text, mkv srt), "
-            "burn-in only if the bundled ffmpeg reports libass "
-            "(verified on ffmpeg 7.0.2). Separation toggle uses audio-separator "
-            "(~300MB, default OFF, CPU 10-50x realtime).\n\n"
-            "Pocket TTS has no Hungarian voice — disabled for hu. "
+            "Dubbing Studio — dub local audio or video into another language.\n\n"
+            "How it works: pick a media file, the original language, the target "
+            "language, and a TTS engine, then start dubbing. The app transcribes "
+            "the original (faster-whisper), translates the transcript "
+            "(NLLB-200-1.3B, ~2.5GB download on first use), then re-voices each "
+            "segment with the engine you chose and mixes it over the original "
+            "music. You always get a translated .srt subtitle file next to the output.\n\n"
+            "Video: MP4/MKV output with soft subtitles; burned-in subtitles need "
+            "an ffmpeg with libass (the bundled ffmpeg includes it). Timing is "
+            "preserved per segment — overlong lines are gently squeezed, never cut.\n\n"
+            "Voices: XTTS v2 clones the original voice from the input; Piper uses "
+            "an installed voice for the target language; Pocket TTS only covers "
+            "English, French, German, Portuguese, Italian, and Spanish. "
             "Full deps: pip install -r requirements-dubbing.txt or ./setup.sh --with-dubbing.\n"
             "Model caches: ~/.cache/huggingface, ~/.cache/audio-separator.",
         )
