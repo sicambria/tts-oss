@@ -5,4 +5,8 @@ srt
 # Pure-Python Hunspell (wheel, no sudo, no C build). Reads system
 # /usr/share/hunspell/hu_HU.dic (hunspell-hu, usually preinstalled).
 spylls==0.1.7
-audio-separator==0.48.0
+audio-separator is intentionally ABSENT here: it requires numpy>=2 while
+this repo pins numpy==1.26.4 (Piper's gruut needs numpy<2). Installing it
+into this venv breaks Piper. Music separation runs from an isolated env
+instead — the Dubbing Studio installs it automatically on first use
+(~/.cache/tts-oss-sep), or run: scripts/setup_separator_env.sh

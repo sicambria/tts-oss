@@ -93,7 +93,21 @@ def has_nllb() -> bool:
 
 def has_separator() -> bool:
     try:
-        import audio_separator  # noqa: F401
+        from audio_separator.separator import Separator  # noqa: F401
+        return True
+    except Exception:
+        pass
+    # Isolated env (repo venv stays pinned to numpy 1.26.4 for Piper/gruut).
+    try:
+        from dubbing.stages import _separator_cli
+        return _separator_cli() is not None
+    except Exception:
+        return False
+
+
+def has_xtts() -> bool:
+    try:
+        import TTS  # noqa: F401
         return True
     except Exception:
         return False
@@ -120,7 +134,14 @@ def has_cyhunspell() -> bool:
             return False
 
 
-def missing_dependencies(separation_enabled: bool = False) -> list[dict]:
+def missing_dependencies(separation_enabled: bool = False, engine: str = "") -> list[dict]:
+    """Structured dep status for the wizard. pip items need no sudo; dicts may.
+
+    NOTE: audio-separator is deliberately NOT pip-installable here — it needs
+    numpy>=2 while this repo pins numpy 1.26.4 (Piper/gruut). It lives in an
+    isolated env (scripts/setup_separator_env.sh) and auto-installs on job
+    start. Never re-add a pip spec for it (regression: venv pollution).
+    """
     """Structured dep status for the wizard. pip items need no sudo; dicts may."""
     items: list[dict] = []
     items.append({
@@ -159,10 +180,18 @@ def missing_dependencies(separation_enabled: bool = False) -> list[dict]:
     })
     if separation_enabled:
         items.append({
-            "key": "separator", "label": "Separation (audio-separator, optional)",
-            "ok": has_separator(), "pip": "audio-separator==0.48.0",
+            "key": "separator", "label": "Music separation (isolated env, keeps music)",
+            "ok": has_separator(), "pip": "",
             "needs_sudo": False,
-            "hint": "pip install -r requirements-dubbing.txt (checkpoint ~300MB)",
+            "hint": "Auto-installs on dub start (~1GB into ~/.cache/tts-oss-sep, no sudo); "
+                    "or run scripts/setup_separator_env.sh now.",
+        })
+    if "xtts" in engine.lower():
+        items.append({
+            "key": "xtts", "label": "Voice cloning (Coqui XTTS v2)",
+            "ok": has_xtts(), "pip": "TTS==0.22.0",
+            "needs_sudo": False,
+            "hint": "pip install -r requirements.txt (model auto-downloads on first use).",
         })
     items.append({
         "key": "libass", "label": "Subtitle burn-in (libass, bundled ffmpeg)",
@@ -186,9 +215,9 @@ def is_cyhunspell_build_failure(output: str) -> bool:
     return any(m in low for m in markers)
 
 
-def pip_missing_specs(separation_enabled: bool = False) -> list[str]:
+def pip_missing_specs(separation_enabled: bool = False, engine: str = "") -> list[str]:
     out: list[str] = []
-    for item in missing_dependencies(separation_enabled):
+    for item in missing_dependencies(separation_enabled, engine):
         if not item["ok"] and item["pip"] and not item["needs_sudo"]:
             out.append(item["pip"])
     seen: list[str] = []

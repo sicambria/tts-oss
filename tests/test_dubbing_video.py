@@ -168,7 +168,7 @@ def test_mux_failure_raises(tmp_path, monkeypatch):
                             tmp_path / "out.mp4", False)
 
 
-def test_probes_and_helpers():
+def test_probes_and_helpers(monkeypatch):
     from dubbing import CYHUNSPELL_SUDO_HINT
     from dubbing import is_cyhunspell_build_failure
     from dubbing import is_video_input
@@ -179,7 +179,21 @@ def test_probes_and_helpers():
     assert is_cyhunspell_build_failure("autoreconf autopoint failed") is True
     assert is_cyhunspell_build_failure("all good") is False
     specs = pip_missing_specs(True)
-    assert any("audio-separator" in s for s in specs)
+    # REGRESSION: audio-separator must NEVER be a repo-venv pip spec (it needs
+    # numpy>=2; the repo pins numpy 1.26.4 for Piper/gruut). It lives in an
+    # isolated env and auto-installs on dub start.
+    assert not any("audio-separator" in s for s in specs)
+    from dubbing import missing_dependencies
+    sep_items = [d for d in missing_dependencies(True) if d["key"] == "separator"]
+    assert sep_items and sep_items[0]["pip"] == ""
+    assert "setup_separator_env" in sep_items[0]["hint"]
+    xtts_items = [d for d in missing_dependencies(False, "XTTS v2") if d["key"] == "xtts"]
+    assert xtts_items and "TTS==" in xtts_items[0]["pip"]
+    assert not [d for d in missing_dependencies(False, "Piper") if d["key"] == "xtts"]
+    import dubbing
+    monkeypatch.setattr(dubbing, "has_xtts", lambda: False)
+    assert "TTS==0.22.0" in pip_missing_specs(False, "XTTS v2")
+    assert "TTS==0.22.0" not in pip_missing_specs(False, "Piper")
 
 
 def test_has_probes_false_paths(monkeypatch):
@@ -187,7 +201,13 @@ def test_has_probes_false_paths(monkeypatch):
     monkeypatch.setitem(sys.modules, "faster_whisper", None)
     monkeypatch.setitem(sys.modules, "audio_separator", None)
     assert dubbing.has_faster_whisper() is False
+    # Hermetic: pretend the isolated CLI env is absent too.
+    monkeypatch.setattr("dubbing.stages._separator_cli", lambda: None)
     assert dubbing.has_separator() is False
+    # And when the CLI env exists, separation counts as available
+    # (in-process import still broken).
+    monkeypatch.setattr("dubbing.stages._separator_cli", lambda: "/fake/audio-separator")
+    assert dubbing.has_separator() is True
 
 
 def test_spellcheck_no_backend(monkeypatch):

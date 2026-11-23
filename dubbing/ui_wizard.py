@@ -31,6 +31,49 @@ def _pct(value: object, default: float = 50.0) -> float:
         return default
 
 
+def dub_defaults(stored: dict) -> dict:
+    """Dubbing Studio settings with best defaults (pure: no Tk, testable).
+
+    Fallbacks (used only when the user never chose): separation ON (music
+    kept), engine XTTS v2 (original voice cloned), burn-in on, adaptive
+    ducking 50/100, video always allowed (phase-1b gate retired). Explicit
+    stored choices are always respected.
+    """
+    s = {str(k): v for k, v in dict(stored or {}).items()}
+    d = DEFAULT_DUBBING_SETTINGS
+
+    def _ratio(key: str) -> float:
+        try:
+            v = s.get(key, None)
+            return float(v) if v is not None else float(d[key])
+        except (TypeError, ValueError):
+            return float(d[key])
+
+    return {
+        "target_lang": str(s.get("target_lang", d["target_lang"])),
+        "engine": str(s.get("engine", "XTTS v2")),
+        "separation_enabled": bool(s.get("separation_enabled", True)),
+        "allow_video": True,
+        "burn_in": bool(s.get("burn_in", True)),
+        "keep_bg_ratio": _ratio("keep_bg_ratio"),
+        "bg_gap_ratio": _ratio("bg_gap_ratio"),
+        "bg_duck": bool(s.get("bg_duck", True)),
+        "whisper_model": str(s.get("whisper_model", d["whisper_model"])),
+    }
+
+
+def open_path(path: str) -> None:
+    """Open a file/folder in the OS file manager (cross-platform)."""
+    import os as _os
+    p = str(path)
+    if sys.platform == "win32":
+        _os.startfile(p)  # noqa: S606
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", p])
+    else:
+        subprocess.Popen(["xdg-open", p])
+
+
 def _file_dialog_top(window, func, **kwargs):
     """Run a filedialog as a child of the wizard, forced above all windows.
 
@@ -75,15 +118,16 @@ class DubbingWizard:
         self.window.geometry("1020x820")
 
         s = dict(app.settings.get("dubbing", {})) if isinstance(getattr(app, "settings", {}), dict) else {}
-        self.target_lang = StringVar(value=str(s.get("target_lang", DEFAULT_DUBBING_SETTINGS["target_lang"])))
-        self.engine = StringVar(value=str(app.engine.get()) if hasattr(app, "engine") else "Auto")
+        cfg = dub_defaults(s)
+        self.target_lang = StringVar(value=cfg["target_lang"])
+        self.engine = StringVar(value=cfg["engine"])
         self.input_path = StringVar(value="")
-        self.burn_in = BooleanVar(value=True)
-        self.separation = BooleanVar(value=bool(s.get("separation_enabled", False)))
-        self.phase_1b = BooleanVar(value=bool(s.get("phase_1b_enabled", False)))
-        self.bg_speech = DoubleVar(value=_pct(s.get("keep_bg_ratio", DEFAULT_DUBBING_SETTINGS["keep_bg_ratio"])))
-        self.bg_gap = DoubleVar(value=_pct(s.get("bg_gap_ratio", DEFAULT_DUBBING_SETTINGS["bg_gap_ratio"])))
-        self.bg_duck = BooleanVar(value=bool(s.get("bg_duck", DEFAULT_DUBBING_SETTINGS["bg_duck"])))
+        self.burn_in = BooleanVar(value=cfg["burn_in"])
+        self.separation = BooleanVar(value=cfg["separation_enabled"])
+        self.bg_speech = DoubleVar(value=_pct(cfg["keep_bg_ratio"]))
+        self.bg_gap = DoubleVar(value=_pct(cfg["bg_gap_ratio"]))
+        self.bg_duck = BooleanVar(value=cfg["bg_duck"])
+        self.whisper_model = str(cfg["whisper_model"])
         self.status = StringVar(value="Idle — pick an audio/video file.")
         self.install_status = StringVar(value="")
         self.worker: threading.Thread | None = None
@@ -91,6 +135,9 @@ class DubbingWizard:
         self.stop_event = threading.Event()
         self.log_lines: list[str] = []
         self._log_queue: queue.Queue[str] = queue.Queue()
+        self._progress_queue: queue.Queue[tuple] = queue.Queue()
+        self._job_t0: float = 0.0
+        self.last_output: str = ""
         self._deps_visible = True
         self._deps_user_shown = False
         self._build_ui()
@@ -119,6 +166,25 @@ class DubbingWizard:
         except queue.Empty:
             pass
         try:
+            while True:
+                pct, label = self._progress_queue.get_nowait()
+                try:
+                    self.progress["value"] = pct
+                except Exception:
+                    pass
+                elapsed = time.time() - self._job_t0 if self._job_t0 else 0.0
+                if pct > 0 and elapsed > 1.0:
+                    eta = elapsed / pct * (100 - pct)
+                    eta_txt = f"ETA {int(eta // 60)}:{int(eta % 60):02d}" if eta >= 1 else "almost done…"
+                else:
+                    eta_txt = "working…"
+                try:
+                    self.eta_label.config(text=f"{pct}% · {label} · {eta_txt}")
+                except Exception:
+                    pass
+        except queue.Empty:
+            pass
+        try:
             self.window.after(200, self._poll_log_queue)
         except Exception:
             pass
@@ -140,13 +206,20 @@ class DubbingWizard:
         except Exception:
             return
         try:
-            deps = missing_dependencies(bool(self.separation.get()))
+            deps = missing_dependencies(bool(self.separation.get()), str(self.engine.get()))
         except Exception as exc:
             self._log(f"ERROR checking dependencies: {exc}")
             return
         missing_pip = [d for d in deps if not d["ok"] and d["pip"] and not d["needs_sudo"]]
         for dep in deps:
-            state = "OK" if dep["ok"] else ("MISSING (sudo needed)" if dep["needs_sudo"] else "MISSING (pip)")
+            if dep["ok"]:
+                state = "OK"
+            elif dep["needs_sudo"]:
+                state = "MISSING (sudo needed)"
+            elif dep["pip"]:
+                state = "MISSING (pip)"
+            else:
+                state = "MISSING (auto-installs)"
             try:
                 self.dep_tree.insert("", "end", values=(dep["label"], state, dep["hint"]))
             except Exception:
@@ -158,8 +231,11 @@ class DubbingWizard:
             elif not missing_pip:
                 self.install_btn.state(["disabled"])
                 sudo_missing = [d["label"] for d in deps if not d["ok"] and d["needs_sudo"]]
+                auto_missing = [d["label"] for d in deps if not d["ok"] and not d["pip"] and not d["needs_sudo"]]
                 if sudo_missing:
                     self.install_status.set("Pip deps OK. System item(s) still missing (need sudo, see hint — copy the command).")
+                elif auto_missing:
+                    self.install_status.set(f"Pip deps OK. {', '.join(auto_missing)} auto-install on dub start (logged).")
                 else:
                     self.install_status.set("All dependencies OK.")
             self._update_deps_visibility(deps)
@@ -228,7 +304,7 @@ class DubbingWizard:
             return
         try:
             from . import pip_missing_specs
-            specs = pip_missing_specs(bool(self.separation.get()))
+            specs = pip_missing_specs(bool(self.separation.get()), str(self.engine.get()))
         except Exception as exc:
             self._log(f"ERROR resolving pip specs: {exc}")
             return
@@ -337,12 +413,11 @@ class DubbingWizard:
         ttk.Combobox(opts, textvariable=self.target_lang, values=["hu", "en"], width=6,
                      state="readonly").pack(side="left", padx=6)
         ttk.Label(opts, text="Engine").pack(side="left")
-        ttk.Combobox(opts, textvariable=self.engine, values=["Auto", "Piper", "XTTS v2", "Pocket TTS"],
+        ttk.Combobox(opts, textvariable=self.engine, values=["XTTS v2", "Auto", "Piper", "Pocket TTS"],
                      width=12, state="readonly").pack(side="left", padx=6)
-        ttk.Checkbutton(opts, text="Background separation (experimental, CPU-heavy)",
+        self.engine.trace_add("write", lambda *_a: self._refresh_deps())
+        ttk.Checkbutton(opts, text="Keep original music (recommended)",
                         variable=self.separation, command=self._refresh_deps).pack(side="left", padx=6)
-        ttk.Checkbutton(opts, text="Phase 1b: video mux + burn-in", variable=self.phase_1b,
-                        command=self._refresh).pack(side="left", padx=6)
         self.burn_btn = ttk.Checkbutton(f, text="Burn subtitles into video", variable=self.burn_in)
         self.burn_btn.pack(anchor="w", pady=4)
         mus_row = ttk.Frame(f)
@@ -373,6 +448,16 @@ class DubbingWizard:
         self.full_btn.pack(side="left", padx=6)
         self.stop_btn = ttk.Button(run_row, text="Stop", command=self._on_stop)
         self.stop_btn.pack(side="left", padx=6)
+        self.open_file_btn = ttk.Button(run_row, text="Open file", command=self._open_file)
+        self.open_file_btn.pack(side="left", padx=6)
+        self.open_folder_btn = ttk.Button(run_row, text="Open folder", command=self._open_folder)
+        self.open_folder_btn.pack(side="left", padx=6)
+        prog_row = ttk.Frame(f)
+        prog_row.pack(fill="x", pady=4)
+        self.progress = ttk.Progressbar(prog_row, orient="horizontal", mode="determinate", maximum=100)
+        self.progress.pack(side="left", fill="x", expand=True)
+        self.eta_label = ttk.Label(prog_row, text="", width=28)
+        self.eta_label.pack(side="left", padx=8)
 
         log_frame = ttk.LabelFrame(f, text="Log — every error lands here, Copy all messages copies it", padding=6)
         log_frame.pack(fill="both", expand=True, pady=4)
@@ -389,7 +474,7 @@ class DubbingWizard:
 
     def _refresh(self) -> None:
         video = bool(self.input_path.get()) and is_video_input(self.input_path.get())
-        ok = video and bool(self.phase_1b.get()) and has_libass()
+        ok = video and has_libass()
         try:
             self.burn_btn.state(["!disabled"] if ok else ["disabled"])
         except Exception:
@@ -431,21 +516,24 @@ class DubbingWizard:
             job = DubJob(input=Path(self.input_path.get()), source_lang="en",
                          target_lang=self.target_lang.get(), engine=self.engine.get(),
                          burn_in=self.burn_in.get(), output_dir=out_dir,
-                         allow_video=bool(self.phase_1b.get()),
+                         allow_video=True,
                          separation_enabled=bool(self.separation.get()),
                          whisper_model=str(stored.get("whisper_model", DEFAULT_DUBBING_SETTINGS["whisper_model"])),
                          keep_bg_ratio=round(float(self.bg_speech.get()) / 100.0, 2),
                          bg_gap_ratio=round(float(self.bg_gap.get()) / 100.0, 2),
                          bg_duck=bool(self.bg_duck.get()))
             job.validate()
-            if full and is_video_input(str(job.input)) and not self.phase_1b.get():
-                self._log("ERROR: video input needs Phase 1b enabled (checkbox above).")
-                return
         except Exception as exc:
             self._log(f"ERROR: {exc}")
             return
         self.stop_event.clear()
         self._log("Working… (models download on first use after confirmation)")
+        self._job_t0 = time.time()
+        try:
+            self.progress["value"] = 0
+            self.eta_label.config(text="0% · starting · …")
+        except Exception:
+            pass
         self._update_run_buttons()
         self.worker = threading.Thread(target=self._run_job, args=(job, full), daemon=True)
         self.worker.start()
@@ -464,8 +552,11 @@ class DubbingWizard:
 
     def _update_run_buttons(self) -> None:
         running = self._job_running()
+        has_out = bool(getattr(self, "last_output", ""))
         for name, enabled_when in (("dry_btn", not running), ("full_btn", not running),
-                                   ("stop_btn", running)):
+                                   ("stop_btn", running),
+                                   ("open_file_btn", not running and has_out),
+                                   ("open_folder_btn", not running)):
             try:
                 btn = getattr(self, name, None)
                 if btn is not None:
@@ -487,8 +578,14 @@ class DubbingWizard:
         except Exception:
             pass
 
-    def _app_synthesizer(self, work_dir: Path):
-        """Build text->wav using the host app's TTS services (no app import)."""
+    def _app_synthesizer(self, work_dir: Path, job: DubJob, ref_wav: str):
+        """Build text->wav using the host app's TTS services (no app import).
+
+        The clone reference is auto-derived from the INPUT (original voice),
+        never the TTS panel's speaker wav — that panel default is what used
+        to produce the "worse voice" dubs. Empty ref falls back to the
+        engine's built-in voice.
+        """
         from app import DEFAULT_PIPER_VOICE_LABEL
         from app import ENGINE_POCKET
         from app import SynthesisRequest
@@ -496,8 +593,8 @@ class DubbingWizard:
         from app import pocket_default_voice
         from app import select_engine
         app = self.app
-        language = self.target_lang.get()
-        engine = self.engine.get()
+        language = job.target_lang
+        engine = job.engine
         label = ""
         code = ""
         try:
@@ -507,7 +604,7 @@ class DubbingWizard:
         except Exception:
             label, code = DEFAULT_PIPER_VOICE_LABEL, "hu_HU-anna-medium"
         try:
-            resolved = select_engine(engine, language, bool(app.speaker_wav.get().strip()), app.piper_voice_options)
+            resolved = select_engine(engine, language, bool(ref_wav), app.piper_voice_options)
         except Exception:
             resolved = engine
         try:
@@ -518,10 +615,6 @@ class DubbingWizard:
             )
         except Exception:
             speaker_name = "Ana Florence"
-        try:
-            speaker_wav = app.speaker_wav.get().strip()
-        except Exception:
-            speaker_wav = ""
         try:
             speed = round(float(app.speed.get()), 1)
         except Exception:
@@ -534,23 +627,99 @@ class DubbingWizard:
             request = SynthesisRequest(
                 text=text, language=language, output_file=out,
                 engine=engine, piper_voice_label=label, piper_voice_code=code,
-                speaker_name=speaker_name, speaker_wav=speaker_wav, speed=speed,
+                speaker_name=speaker_name, speaker_wav=ref_wav, speed=speed,
             )
             return Path(app.service.synthesize(request))
 
         return synth
+
+    def _ensure_separator(self) -> bool:
+        """Make sure vocal separation will work; auto-install the isolated
+        env on first use (logged, no sudo). Returns True when usable."""
+        try:
+            from audio_separator.separator import Separator  # noqa: F401
+            return True
+        except Exception:
+            pass
+        try:
+            from .stages import _separator_cli
+            if _separator_cli() is not None:
+                return True
+        except Exception:
+            pass
+        script = Path(__file__).resolve().parents[1] / "scripts" / "setup_separator_env.sh"
+        self._log_threadsafe(f"Separator missing — auto-installing isolated env ({script.name}, ~1GB, no sudo)…")
+        try:
+            proc = subprocess.Popen(
+                ["bash", str(script)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                clean = line.rstrip()
+                if clean:
+                    self._log_threadsafe("sep-install: " + clean[-300:])
+                    if self.stop_event.is_set():
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
+                        return False
+            proc.wait(timeout=3600)
+            if proc.returncode == 0:
+                self._log_threadsafe("Separator isolated env ready.")
+                return True
+            self._log_threadsafe(f"ERROR: separator setup failed (code {proc.returncode}). "
+                                 f"Run {script} manually, or uncheck music separation.")
+            return False
+        except Exception as exc:
+            self._log_threadsafe(f"ERROR installing separator (no sudo was used): {exc}")
+            return False
+
+    def _clone_ref(self, work_dir: Path, job: DubJob) -> str:
+        """Derive the XTTS clone reference from the INPUT (original voice):
+        30 s of separated vocals, else the 21 s spoken intro. "" on failure
+        (engine falls back to a built-in voice)."""
+        try:
+            from . import stages
+            wav = stages.extract_audio(job.input, work_dir / "ref_extracted.wav")
+            if job.separation_enabled:
+                try:
+                    vocal, _bg = stages.separate_background(wav, work_dir / "ref_sep", True)
+                    ref = work_dir / "ref_vocal_cut.wav"
+                    stages.clip_wav(vocal, 0.0, 30.0, ref)
+                    self._log_threadsafe("Clone reference: separated vocals (original voice).")
+                    return str(ref)
+                except Exception as exc:
+                    self._log_threadsafe(f"NOTE: vocal-stem reference failed ({exc}); using intro speech.")
+            ref = work_dir / "ref_intro.wav"
+            stages.clip_wav(wav, 1.0, 21.0, ref)
+            self._log_threadsafe("Clone reference: intro speech (original voice).")
+            return str(ref)
+        except Exception as exc:
+            self._log_threadsafe(f"NOTE: no clone reference ({exc}); using built-in voice.")
+            return ""
 
     def _run_job(self, job: DubJob, full: bool = False) -> None:
         import tempfile
 
         from .pipeline import DubPipeline
         try:
+            if job.separation_enabled and not self._ensure_separator():
+                self._log("Stopped: separation unavailable and auto-install failed.")
+                return
             with tempfile.TemporaryDirectory(prefix="dub-") as tmp:
                 tmp_path = Path(tmp)
-                synth = self._app_synthesizer(tmp_path) if full else None
+                ref_wav = self._clone_ref(tmp_path, job) if full else ""
+                synth = self._app_synthesizer(tmp_path, job, ref_wav) if full else None
                 pipe = DubPipeline(job, log=self._log_threadsafe, stopper=self.stop_event)
-                out = pipe.run(tmp_path, synthesize=synth, full=full)
+                out = pipe.run(tmp_path, synthesize=synth, full=full,
+                               progress=self._progress_threadsafe)
             self._log(f"Done: {out} (also wrote dub.srt next to it)")
+            try:
+                self.window.after(0, lambda p=str(out): self._on_job_success(p))
+            except Exception:
+                pass
         except InterruptedError:
             self._log("Stopped.")
         except Exception as exc:
@@ -569,6 +738,33 @@ class DubbingWizard:
                 self._log(msg)
             except Exception:
                 pass
+
+    def _progress_threadsafe(self, pct: int, label: str) -> None:
+        try:
+            self._progress_queue.put((max(0, min(100, int(pct))), str(label)))
+        except Exception:
+            pass
+
+    def _on_job_success(self, path: str) -> None:
+        self.last_output = path
+        self._update_run_buttons()
+        self._log(f"Output ready: {path}")
+
+    def _open_file(self) -> None:
+        if not self.last_output:
+            self._log("Nothing to open yet — run a dub first.")
+            return
+        try:
+            open_path(self.last_output)
+        except Exception as exc:
+            self._log(f"ERROR opening file: {exc}")
+
+    def _open_folder(self) -> None:
+        target = str(Path(self.last_output).parent) if self.last_output else str(self.output_folder.get())
+        try:
+            open_path(target)
+        except Exception as exc:
+            self._log(f"ERROR opening folder: {exc}")
 
     def _on_close(self) -> None:
         # A running job/install keeps going in the background: hide the window
@@ -589,8 +785,8 @@ class DubbingWizard:
                 current = self.app.settings.setdefault("dubbing", {})
                 current.update({
                     "target_lang": self.target_lang.get(),
+                    "engine": self.engine.get(),
                     "separation_enabled": bool(self.separation.get()),
-                    "phase_1b_enabled": bool(self.phase_1b.get()),
                     "keep_bg_ratio": round(float(self.bg_speech.get()) / 100.0, 2),
                     "bg_gap_ratio": round(float(self.bg_gap.get()) / 100.0, 2),
                     "bg_duck": bool(self.bg_duck.get()),
