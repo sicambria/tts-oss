@@ -129,7 +129,7 @@ def test_pipeline_full_video_allowed(tmp_path, monkeypatch):
                         lambda wav, out, bitrate="192k": (out.write_bytes(b"mp3"), out)[1])
     import dubbing.video as video_mod
     monkeypatch.setattr(video_mod, "mux_video",
-                        lambda video, audio, srt, out, burn: (out.write_bytes(b"mp4"), out)[1])
+                        lambda video, audio, srt, out, burn, style=None: (out.write_bytes(b"mp4"), out)[1])
     pipe = DubPipeline(job, log=lambda m: None)
     out = pipe.run(tmp_path,
                    extract=lambda s, d: (d.write_bytes(b"x"), d)[1],
