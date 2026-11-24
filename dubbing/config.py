@@ -19,6 +19,10 @@ DEFAULT_DUBBING_SETTINGS: dict[str, object] = {
     "whisper_model": "small",
     "audio_output_format": "mp3",
     "video_output_format": "mp4",
+    "subtitle_track": "translated",
+    "subtitle_font_size": 20,
+    "subtitle_font_color": "&H00FFFFFF",
+    "subtitle_outline": 2,
 }
 
 # Pocket TTS voices only exist for these languages; dubbing into anything
@@ -55,6 +59,10 @@ class DubJob:
     output_dir: Path = field(default_factory=lambda: Path.cwd() / "output")
     audio_output_format: str = "mp3"
     video_output_format: str = "mp4"
+    subtitle_track: str = "translated"  # burn-in track: translated (dub) or source (original)
+    subtitle_font_size: int = 20  # libass force_style FontSize (12-32)
+    subtitle_font_color: str = "&H00FFFFFF"  # libass ASS &HAABBGGRR
+    subtitle_outline: int = 2  # libass Outline (0-4)
     allow_video: bool = True  # legacy setting, kept for stored configs; video input is always allowed
     separation_enabled: bool = False  # vocal/stem split (opt-in, CPU-heavy)
     whisper_model: str = "small"
@@ -72,6 +80,23 @@ class DubJob:
             )
         if self.whisper_model not in {"tiny", "base", "small", "medium", "large-v3"}:
             raise ValueError(f"Unsupported whisper model '{self.whisper_model}'.")
+        if self.subtitle_track not in {"translated", "source"}:
+            raise ValueError(f"Unsupported subtitle track '{self.subtitle_track}'.")
+        try:
+            fsize = int(self.subtitle_font_size)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"subtitle_font_size must be an integer: {self.subtitle_font_size!r}") from exc
+        if not 12 <= fsize <= 32:
+            raise ValueError(f"subtitle_font_size must be within [12, 32]: {fsize}")
+        import re as _re
+        if not _re.fullmatch(r"&H[0-9A-Fa-f]{8}", str(self.subtitle_font_color).strip()):
+            raise ValueError(f"subtitle_font_color must be ASS &HAABBGGRR: {self.subtitle_font_color!r}")
+        try:
+            outline = int(self.subtitle_outline)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"subtitle_outline must be an integer: {self.subtitle_outline!r}") from exc
+        if not 0 <= outline <= 4:
+            raise ValueError(f"subtitle_outline must be within [0, 4]: {outline}")
         try:
             ratio = float(self.keep_bg_ratio)
         except (TypeError, ValueError) as exc:

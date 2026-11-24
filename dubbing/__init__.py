@@ -53,7 +53,7 @@ def dub_language_code(label: str) -> str:
 
 __all__ = [
     "SUPPORTED_INPUT_EXTS", "SUPPORTED_VIDEO_EXTS", "SUPPORTED_AUDIO_EXTS",
-    "ffmpeg_path", "has_libass", "has_faster_whisper", "has_nllb",
+    "ffmpeg_path", "has_libass", "reset_libass_cache", "has_faster_whisper", "has_nllb",
     "has_separator", "has_cyhunspell", "is_video_input",
 ]
 
@@ -82,6 +82,16 @@ def _run(exe: str, *args: str) -> tuple[int, str]:
 
 
 _libass_cache: bool | None = None
+
+
+def reset_libass_cache() -> None:
+    """Invalidate the cached libass probe.
+
+    Call before re-probing after an ffmpeg change (Re-check / post-install).
+    The next ``has_libass()`` re-runs the ~1s functional probe.
+    """
+    global _libass_cache
+    _libass_cache = None
 
 
 def has_libass() -> bool:

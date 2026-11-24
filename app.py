@@ -1714,17 +1714,9 @@ DEFAULT_PATHS_SETTINGS: dict[str, object] = {
 DEFAULT_DOCUMENT_CONVERSION_SETTINGS: dict[str, object] = {
     "skip_page_range_conversion_warning": False,
 }
-DEFAULT_DUBBING_SETTINGS: dict[str, object] = {
-    "source_lang": "en",
-    "target_lang": "hu",
-    "engine": ENGINE_AUTO,
-    "burn_in": False,
-    "keep_bg_ratio": 0.2,
-    "separation_enabled": False,
-    "whisper_model": "small",
-    "audio_output_format": "mp3",
-    "video_output_format": "mp4",
-}
+# Canonical dubbing defaults live in dubbing/config.py (single source of truth);
+# imported here so settings normalization and tests keep working.
+from dubbing.config import DEFAULT_DUBBING_SETTINGS  # noqa: E402
 
 
 def load_app_settings() -> dict:

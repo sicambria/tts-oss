@@ -16,12 +16,14 @@ from tkinter import filedialog
 from tkinter import ttk
 
 from . import DUBBING_LANGUAGES
+from . import SUPPORTED_AUDIO_EXTS
 from . import SUPPORTED_INPUT_EXTS
 from . import dub_language_code
 from . import dub_language_label
 from . import has_libass
 from . import is_video_input
 from . import missing_dependencies
+from . import reset_libass_cache
 from .config import DEFAULT_DUBBING_SETTINGS
 from .config import DubJob
 
@@ -34,12 +36,19 @@ def _pct(value: object, default: float = 50.0) -> float:
         return default
 
 
+def _choice(value: object, options: set[str] | frozenset[str] | list[str], default: str) -> str:
+    """Stored value if valid, else the default (never trust raw JSON)."""
+    s = str(value).strip() if value is not None else ""
+    return s if s in options else default
+
+
 def dub_defaults(stored: dict) -> dict:
     """Dubbing Studio settings with best defaults (pure: no Tk, testable).
 
     Fallbacks (used only when the user never chose): source English, target
     Hungarian, engine XTTS v2 (original voice cloned), music separation on
-    (music kept), burn-in on, adaptive ducking 50/100. Explicit stored
+    (music kept), burn-in on, adaptive ducking 50/100, Whisper small, mp3/mp4
+    outputs, translated subtitle track size 20 white outline 2. Explicit stored
     choices are always respected.
     """
     s = {str(k): v for k, v in dict(stored or {}).items()}
@@ -56,6 +65,13 @@ def dub_defaults(stored: dict) -> dict:
         code = str(s.get(key, d.get(key, fallback))).strip().lower()
         return code if code in DUBBING_LANGUAGES else str(fallback)
 
+    def _int(key: str) -> int:
+        try:
+            v = s.get(key, None)
+            return int(v) if v is not None else int(d[key])
+        except (TypeError, ValueError):
+            return int(d[key])
+
     return {
         "source_lang": _lang("source_lang", "en"),
         "target_lang": _lang("target_lang", "hu"),
@@ -66,7 +82,18 @@ def dub_defaults(stored: dict) -> dict:
         "keep_bg_ratio": _ratio("keep_bg_ratio"),
         "bg_gap_ratio": _ratio("bg_gap_ratio"),
         "bg_duck": bool(s.get("bg_duck", True)),
-        "whisper_model": str(s.get("whisper_model", d["whisper_model"])),
+        "whisper_model": _choice(s.get("whisper_model", d["whisper_model"]),
+                                 {"tiny", "base", "small", "medium", "large-v3"}, str(d["whisper_model"])),
+        "audio_output_format": _choice(s.get("audio_output_format", d["audio_output_format"]),
+                                       {"mp3", "wav", "ogg"}, str(d["audio_output_format"])),
+        "video_output_format": _choice(s.get("video_output_format", d["video_output_format"]),
+                                       {"mp4", "mkv"}, str(d["video_output_format"])),
+        "subtitle_track": _choice(s.get("subtitle_track", d["subtitle_track"]),
+                                  {"translated", "source"}, str(d["subtitle_track"])),
+        "subtitle_font_size": _int("subtitle_font_size"),
+        "subtitle_font_color": str(s.get("subtitle_font_color", d["subtitle_font_color"])),
+        "subtitle_outline": _int("subtitle_outline"),
+        "output_folder": str(s.get("output_folder") or ""),
     }
 
 
@@ -132,11 +159,25 @@ class DubbingWizard:
         self.engine = StringVar(value=cfg["engine"])
         self.input_path = StringVar(value="")
         self.burn_in = BooleanVar(value=cfg["burn_in"])
+        self.burn_note = StringVar(value="")
+        self.voice_note = StringVar(value="")
         self.separation = BooleanVar(value=cfg["separation_enabled"])
         self.bg_speech = DoubleVar(value=_pct(cfg["keep_bg_ratio"]))
         self.bg_gap = DoubleVar(value=_pct(cfg["bg_gap_ratio"]))
         self.bg_duck = BooleanVar(value=cfg["bg_duck"])
-        self.whisper_model = str(cfg["whisper_model"])
+        self.whisper_model = StringVar(value=cfg["whisper_model"])
+        self.audio_format = StringVar(value=cfg["audio_output_format"])
+        self.video_format = StringVar(value=cfg["video_output_format"])
+        self.subtitle_track = StringVar(value=cfg["subtitle_track"])
+        self.subtitle_font_size = StringVar(value=str(cfg["subtitle_font_size"]))
+        self.subtitle_font_color = StringVar(value=cfg["subtitle_font_color"])
+        self.subtitle_outline = StringVar(value=str(cfg["subtitle_outline"]))
+        self.stored_output_folder = str(cfg.get("output_folder") or "")
+        try:
+            self.input_path.trace_add("write", lambda *_a: self._refresh())
+        except Exception:
+            pass
+        self.extra_window: Toplevel | None = None
         self.status = StringVar(value="Idle — pick an audio/video file.")
         self.install_status = StringVar(value="")
         self.worker: threading.Thread | None = None
@@ -208,7 +249,12 @@ class DubbingWizard:
             self.install_status.set(f"Copy failed: {exc}")
 
     # ----- dependency panel + one-click pip install (no sudo) -----
-    def _refresh_deps(self) -> None:
+    def _refresh_deps(self, reset_cache: bool = False) -> None:
+        if reset_cache:
+            try:
+                reset_libass_cache()
+            except Exception:
+                pass
         try:
             for row in self.dep_tree.get_children():
                 self.dep_tree.delete(row)
@@ -371,7 +417,7 @@ class DubbingWizard:
             else:
                 self._log(f"ERROR: all failed [{', '.join(failed)}]. Copy this log for help.")
         try:
-            self.window.after(0, self._refresh_deps)
+            self.window.after(0, lambda: self._refresh_deps(reset_cache=True))
         except Exception:
             pass
         try:
@@ -409,14 +455,15 @@ class DubbingWizard:
         self.install_btn = ttk.Button(dep_btns, text="Install missing pip packages (no sudo)",
                                       command=self._install_pip_deps)
         self.install_btn.pack(side="left")
-        ttk.Button(dep_btns, text="Re-check", command=self._refresh_deps).pack(side="left", padx=6)
+        ttk.Button(dep_btns, text="Re-check", command=lambda: self._refresh_deps(reset_cache=True)).pack(side="left", padx=6)
         ttk.Button(dep_btns, text="Copy all messages", command=self._copy_all).pack(side="left", padx=6)
         ttk.Label(dep_btns, textvariable=self.install_status, wraplength=500).pack(side="left", padx=8)
 
         row = ttk.Frame(f)
         row.pack(fill="x", pady=4)
         ttk.Entry(row, textvariable=self.input_path).pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="Browse…", command=self._browse).pack(side="left", padx=6)
+        self.browse_btn = ttk.Button(row, text="Browse…", command=self._browse)
+        self.browse_btn.pack(side="left", padx=6)
         opts = ttk.Frame(f)
         opts.pack(fill="x", pady=4)
         lang_values = [dub_language_label(c) for c in DUBBING_LANGUAGES]
@@ -436,6 +483,8 @@ class DubbingWizard:
                         variable=self.separation, command=self._refresh_deps).pack(side="left", padx=6)
         self.burn_btn = ttk.Checkbutton(f, text="Burn subtitles into video", variable=self.burn_in)
         self.burn_btn.pack(anchor="w", pady=4)
+        ttk.Label(f, textvariable=self.burn_note, wraplength=900).pack(anchor="w")
+        ttk.Label(f, textvariable=self.voice_note, wraplength=900).pack(anchor="w", pady=(0, 4))
         mus_row = ttk.Frame(f)
         mus_row.pack(fill="x", pady=4)
         ttk.Label(mus_row, text="Music level under speech").pack(side="left")
@@ -450,18 +499,24 @@ class DubbingWizard:
         out_row.pack(fill="x", pady=4)
         ttk.Label(out_row, text="Output folder").pack(side="left")
         try:
-            default_out = str(self.app.settings.get("paths", {}).get("output_folder", Path.cwd() / "output"))
+            if self.stored_output_folder:
+                default_out = self.stored_output_folder
+            else:
+                default_out = str(self.app.settings.get("paths", {}).get("output_folder", Path.cwd() / "output"))
         except Exception:
             default_out = str(Path.cwd() / "output")
         self.output_folder = StringVar(value=default_out)
         ttk.Entry(out_row, textvariable=self.output_folder).pack(side="left", fill="x", expand=True, padx=6)
-        ttk.Button(out_row, text="Browse…", command=self._browse_out).pack(side="left")
+        self.browse_out_btn = ttk.Button(out_row, text="Browse…", command=self._browse_out)
+        self.browse_out_btn.pack(side="left")
         run_row = ttk.Frame(f)
         run_row.pack(fill="x", pady=4)
         self.full_btn = ttk.Button(run_row, text="Generate dubbed version", command=self._start)
         self.full_btn.pack(side="left")
         self.stop_btn = ttk.Button(run_row, text="Stop", command=self._on_stop)
         self.stop_btn.pack(side="left", padx=6)
+        self.extra_btn = ttk.Button(run_row, text="Extra options…", command=self._open_extra_options)
+        self.extra_btn.pack(side="left", padx=6)
         self.open_file_btn = ttk.Button(run_row, text="Open file", command=self._open_file)
         self.open_file_btn.pack(side="left", padx=6)
         self.open_folder_btn = ttk.Button(run_row, text="Open folder", command=self._open_folder)
@@ -482,19 +537,114 @@ class DubbingWizard:
         self.log_text.configure(yscrollcommand=sb.set)
 
         ttk.Label(f, textvariable=self.status, wraplength=900).pack(anchor="w", pady=2)
-        ttk.Button(f, text="Close", command=self._on_close).pack(anchor="e")
+        self.close_btn = ttk.Button(f, text="Close", command=self._on_close)
+        self.close_btn.pack(anchor="e")
+        self._apply_icons()
         self._update_run_buttons()
         self._refresh()
 
+    def _apply_icons(self) -> None:
+        """Primary action buttons get text+icon; headless-safe (text-only fallback)."""
+        try:
+            from app import make_playback_icon
+        except Exception:
+            return
+        try:
+            pairs = [
+                (getattr(self, "full_btn", None), "generate"),
+                (getattr(self, "stop_btn", None), "stop"),
+                (getattr(self, "browse_btn", None), "browse"),
+                (getattr(self, "browse_out_btn", None), "folder"),
+                (getattr(self, "open_file_btn", None), "folder"),
+                (getattr(self, "open_folder_btn", None), "folder"),
+                (getattr(self, "extra_btn", None), "options"),
+                (getattr(self, "close_btn", None), "close"),
+            ]
+            self._icons: dict[str, object] = {}
+            for btn, kind in pairs:
+                if btn is None:
+                    continue
+                try:
+                    icon = make_playback_icon(self.window, kind)
+                    btn.configure(image=icon, compound="left")
+                    self._icons[kind] = icon
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
     def _refresh(self) -> None:
-        video = bool(self.input_path.get()) and is_video_input(self.input_path.get())
-        ok = video and has_libass()
+        """Enable/disable burn-in without destroying user intent.
+
+        The checkbox is enabled only for video input with a working libass.
+        With no input yet (or an unknown extension) the widget stays disabled
+        but the saved ``burn_in`` choice is preserved; only a *known audio*
+        input forces it off, since ``DubJob.validate`` rejects that combo.
+        """
+        try:
+            raw = str(self.input_path.get())
+        except Exception:
+            raw = ""
+        has_input = bool(raw.strip())
+        video = has_input and is_video_input(raw)
+        audio = has_input and Path(raw).suffix.lower() in SUPPORTED_AUDIO_EXTS
+        try:
+            libass = bool(has_libass())
+        except Exception:
+            libass = False
+        if video and libass:
+            ok, note = True, ""
+        elif not has_input:
+            ok, note = False, "Pick a video file to enable burn-in (choice kept)."
+        elif audio:
+            ok, note = False, "Burn-in needs a video input — audio-only dub."
+        elif not libass:
+            ok, note = False, "Burn-in needs the libass ffmpeg filter (see Dependencies)."
+        else:
+            ok, note = False, "Burn-in needs a supported video file."
         try:
             self.burn_btn.state(["!disabled"] if ok else ["disabled"])
         except Exception:
             pass
-        if not ok and self.burn_in.get():
-            self.burn_in.set(False)
+        if not ok and audio:
+            try:
+                self.burn_in.set(False)
+            except Exception:
+                pass
+        try:
+            self.burn_note.set(note)
+        except Exception:
+            pass
+        try:
+            self.voice_note.set(self._voice_summary())
+        except Exception:
+            pass
+
+    def _voice_summary(self) -> str:
+        """Read-only note: the dub voice/speed come from the main TTS panel."""
+        try:
+            engine = str(self.engine.get()).strip() or "XTTS v2"
+        except Exception:
+            engine = "XTTS v2"
+        desc = "clone of input (auto)"
+        try:
+            low = engine.lower()
+            if "pocket" in low:
+                desc = str(self.app.pocket_voice.get()).strip() or "default"
+            elif "piper" in low:
+                desc = str(self.app.piper_voice_label.get()).strip() or "default"
+            elif "xtts" in low:
+                desc = "clone of input (auto)"
+            else:
+                desc = str(self.app.speaker_name.get()).strip() or "default"
+        except Exception:
+            pass
+        try:
+            speed = round(float(self.app.speed.get()), 1)
+        except Exception:
+            speed = 1.0
+        return (f"Voice: {engine} / {desc} · Speed {speed}x — "
+                "from the main TTS panel (clone ref auto-derived from input).")
 
     def _browse(self) -> None:
         exts = " ".join(f"*{e}" for e in sorted(SUPPORTED_INPUT_EXTS))
@@ -510,17 +660,70 @@ class DubbingWizard:
         if p:
             self.output_folder.set(p)
 
+    def _open_extra_options(self) -> None:
+        """Advanced settings in a separate window (keeps the main UI lean)."""
+        try:
+            if self.extra_window is not None and self.extra_window.winfo_exists():
+                self.extra_window.lift()
+                return
+        except Exception:
+            pass
+        win = Toplevel(self.window)
+        win.transient(self.window)
+        win.title("Dubbing Studio — extra options")
+        win.geometry("560x520")
+        self.extra_window = win
+        f = ttk.Frame(win, padding=12)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="Extra options", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
+        ttk.Label(f, text="Changes apply immediately; they are saved when the wizard closes.",
+                  wraplength=500).pack(anchor="w", pady=(0, 8))
+
+        def _row(label: str) -> ttk.Frame:
+            ttk.Label(f, text=label).pack(anchor="w", pady=(6, 0))
+            r = ttk.Frame(f)
+            r.pack(fill="x")
+            return r
+
+        r = _row("Transcription model (Whisper, larger = slower + more accurate)")
+        ttk.Combobox(r, textvariable=self.whisper_model,
+                     values=["tiny", "base", "small", "medium", "large-v3"],
+                     width=14, state="readonly").pack(side="left")
+        r = _row("Audio output format (audio-only dubs)")
+        ttk.Combobox(r, textvariable=self.audio_format, values=["mp3", "wav", "ogg"],
+                     width=10, state="readonly").pack(side="left")
+        r = _row("Video output format")
+        ttk.Combobox(r, textvariable=self.video_format, values=["mp4", "mkv"],
+                     width=10, state="readonly").pack(side="left")
+        r = _row("Burned subtitle track (soft-sub mux always uses the translation + sidecar)")
+        ttk.Combobox(r, textvariable=self.subtitle_track,
+                     values=["translated", "source"],
+                     width=14, state="readonly").pack(side="left")
+        r = _row("Burned subtitle font size (12–32)")
+        ttk.Entry(r, textvariable=self.subtitle_font_size, width=8).pack(side="left")
+        r = _row("Burned subtitle color (ASS &HAABBGGRR, e.g. &H00FFFFFF white)")
+        ttk.Entry(r, textvariable=self.subtitle_font_color, width=16).pack(side="left")
+        r = _row("Burned subtitle outline (0–4)")
+        ttk.Entry(r, textvariable=self.subtitle_outline, width=8).pack(side="left")
+        try:
+            from .stages import nllb_model_id
+            nllb = nllb_model_id()
+        except Exception:
+            nllb = "facebook/nllb-200-1.3B"
+        ttk.Label(f, text=f"Translation model: {nllb} (override with DUB_NLLB_MODEL)",
+                  wraplength=500).pack(anchor="w", pady=(12, 0))
+        ttk.Button(f, text="Close", command=win.destroy).pack(anchor="e", pady=(12, 0))
+        try:
+            win.protocol("WM_DELETE_WINDOW", win.destroy)
+        except Exception:
+            pass
+
     def _start(self) -> None:
         if self.worker and self.worker.is_alive():
             return
         try:
             out_dir = Path(self.output_folder.get()).expanduser()
             out_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                stored = dict(self.app.settings.get("dubbing", {})) if isinstance(
-                    getattr(self.app, "settings", {}), dict) else {}
-            except Exception:
-                stored = {}
             job = DubJob(input=Path(self.input_path.get()),
                          source_lang=dub_language_code(self.source_lang.get()),
                          target_lang=dub_language_code(self.target_lang.get()),
@@ -528,7 +731,13 @@ class DubbingWizard:
                          burn_in=self.burn_in.get(), output_dir=out_dir,
                          allow_video=True,
                          separation_enabled=bool(self.separation.get()),
-                         whisper_model=str(stored.get("whisper_model", DEFAULT_DUBBING_SETTINGS["whisper_model"])),
+                         whisper_model=self.whisper_model.get().strip(),
+                         audio_output_format=self.audio_format.get().strip(),
+                         video_output_format=self.video_format.get().strip(),
+                         subtitle_track=self.subtitle_track.get().strip(),
+                         subtitle_font_size=self.subtitle_font_size.get().strip(),
+                         subtitle_font_color=self.subtitle_font_color.get().strip(),
+                         subtitle_outline=self.subtitle_outline.get().strip(),
                          keep_bg_ratio=round(float(self.bg_speech.get()) / 100.0, 2),
                          bg_gap_ratio=round(float(self.bg_gap.get()) / 100.0, 2),
                          bg_duck=bool(self.bg_duck.get()))
@@ -798,11 +1007,19 @@ class DubbingWizard:
                     "target_lang": dub_language_code(self.target_lang.get()),
                     "engine": self.engine.get(),
                     "separation_enabled": bool(self.separation.get()),
+                    "burn_in": bool(self.burn_in.get()),
                     "keep_bg_ratio": round(float(self.bg_speech.get()) / 100.0, 2),
                     "bg_gap_ratio": round(float(self.bg_gap.get()) / 100.0, 2),
                     "bg_duck": bool(self.bg_duck.get()),
+                    "whisper_model": self.whisper_model.get().strip(),
+                    "audio_output_format": self.audio_format.get().strip(),
+                    "video_output_format": self.video_format.get().strip(),
+                    "subtitle_track": self.subtitle_track.get().strip(),
+                    "subtitle_font_size": self.subtitle_font_size.get().strip(),
+                    "subtitle_font_color": self.subtitle_font_color.get().strip(),
+                    "subtitle_outline": self.subtitle_outline.get().strip(),
+                    "output_folder": str(self.output_folder.get()),
                 })
-                current.setdefault("whisper_model", str(DEFAULT_DUBBING_SETTINGS["whisper_model"]))
                 try:
                     from app import save_app_settings
                     save_app_settings(self.app.settings)

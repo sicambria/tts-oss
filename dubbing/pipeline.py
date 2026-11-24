@@ -120,6 +120,12 @@ class DubPipeline:
         prog(55, f"translated {len(segments)} segments")
 
         srt = subtitles.write_srt(segments, work_dir / "dub.srt", translated=True)
+        burn_srt = srt
+        if getattr(self.job, "subtitle_track", "translated") == "source":
+            # Burn path only: show the original lines instead of the dub.
+            # The soft-sub path always muxes the translated track + sidecar.
+            burn_srt = subtitles.write_srt(segments, work_dir / "dub_source.srt", translated=False)
+            self.log("Subtitle track: source (burn-in shows original lines)")
         import json as _json
         (work_dir / "dub_transcript.json").write_text(_json.dumps(
             [{"start": s.start, "end": s.end, "text": s.text,
@@ -172,6 +178,7 @@ class DubPipeline:
 
         if is_video_input(str(self.job.input)):
             from . import video as video_mod
+            from .subtitles import build_subtitle_style
             ext = (self.job.video_output_format or "mp4").lower().lstrip(".")
             if ext not in {"mp4", "mkv"}:
                 ext = "mp4"
@@ -179,7 +186,16 @@ class DubPipeline:
             out.parent.mkdir(parents=True, exist_ok=True)
             self.log(f"Muxing video (burn-in={'on' if self.job.burn_in else 'off'})…")
             prog(96, "muxing video")
-            result = video_mod.mux_video(self.job.input, mixed, srt, out, self.job.burn_in)
+            try:
+                style = build_subtitle_style(
+                    getattr(self.job, "subtitle_font_size", 20),
+                    getattr(self.job, "subtitle_font_color", "&H00FFFFFF"),
+                    getattr(self.job, "subtitle_outline", 2),
+                )
+            except ValueError as exc:
+                self.log(f"NOTE: bad subtitle style ({exc}); burning unstyled.")
+                style = None
+            result = video_mod.mux_video(self.job.input, mixed, burn_srt, out, self.job.burn_in, style=style)
             prog(100, "done")
             return result
 

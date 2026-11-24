@@ -293,7 +293,7 @@ def test_pipeline_video_success_mocked(tmp_path, monkeypatch):
                  output_dir=tmp_path / "out", allow_video=True)
     job.output_dir.mkdir()
     monkeypatch.setattr("dubbing.video.mux_video",
-                        lambda video, audio, srt, out, burn: (out.write_bytes(b"v"), out)[1])
+                        lambda video, audio, srt, out, burn, style=None: (out.write_bytes(b"v"), out)[1])
     monkeypatch.setattr(stages_mod, "fit_to_slot", lambda wav, dur, wd=None: (wav, False))
     monkeypatch.setattr(stages_mod, "concat_timeline",
                         lambda placed, total, out: (out.write_bytes(b"x"), out)[1])

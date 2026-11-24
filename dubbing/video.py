@@ -10,14 +10,15 @@ from .subtitles import build_burn_filter
 from .subtitles import soft_sub_mux_args
 
 
-def mux_video(video: Path, audio_wav: Path, srt: Path, out: Path, burn_in: bool) -> Path:
+def mux_video(video: Path, audio_wav: Path, srt: Path, out: Path, burn_in: bool,
+              style: str | None = None) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.exists():
         raise RuntimeError(f"Refusing to overwrite existing output: {out}")
     if burn_in:
         if not has_libass():
             raise RuntimeError("Burn-in needs libass subtitles filter; fell back to soft subs + sidecar.")
-        filt = build_burn_filter(srt)
+        filt = build_burn_filter(srt, style)
         # Explicit maps are load-bearing: without "-map 1:a", ffmpeg's
         # automatic stream selection keeps the ORIGINAL audio (input 0) and
         # silently drops the dub (input 1) — shipped once as "dub still
